@@ -1,0 +1,26 @@
+name: Rust
+
+on:
+  push:
+    branches: [ "develop" ]
+  pull_request:
+    branches: [ "develop" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: 'recursive'
+    - name: Build TQUIC library
+      run: cargo build -F ffi --verbose
+    - name: Build TQUIC examples
+      run: cargo build --all --verbose
+    - name: Run tests
+      run: cargo test --verbose
