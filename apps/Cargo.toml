@@ -1,0 +1,38 @@
+[package]
+name = "tquic_apps"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bytes = "1"
+url = "1"
+log = "0.4"
+mio = { version = "0.8", features = ["net", "os-poll"] }
+env_logger = "0.9"
+clap = { version = "=4.2.5", features = ["derive"] }
+rustc-hash = "1.1"
+slab = "0.4"
+rand = "0.8.5"
+statrs = "0.16"
+tikv-jemallocator = "0.5"
+tquic = { path = ".." }
+
+[lib]
+crate-type = ["lib"]
+path = "src/common.rs"
+
+[[bin]]
+name="tquic_client"
+path="src/bin/tquic_client.rs"
+
+[[bin]]
+name="tquic_server"
+path="src/bin/tquic_server.rs"
+
+[[bin]]
+name="simple_client"
+path="src/bin/simple_client.rs"
+
+[[bin]]
+name="simple_server"
+path="src/bin/simple_server.rs"
