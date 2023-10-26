@@ -1,0 +1,4 @@
+[submodule "src/third_party/boringssl"]
+	path = src/third_party/boringssl
+	url = https://github.com/google/boringssl.git
+	ignore = dirty
