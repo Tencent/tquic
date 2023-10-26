@@ -1,0 +1,28 @@
+[package]
+name = "tquic-fuzz"
+version = "0.0.1"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+lazy_static = "1.4.0"
+
+[dependencies.tquic]
+path = ".."
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "conn"
+path = "fuzz_targets/conn.rs"
+test = false
+doc = false
