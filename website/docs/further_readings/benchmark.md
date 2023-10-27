@@ -42,7 +42,7 @@ Each server program is compiled in release mode and configured to run in single-
 
 The application layer protocol used for testing was HTTP/3, while various typical scenarios were tested, including web browsing, image loading, and video playback. We conducted tests in both long connection and short connection scenarios. 
 
-- **Long connection scenario**: The purpose of the scenario is to test the protocol stack's capacity for handling requests by constantly sending multiple requests per connection. The selected sizes of page, image, video files were 5KB, 15KB, and 2MB respectively according to the median statistics from the [HTTP Archive](https://httparchive.org/reports/page-weight#bytesHtml).
+- **Long connection scenario**: The purpose of the scenario is to test the protocol stack's capacity for handling requests by constantly sending multiple requests per connection. The selected sizes of page, image, and video files were 5KB, 15KB, and 2MB respectively according to the median statistics from the [HTTP Archive](https://httparchive.org/reports/page-weight#bytesHtml).
 
 - **Short connection scenario**: The purpose of the scenario is to test the protocol stack's capacity for handshake by sending only one request per connection. Additionally, we intentionally selected a relatively small response size of 1KB.
 

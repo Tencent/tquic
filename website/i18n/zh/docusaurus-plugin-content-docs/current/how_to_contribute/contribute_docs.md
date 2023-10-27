@@ -31,8 +31,8 @@ $ sudo apt-get update && apt-get install -y npm
 首先下载完整的代码库：
 
 ```bash
-$ git clone https://github.com/tencent/tquic-website
-$ cd tquic-website
+$ git clone https://github.com/tencent/tquic
+$ cd tquic/website
 $ npm install
 ```
 
