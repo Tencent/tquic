@@ -18,7 +18,7 @@ TQUIC项目的顶级目录如下:
 | fuzz/      | 模糊测试 |
 | interop/   | 互操作性测试 |
 | include/   | 自动生成的C/C++头文件 |
-| docs/      | 文档 |
+| website/   | TQUIC文档网站 |
 
 :::tip
 如果对`src/ffi.rs`进行了修改，应该更新头文件 `include/tquic.h`。

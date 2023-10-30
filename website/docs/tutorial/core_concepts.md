@@ -23,7 +23,7 @@ The QUIC connection is not strictly bound to a single network path. It uses conn
 
 ## Stream
 
-The **Stream** provide a lightweight, ordered byte-stream abstraction to an application. 
+The **Stream** provides a lightweight, ordered byte-stream abstraction to an application. 
 
 Streams can be unidirectional or bidirectional: **unidirectional** streams carry data from the initiator to its peer; **bidirectional** streams allow for data to be sent in both directions.
 
