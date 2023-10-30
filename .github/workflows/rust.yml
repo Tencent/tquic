@@ -18,9 +18,18 @@ jobs:
     - uses: actions/checkout@v4
       with:
         submodules: 'recursive'
+
+    - name: Code format check
+      run: cargo fmt --check
+
     - name: Build TQUIC library
       run: cargo build -F ffi --verbose
+
     - name: Build TQUIC examples
       run: cargo build --all --verbose
+
+    - name: Code lint check
+      run: cargo clippy
+
     - name: Run tests
       run: cargo test --verbose
