@@ -25,23 +25,30 @@
  */
 typedef enum quic_congestion_control_algorithm {
   /**
-   * CUBIC, see https://www.rfc-editor.org/rfc/rfc8312.html
+   * CUBIC uses a cubic function instead of a linear window increase function
+   * of the current TCP standards to improve scalability and stability under
+   * fast and long-distance networks..
    */
   QUIC_CONGESTION_CONTROL_ALGORITHM_CUBIC,
   /**
-   * BBR congestion control,
-   * see https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-00
+   * BBR uses recent measurements of a transport connection's delivery rate,
+   * round-trip time, and packet loss rate to build an explicit model of the
+   * network path. The model is then used to control data transmission speed
+   * and the maximum volume of data allowed in flight in the network at any
+   * time.
    */
   QUIC_CONGESTION_CONTROL_ALGORITHM_BBR,
   /**
-   * version 2 of BBR congestion control,
-   * see https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-02
+   * BBRv3 is the latest version of BBR, including various fixes and
+   * algorithm updates that reduce packet re-transmit rate and slightly
+   * improve latency. (Experimental)
    */
-  QUIC_CONGESTION_CONTROL_ALGORITHM_BBR2,
+  QUIC_CONGESTION_CONTROL_ALGORITHM_BBR3,
   /**
-   * Copa: Practical Delay-Based Congestion Control for the Internet
-   * see https://web.mit.edu/copa/
-   * or https://www.usenix.org/system/files/conference/nsdi18/nsdi18-arun.pdf
+   * COPA is a tunable delay-based congestion control algorithm. COPA is
+   * based on an objective function where the trade-off between throughput
+   * and delay can be configured via a user-specified parameter.
+   * (Experimental)
    */
   QUIC_CONGESTION_CONTROL_ALGORITHM_COPA,
 } quic_congestion_control_algorithm;
@@ -725,13 +732,13 @@ void http3_config_free(struct http3_config_t *config);
 void http3_config_set_max_field_section_size(struct http3_config_t *config, uint64_t v);
 
 /**
- * Sets the `SETTINGS_QPACK_MAX_TABLE_CAPACITY` setting.
+ * Set the `SETTINGS_QPACK_MAX_TABLE_CAPACITY` setting.
  * The default value is `0`.
  */
 void http3_config_set_qpack_max_table_capacity(struct http3_config_t *config, uint64_t v);
 
 /**
- * Sets the `SETTINGS_QPACK_BLOCKED_STREAMS` setting.
+ * Set the `SETTINGS_QPACK_BLOCKED_STREAMS` setting.
  * The default value is `0`.
  */
 void http3_config_set_qpack_blocked_streams(struct http3_config_t *config, uint64_t v);
