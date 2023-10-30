@@ -31,5 +31,13 @@ jobs:
     - name: Code lint check
       run: cargo clippy
 
-    - name: Run tests
+    - name: Run unit tests
       run: cargo test --verbose
+
+    - name: Report coverage
+      env:
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+      run: |
+        cargo install cargo-tarpaulin
+        cargo tarpaulin --exclude-files "src/third_party/*" --out Xml
+        bash <(curl -s https://codecov.io/bash) -X gcov -t $CODECOV_TOKEN
