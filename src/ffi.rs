@@ -1260,14 +1260,14 @@ pub extern "C" fn http3_config_set_max_field_section_size(config: &mut Http3Conf
     config.set_max_field_section_size(v);
 }
 
-/// Sets the `SETTINGS_QPACK_MAX_TABLE_CAPACITY` setting.
+/// Set the `SETTINGS_QPACK_MAX_TABLE_CAPACITY` setting.
 /// The default value is `0`.
 #[no_mangle]
 pub extern "C" fn http3_config_set_qpack_max_table_capacity(config: &mut Http3Config, v: u64) {
     config.set_qpack_max_table_capacity(v);
 }
 
-/// Sets the `SETTINGS_QPACK_BLOCKED_STREAMS` setting.
+/// Set the `SETTINGS_QPACK_BLOCKED_STREAMS` setting.
 /// The default value is `0`.
 #[no_mangle]
 pub extern "C" fn http3_config_set_qpack_blocked_streams(config: &mut Http3Config, v: u64) {
