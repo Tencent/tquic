@@ -5,7 +5,7 @@ sidebar_position: 3
 
 # Protocol conformance test
 
-We perform protocol conformance tests based on the methodology introduced in a paper titled ["Formal specification and testing of QUIC"](https://dl.acm.org/doi/10.1145/3341302.3342087) published at SIGCOMM 2019. We have upgraded the initial formal specification to incorporate support for QUIC v1 and resolved some issues in the ivy tool chain.
+We perform protocol conformance tests based on the methodology introduced in a paper titled ["Formal specification and testing of QUIC"](https://dl.acm.org/doi/10.1145/3341302.3342087) published at SIGCOMM 2019. We have upgraded the initial formal specification to incorporate support for QUIC v1 and resolved some issues in the ivy toolchain.
 
 
 ## Formal specification of QUIC
@@ -24,11 +24,11 @@ That is, from the specification we can produce an automated tester that takes on
 
 ## Advantages
 
-This approach has certain advantages when compared to interoperablilty testing.
+This approach has certain advantages when compared to interoperability testing.
 
-* The specification-based tester can generate stimulus that can't be produced by any current implementation and perhaps would only be produced by attackers. Because it is randomized, it tends to generate the unusual cases that specifiers may not have considered.
+* The specification-based tester can generate stimulus that can't be produced by any current implementation and perhaps would only be produced by attackers. Because it is randomized, it tends to generate unusual cases that specifiers may not have considered.
 
-* It checks for actual specification compliance and not just for correct interopation. The compliance to the specification is important for future protocol developers who need to ensure compatibility with legacy implementations.
+* It checks for actual specification compliance and not just for correct interopation. Compliance with the specification is important for future protocol developers who need to ensure compatibility with legacy implementations.
 
 * The formal specification can be seen as documentation, since it gives an unambiguous interpretation of statements made in natural language in the IETF specification documents.
 

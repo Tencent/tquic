@@ -18,7 +18,7 @@ The top directories are as followings:
 | fuzz/      | Fuzzing tests |
 | interop/   | Interoperability testing |
 | include/   | Generated header files for C/C++ |
-| docs/      | Documents |
+| website/   | TQUIC website for documents |
 
 :::tip
 The header file `include/tquic.h` should be updated if any changes are made to the `src/ffi.rs`.
