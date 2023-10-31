@@ -43,7 +43,7 @@ fn new_boringssl_cmake_config() -> cmake::Config {
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
     let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
 
-    let mut boringssl_cmake = cmake::Config::new("src/third_party/boringssl");
+    let mut boringssl_cmake = cmake::Config::new("deps/boringssl");
 
     match os.as_ref() {
         "android" => {
