@@ -158,7 +158,7 @@ const config = {
             items: [
               {
                 label: 'GitHub',
-                href: 'https://github.com/tencent/tquic',
+                href: 'https://github.com/Tencent/tquic/discussions',
               },
               {
                 label: 'Stack Overflow',
@@ -166,7 +166,7 @@ const config = {
               },
               {
                 label: 'Discord',
-                href: 'https://discordapp.com/invite/tquic',
+                href: 'https://discord.com/invite/bXChN5DE2h',
               },
             ],
           },
