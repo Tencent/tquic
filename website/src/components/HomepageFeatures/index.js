@@ -42,7 +42,7 @@ const FeatureList = [
     description: (
       <>
 	<Translate id="feature.Easy to Use.description">
-	TQUIC is easy to use, supporting flexible configuration and detailed observability.
+	TQUIC is easy to use, with flexible configuration and detailed observability.
 	It offers APIs for Rust/C/C++.
         </Translate>
       </>
@@ -66,7 +66,7 @@ const FeatureList = [
     description: (
       <>
 	<Translate id="feature.Rich features.description">
-        TQUIC supports all big features conforming with QUIC, HTTP/3 RFCs.
+        TQUIC supports all major features conforming to QUIC, HTTP/3 RFCs.
         </Translate>
       </>
     ),
