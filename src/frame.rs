@@ -35,6 +35,7 @@ pub(crate) const MAX_STREAM_SIZE: u64 = 1 << 62;
 
 pub(crate) const MAX_CRYPTO_OVERHEAD: usize = 8;
 pub(crate) const MAX_STREAM_OVERHEAD: usize = 12;
+pub(crate) const MIN_STREAM_OVERHEAD: usize = 5;
 
 /// The QUIC frame is a unit of structured protocol information. Frames are
 /// contained in QUIC packets.

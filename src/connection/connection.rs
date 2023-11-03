@@ -2172,7 +2172,7 @@ impl Connection {
         let out = &mut out[st.written..];
         if (pkt_type != PacketType::OneRTT && pkt_type != PacketType::ZeroRTT)
             || self.is_closing()
-            || out.len() <= frame::MAX_STREAM_OVERHEAD
+            || out.len() <= frame::MIN_STREAM_OVERHEAD
             || !self.paths.get(path_id)?.active()
         {
             return Ok(());
@@ -2183,8 +2183,8 @@ impl Connection {
 
         while let Some(stream_id) = self.streams.peek_sendable() {
             let stream = match self.streams.get_mut(stream_id) {
-                // Avoid sending frames for streams that were already stopped.
-                Some(v) if !v.send.is_stopped() => v,
+                // We should not send frames for streams that were already stopped.
+                Some(s) if !s.send.is_stopped() => s,
                 _ => {
                     self.streams.remove_sendable();
                     continue;
@@ -2203,10 +2203,9 @@ impl Connection {
             // 3. encode the frame header with the updated frame header segments.
             let frame_hdr_len = frame::stream_header_wire_len(stream_id, stream_off);
 
-            // TODO: review again
+            // If the buffer is too short, we won't attempt to write any more stream frames into it.
             if cap.checked_sub(frame_hdr_len).is_none() {
-                self.streams.remove_sendable();
-                continue;
+                break;
             }
 
             // Read stream data and write into the packet buffer directly.
@@ -2249,10 +2248,6 @@ impl Connection {
             // If the stream is no longer sendable, remove it from the queue
             if !stream.is_sendable() {
                 self.streams.remove_sendable();
-            }
-
-            if cap <= frame::MAX_STREAM_OVERHEAD {
-                break;
             }
         }
 

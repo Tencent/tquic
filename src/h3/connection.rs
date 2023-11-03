@@ -537,7 +537,6 @@ impl Http3Connection {
             .local_initialized()
         {
             // Stream header has not been sent yet, should not send body now.
-            // TODO: revisit here, return Err(Http3Error::Done) more suitable?
             return Err(Http3Error::FrameUnexpected);
         }
 
@@ -1971,7 +1970,6 @@ impl Http3Connection {
         }
 
         // Process known critical streams, including HTTP/3 control, QPACK encoder/decoder streams.
-        // TODO: optimize here.
         match self.process_critical_streams(conn) {
             Ok(ev) => return Ok(ev),
             // Everything is fine, continue.
