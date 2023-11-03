@@ -47,7 +47,7 @@ TQUIC is a high-performance, lightweight, and cross-platform library for the [IE
 ## Contributing
 - Please create an issue in [issue list](http://github.com/tencent/tquic/issues).
 - Contact Committers/Owners for further discussion if needed.
-- See the [CONTRIBUTING](https://tquic.net/zh/docs/category/contributing/) file for details.
+- See the [CONTRIBUTING](https://tquic.net/docs/category/contributing/) file for details.
 
 
 ## Communication
