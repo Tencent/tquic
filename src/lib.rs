@@ -220,7 +220,6 @@ pub struct RandomConnectionIdGenerator {
 
 impl RandomConnectionIdGenerator {
     pub fn new(cid_len: usize, cid_lifetime: Option<Duration>) -> Self {
-        let cid_len = cmp::min(cid_len, MAX_CID_LEN);
         Self {
             cid_len: cmp::min(cid_len, MAX_CID_LEN),
             cid_lifetime,
