@@ -16,7 +16,7 @@ The guidelines in this section will help you develop TQUIC in a local environmen
 
 - Please refer to the coding format of Rust language.
 - Unit test is needed for all codes. All unit tests should be passed.
-- Please follow [regulations of submitting codes](contribute_codes#guide-of-submitting-pr-to-github).
+- Please follow [regulations of submitting codes](contribute_codes#guide-of-submitting-pull-request-to-github).
   
 
 ### [Fork](https://help.github.com/articles/fork-a-repo/)
@@ -146,7 +146,7 @@ Please wait for the review. If any modifications are necessary, you can update t
 
 ### Pass unit tests
 
-Every new commit in your Pull Request will trigger CI unit tests, so please ensure that necessary comments have been included in your commit message. Please refer to [commit](contribute_codes.md#commit)
+Every new commit in your Pull Request will trigger CI unit tests, so please ensure that necessary comments have been included in your commit message. Please refer to [commit](contribute_codes.md#commit).
 
 Please note the procedure of CI unit tests in your Pull Request which will be finished in several minutes.
 

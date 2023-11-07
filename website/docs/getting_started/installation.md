@@ -43,7 +43,7 @@ The `--all` option enables cargo to build both the tquic library and example too
 If you want to enable the C API, just add `-F ffi` option to the `cargo build` command:
 
 ```bash
-cargo build --release --all -F ffi
+cargo build --release -F ffi
 ```
   </TabItem>
 
