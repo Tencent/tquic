@@ -249,7 +249,7 @@ impl Frame {
                     return Err(Error::FrameEncodingError);
                 }
                 let fin = first & 0x01 != 0;
-                if length > buf.len() {
+                if length > b.len() {
                     return Err(Error::BufferTooShort);
                 }
                 let start = buf.len() - b.len();
@@ -1879,6 +1879,21 @@ mod tests {
         );
         assert_eq!(Frame::PathChallenge { data: [1; 8] }.probing(), true);
         assert_eq!(Frame::PathResponse { data: [1; 8] }.probing(), true);
+
+        Ok(())
+    }
+
+    #[test]
+    fn stream_buffer_too_short() -> Result<()> {
+        let mut buf = Bytes::from_static(&[
+            0x0e, 0x00, 0x00, 0x1c, 0x80, 0x00, 0xcf, 0xff, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00,
+        ]);
+        assert_eq!(
+            Frame::from_bytes(&mut buf, PacketType::OneRTT),
+            Err(Error::BufferTooShort)
+        );
 
         Ok(())
     }
