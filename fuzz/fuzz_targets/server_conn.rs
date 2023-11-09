@@ -15,7 +15,6 @@
 #![no_main]
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -26,14 +25,14 @@ use tquic::Config;
 use tquic::ConnectionId;
 use tquic::TlsConfig;
 
-// TODO: rewrite
 lazy_static! {
     static ref CONFIG: Mutex<tquic::Config> = {
         let mut conf = Config::new().unwrap();
-        let application_protos = vec![b"h3".to_vec()];
-        let mut tls_config = TlsConfig::new(false).unwrap();
-        let _ = tls_config.set_alpn(&application_protos);
-        conf.set_tls_conf_selector(Arc::new(tls_config));
+        let crt_file = "fuzz/conf/cert.crt";
+        let key_file = "fuzz/conf/cert.key";
+        let protos = vec![b"h3".to_vec()];
+        let tls_conf = TlsConfig::new_server_config(crt_file, key_file, protos, false).unwrap();
+        conf.set_tls_config(tls_conf);
         Mutex::new(conf)
     };
 }
@@ -48,7 +47,7 @@ fuzz_target!(|data: &[u8]| {
         time: Instant::now(),
     };
 
-    let mut conn = tquic::Connection::new_client(
+    let mut conn = tquic::Connection::new_server(
         &ConnectionId::random(),
         local,
         remote,
