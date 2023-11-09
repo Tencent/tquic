@@ -1,6 +1,6 @@
 [package]
 name = "tquic-fuzz"
-version = "0.0.1"
+version = "0.0.2"
 publish = false
 edition = "2021"
 
@@ -19,10 +19,18 @@ path = ".."
 members = ["."]
 
 [profile.release]
-debug = 1
+debug = true
+debug-assertions = true
+overflow-checks = true
 
 [[bin]]
-name = "conn"
-path = "fuzz_targets/conn.rs"
+name = "client_conn"
+path = "fuzz_targets/client_conn.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "server_conn"
+path = "fuzz_targets/server_conn.rs"
 test = false
 doc = false

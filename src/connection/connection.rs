@@ -162,7 +162,8 @@ pub struct Connection {
 
 impl Connection {
     /// Create a new QUIC client connection
-    pub(crate) fn new_client(
+    #[doc(hidden)]
+    pub fn new_client(
         scid: &ConnectionId,
         local: SocketAddr,
         remote: SocketAddr,
@@ -173,7 +174,8 @@ impl Connection {
     }
 
     /// Create a new QUIC server connection
-    pub(crate) fn new_server(
+    #[doc(hidden)]
+    pub fn new_server(
         scid: &ConnectionId,
         local: SocketAddr,
         remote: SocketAddr,
@@ -395,7 +397,8 @@ impl Connection {
     ///
     /// On success the number of bytes processed is returned. On error the
     /// connection will be closed with a error code.
-    pub(crate) fn recv(&mut self, buf: &mut [u8], info: &PacketInfo) -> Result<usize> {
+    #[doc(hidden)]
+    pub fn recv(&mut self, buf: &mut [u8], info: &PacketInfo) -> Result<usize> {
         let len = buf.len();
         if len == 0 {
             return Err(Error::NoError);
