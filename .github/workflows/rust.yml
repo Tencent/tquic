@@ -25,11 +25,20 @@ jobs:
     - name: Build TQUIC library
       run: cargo build -F ffi --verbose
 
-    - name: Build TQUIC examples
+    - name: Build TQUIC tools
       run: cargo build --all --verbose
 
     - name: Code lint check
       run: cargo clippy
 
-    - name: Run unit tests
+    - name: Unit testing
       run: cargo test --verbose
+
+    - name: Fuzz testing
+      run: |
+        rustup install nightly
+        rustup default nightly
+        cargo install cargo-fuzz
+        cargo fuzz run client_conn -- -max_total_time=30
+        cargo fuzz run server_conn -- -max_total_time=30
+ 
