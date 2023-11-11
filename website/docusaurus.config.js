@@ -179,7 +179,7 @@ const config = {
               },
               {
                 label: 'Twitter',
-                href: 'https://twitter.com/tquic',
+                href: 'https://twitter.com/tquic_project',
               },
             ],
           },
