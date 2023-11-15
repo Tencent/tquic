@@ -279,6 +279,12 @@ pub extern "C" fn quic_config_set_address_token_key(
     }
 }
 
+/// Set whether stateless retry is allowed. Default is not allowed.
+#[no_mangle]
+pub extern "C" fn quic_config_enable_retry(config: &mut Config, enabled: bool) {
+    config.enable_retry(enabled);
+}
+
 /// Set the length of source cid. The length should not be greater than 20.
 #[no_mangle]
 pub extern "C" fn quic_config_set_cid_len(config: &mut Config, v: u8) {

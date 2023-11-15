@@ -1749,7 +1749,7 @@ mod tests {
 
         let cli_conf = TestPair::new_test_config(false)?;
         let mut srv_conf = TestPair::new_test_config(true)?;
-        srv_conf.set_address_token_key(vec![[1; 16]])?;
+        srv_conf.enable_retry(true);
 
         let mut case_conf = CaseConf::default();
         case_conf.handshake_only = true;
@@ -1785,7 +1785,7 @@ mod tests {
 
         let cli_conf = TestPair::new_test_config(false)?;
         let mut srv_conf = TestPair::new_test_config(true)?;
-        srv_conf.set_address_token_key(vec![token_key])?;
+        srv_conf.enable_retry(true);
 
         let mut case_conf = CaseConf::default();
         case_conf.handshake_only = true;
