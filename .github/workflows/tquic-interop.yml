@@ -1,0 +1,40 @@
+name: TQUIC interop testing
+
+on:
+  push:
+    branches: [ "develop" ]
+  pull_request:
+    branches: [ "develop" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: 'recursive'
+
+    - name: Build docker image
+      run: docker build -t tquic_interop:v1 -f interop/Dockerfile .
+
+    - name: Install quic-interop-runner
+      run: |
+        git clone https://github.com/tquic-group/quic-interop-runner.git
+        cd quic-interop-runner
+        pip3 install -r requirements.txt
+
+    - name: Install dependences
+      run: |
+        sudo modprobe ip6table_filter
+        sudo add-apt-repository -y ppa:wireshark-dev/stable
+        sudo apt install -y tshark
+
+    - name: Run the interop tests 
+      run: |
+        cd quic-interop-runner   
+        python3 run.py -s tquic -c tquic -t handshake,retry,resumption,http3,ipv6,transfer,multiplexing,longrtt,blackhole,transferloss,transfercorruption,goodput,crosstraffic -d -r tquic=tquic_interop:v1

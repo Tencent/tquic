@@ -7,11 +7,11 @@ const darkCodeTheme = require('prism-react-renderer/themes/dracula');
 /** @type {import('@docusaurus/types').Config} */
 const config = {
   title: 'TQUIC',
-  tagline: 'High performance, light weight and cross platform QUIC library',
+  tagline: 'High performance, lightweight and cross-platform QUIC library',
   favicon: 'img/favicon.ico',
 
   // Set the production url of your site here
-  url: 'https://your-docusaurus-test-site.com',
+  url: 'https://tquic.net',
   // Set the /<baseUrl>/ pathname under which your site is served
   // For GitHub pages deployment, it is often '/<projectName>/'
   baseUrl: '/',
@@ -63,7 +63,7 @@ const config = {
   scripts: [
     // Access Statistics
     {
-      src: 'https://hm.baidu.com/hm.js?fd65f9f2d0d936713c5ec3e52dc1b497',
+      src: 'https://hm.baidu.com/hm.js?5f7e9bd63c8f9a814fb73b9ff8c2235b',
       async: true,
     },
   ],
@@ -158,7 +158,7 @@ const config = {
             items: [
               {
                 label: 'GitHub',
-                href: 'https://github.com/tencent/tquic',
+                href: 'https://github.com/Tencent/tquic/discussions',
               },
               {
                 label: 'Stack Overflow',
@@ -166,7 +166,7 @@ const config = {
               },
               {
                 label: 'Discord',
-                href: 'https://discordapp.com/invite/tquic',
+                href: 'https://discord.com/invite/bXChN5DE2h',
               },
             ],
           },
@@ -179,12 +179,12 @@ const config = {
               },
               {
                 label: 'Twitter',
-                href: 'https://twitter.com/tquic',
+                href: 'https://twitter.com/tquic_project',
               },
             ],
           },
         ],
-        copyright: `Copyright © ${new Date().getFullYear()} The TQUIC Authors | Documentation Distributed under CC-BY-4.0`,
+        copyright: `Copyright © ${new Date().getFullYear()} The TQUIC Authors | Documentation Distributed under CC-BY-4.0 <br> Copyright © ${new Date().getFullYear()} Tencent. All Rights Reserved | <a href=https://beian.miit.gov.cn style="color:#FFFFFF;">Yue B2-20090059-1892</a>`,
       },
       prism: {
         theme: lightCodeTheme,

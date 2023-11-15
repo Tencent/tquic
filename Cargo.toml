@@ -1,9 +1,29 @@
 [package]
 name = "tquic"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.70.0"
+license = "Apache-2.0"
+repository = "https://github.com/tencent/tquic"
+homepage = "https://tquic.net"
+description = "A high-performance, lightweight, and cross-platform QUIC library"
+keywords = ["quic"]
+categories = ["network-programming"]
 build = "src/build.rs"
+include = [
+    "/*.md",
+    "/*.toml",
+    "/LICENSE",
+    "/src",
+    "/benches",
+    "/include",
+    "/deps/boringssl/**/*.[chS]",
+    "/deps/boringssl/**/*.asm",
+    "/deps/boringssl/src/**/*.cc",
+    "/deps/boringssl/**/CMakeLists.txt",
+    "/deps/boringssl/**/sources.cmake",
+    "/deps/boringssl/LICENSE",
+]
 
 [features]
 # build the FFI API

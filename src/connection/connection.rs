@@ -162,7 +162,8 @@ pub struct Connection {
 
 impl Connection {
     /// Create a new QUIC client connection
-    pub(crate) fn new_client(
+    #[doc(hidden)]
+    pub fn new_client(
         scid: &ConnectionId,
         local: SocketAddr,
         remote: SocketAddr,
@@ -173,7 +174,8 @@ impl Connection {
     }
 
     /// Create a new QUIC server connection
-    pub(crate) fn new_server(
+    #[doc(hidden)]
+    pub fn new_server(
         scid: &ConnectionId,
         local: SocketAddr,
         remote: SocketAddr,
@@ -295,14 +297,6 @@ impl Connection {
             conn.flags.insert(DerivedInitialSecrets);
         }
 
-        // Prepare resume address token if needed
-        if is_server && conf.retry {
-            let token = AddressToken::new_resume_token(remote);
-            if let Ok(token) = token.encode(&conf.address_token_key[0]) {
-                conn.token = Some(token);
-            }
-        }
-
         if !conf.max_handshake_timeout.is_zero() {
             conn.timers.set(
                 Timer::Handshake,
@@ -311,7 +305,7 @@ impl Connection {
         }
 
         // Prepare resume address token if needed
-        if is_server && conf.retry {
+        if is_server {
             let token = AddressToken::new_resume_token(remote);
             if let Ok(token) = token.encode(&conf.address_token_key[0]) {
                 conn.token = Some(token);
@@ -395,7 +389,8 @@ impl Connection {
     ///
     /// On success the number of bytes processed is returned. On error the
     /// connection will be closed with a error code.
-    pub(crate) fn recv(&mut self, buf: &mut [u8], info: &PacketInfo) -> Result<usize> {
+    #[doc(hidden)]
+    pub fn recv(&mut self, buf: &mut [u8], info: &PacketInfo) -> Result<usize> {
         let len = buf.len();
         if len == 0 {
             return Err(Error::NoError);
@@ -2172,7 +2167,7 @@ impl Connection {
         let out = &mut out[st.written..];
         if (pkt_type != PacketType::OneRTT && pkt_type != PacketType::ZeroRTT)
             || self.is_closing()
-            || out.len() <= frame::MAX_STREAM_OVERHEAD
+            || out.len() <= frame::MIN_STREAM_OVERHEAD
             || !self.paths.get(path_id)?.active()
         {
             return Ok(());
@@ -2183,8 +2178,8 @@ impl Connection {
 
         while let Some(stream_id) = self.streams.peek_sendable() {
             let stream = match self.streams.get_mut(stream_id) {
-                // Avoid sending frames for streams that were already stopped.
-                Some(v) if !v.send.is_stopped() => v,
+                // We should not send frames for streams that were already stopped.
+                Some(s) if !s.send.is_stopped() => s,
                 _ => {
                     self.streams.remove_sendable();
                     continue;
@@ -2203,10 +2198,9 @@ impl Connection {
             // 3. encode the frame header with the updated frame header segments.
             let frame_hdr_len = frame::stream_header_wire_len(stream_id, stream_off);
 
-            // TODO: review again
+            // If the buffer is too short, we won't attempt to write any more stream frames into it.
             if cap.checked_sub(frame_hdr_len).is_none() {
-                self.streams.remove_sendable();
-                continue;
+                break;
             }
 
             // Read stream data and write into the packet buffer directly.
@@ -2249,10 +2243,6 @@ impl Connection {
             // If the stream is no longer sendable, remove it from the queue
             if !stream.is_sendable() {
                 self.streams.remove_sendable();
-            }
-
-            if cap <= frame::MAX_STREAM_OVERHEAD {
-                break;
             }
         }
 

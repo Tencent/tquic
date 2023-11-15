@@ -86,6 +86,10 @@ pub struct ServerOpt {
     #[clap(long, value_name = "STR")]
     pub address_token_key: Option<String>,
 
+    /// Enable stateless retry.
+    #[clap(long)]
+    pub enable_retry: bool,
+
     /// Disable stateless reset.
     #[clap(long)]
     pub disable_stateless_reset: bool,
@@ -150,6 +154,7 @@ impl Server {
         config.set_recv_udp_payload_size(option.recv_udp_payload_size);
         config.set_send_udp_payload_size(option.send_udp_payload_size);
         config.set_max_handshake_timeout(option.handshake_timeout);
+        config.enable_retry(option.enable_retry);
         config.enable_stateless_reset(!option.disable_stateless_reset);
         config.set_max_handshake_timeout(option.handshake_timeout);
         config.set_max_idle_timeout(option.idle_timeout);

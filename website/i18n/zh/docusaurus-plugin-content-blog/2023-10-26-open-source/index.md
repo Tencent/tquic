@@ -1,5 +1,5 @@
 ---
-slug: TQUIC正式开源
+slug: tquic-open-source
 title: TQUIC正式开源
 authors: [iyangsj]
 tags: [tquic, quic, rust, open source]
@@ -39,6 +39,17 @@ TQUIC协议库具有如下的优势：
 关于TQUIC的详细介绍可以查看TQUIC项目网站 https://tquic.net/zh/docs/intro 。
 
 
+# 项目架构
+
+TQUIC项目架构图如下所示。
+
+![TQUIC Architecture](./tquic-arch.png)
+
+TQUIC将跨平台兼容及多并发模型支持作为关键的设计目标。TQUIC核心采用了网络IO及事件循环抽象化设计。TQUIC核心并不依赖于套接字，而是通过用户提供的回调来实现。同时，TQUIC核心没有强加特定的事件循环要求，它提供了帮助用户调度事件的函数。TQUIC的灵活性使得易于在各种系统中的定制和集成。
+
+TQUIC接口层提供了面向主流平台编程语言的高层级封装接口，支持同步、异步语义接口，兼容不同的并发模型，并简化用户的使用。
+
+
 # 后续规划
 
 * 对接开源技术生态，扩大TQUIC使用场景，进一步提升TQUIC使用体验。
@@ -49,9 +60,4 @@ TQUIC协议库具有如下的优势：
 # 结语
 
 TQUIC的开源只是开始。期待得到大家的指正，并能参与进来，共同建设网络传输领域的技术生态。欢迎有兴趣的同学和我们联系。
-
-**TQUIC开源项目网站**：https://tquic.net
-
-**TQUIC开源项目地址**：https://github.com/tencent/tquic
-
 

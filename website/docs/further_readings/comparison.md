@@ -36,7 +36,7 @@ The NGINX-QUIC codebase, despite having the fewest lines of code, currently lack
 | Category | QUICHE-G | NGINX-QUIC | QUICHE-CF | LSQUIC | TQUIC |
 | ------------- | ---------- | ------ | ----- | ---- | ---- |
 | Performance | Normal | Good | Good | Better | Best |
-| Congestion control | CUBIC, BBR, BBRv2, Reno | Reno | CUBIC, BBR | CUBIC, BBR | CUBIC, BBR, BBRv2 |
+| Congestion control | CUBIC, BBR, BBRv2, Reno | Reno | CUBIC, BBR | CUBIC, BBR | CUBIC, BBR, BBRv3, COPA |
 | Multipath | Not supported | Not supported | Not supported | Not supported | Support Multipath QUIC |
 
 

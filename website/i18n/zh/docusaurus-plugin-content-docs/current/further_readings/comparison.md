@@ -36,7 +36,7 @@ NGINX-QUIC代码库，尽管代码行数最少，但目前缺乏注释、单元�
 | 类别 | QUICHE-G | NGINX-QUIC | QUICHE-CF | LSQUIC | TQUIC |
 | ------------- | ---------- | ------ | ----- | ---- | ---- |
 | 性能 | 一般 | 好 | 好 | 较好 | 最好 |
-| 拥塞控制算法 | CUBIC/BBR/BBRv2/Reno | Reno | CUBIC/BBR | CUBIC/BBR | CUBIC/BBR/BBRv2 |
+| 拥塞控制算法 | CUBIC/BBR/BBRv2/Reno | Reno | CUBIC/BBR | CUBIC/BBR | CUBIC/BBR/BBRv3/COPA |
 | 多路径传输 | 不支持 | 不支持 | 不支持 | 不支持 | 支持 |
 
 

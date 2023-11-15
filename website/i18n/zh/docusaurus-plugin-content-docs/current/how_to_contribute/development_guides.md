@@ -33,14 +33,15 @@ cbindgen -o include/tquic.h
 
 | 目录或文件 | 说明 |
 | -------------- | ----------- |
-| src/connection/         | QUIC协议核心实现 |
-| src/congestion_control/ | 各种拥塞控制算法实现 |
-| src/tls/                | 基于boringssl/rustls的封装 |
-| src/h3/                 | HTTP/3协议 |
-| src/qlog/               | Qlog |
-| src/ffi.rs              | C/C++语言的封装接口 |
-| src/build.rs            | boringssl库的编译 |
-| src/\*.rs               | TQUIC协议库的基础组件 |
+| src/connection/          | QUIC协议核心实现 |
+| src/congestion_control/  | 各种拥塞控制算法实现 |
+| src/multipath_scheduler/ | 各种多路径调度算法实现 |
+| src/tls/                 | 基于boringssl/rustls的封装 |
+| src/h3/                  | HTTP/3协议 |
+| src/qlog/                | Qlog |
+| src/ffi.rs               | C/C++语言的封装接口 |
+| src/build.rs             | boringssl库的编译 |
+| src/\*.rs                | TQUIC协议库的基础组件 |
 
 
 
@@ -64,6 +65,29 @@ cargo install cargo-tarpaulin
 # 在项目基目录执行
 cargo tarpaulin --exclude-files "src/third_party/*" -o html
 ```
+
+
+## 模糊测试
+
+* 如何安装模糊测试工具[cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz)
+```
+rustup install nightly
+rustup default nightly
+cargo install cargo-fuzz
+```
+
+* 如果查看已有模糊测试用例
+```
+cargo fuzz list
+```
+
+* 如果执行指定模糊测试用例
+```
+cargo fuzz run <target_name> -- -max_total_time=30
+```
+
+更多用法参见[cargo-fuzz文档](https://rust-fuzz.github.io/book/cargo-fuzz.html)。
+
 
 
 ## 一致性测试
