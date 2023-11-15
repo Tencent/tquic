@@ -398,6 +398,11 @@ int quic_config_set_address_token_key(struct quic_config_t *config,
                                       size_t token_keys_len);
 
 /**
+ * Set whether stateless retry is allowed. Default is not allowed.
+ */
+void quic_config_enable_retry(struct quic_config_t *config, bool enabled);
+
+/**
  * Set the length of source cid. The length should not be greater than 20.
  */
 void quic_config_set_cid_len(struct quic_config_t *config, uint8_t v);

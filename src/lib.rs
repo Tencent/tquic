@@ -393,7 +393,7 @@ impl Config {
             retry: false,
             stateless_reset: true,
             address_token_lifetime: Duration::from_secs(86400),
-            address_token_key: vec![],
+            address_token_key: Self::rand_address_token_key()?,
             reset_token_key,
             cid_len: 8,
             send_batch_size: 64,
@@ -542,20 +542,27 @@ impl Config {
         self.address_token_lifetime = Duration::from_secs(seconds);
     }
 
-    /// Set the key for address token generation. It also enables retry.
+    /// Set the key for address token generation.
     pub fn set_address_token_key(&mut self, keys: Vec<[u8; 16]>) -> Result<()> {
         if keys.is_empty() {
             return Err(Error::InvalidConfig("address token key empty".into()));
         }
 
+        let mut address_token_key = vec![];
         for key in keys {
             // AES-128 uses a 128-bit key length
             let key = UnboundKey::new(&aead::AES_128_GCM, &key).map_err(|_| Error::CryptoFail)?;
             let key = LessSafeKey::new(key);
-            self.address_token_key.push(key);
+            address_token_key.push(key);
         }
-        self.retry = true;
+        self.address_token_key = address_token_key;
+
         Ok(())
+    }
+
+    /// Set whether stateless retry is allowed. Default is not allowed.
+    pub fn enable_retry(&mut self, enable_retry: bool) {
+        self.retry = enable_retry;
     }
 
     /// Set whether stateless reset is allowed.
@@ -584,6 +591,15 @@ impl Config {
         tls_config_selector: Arc<dyn tls::TlsConfigSelector>,
     ) {
         self.tls_config_selector = Some(tls_config_selector);
+    }
+
+    /// Generate random address token key.
+    fn rand_address_token_key() -> Result<Vec<LessSafeKey>> {
+        let mut key = [0_u8; 16];
+        rand::thread_rng().fill_bytes(&mut key);
+        Ok(vec![LessSafeKey::new(
+            UnboundKey::new(&aead::AES_128_GCM, &key).map_err(|_| Error::CryptoFail)?,
+        )])
     }
 
     /// Create new tls session.

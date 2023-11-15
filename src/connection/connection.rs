@@ -297,14 +297,6 @@ impl Connection {
             conn.flags.insert(DerivedInitialSecrets);
         }
 
-        // Prepare resume address token if needed
-        if is_server && conf.retry {
-            let token = AddressToken::new_resume_token(remote);
-            if let Ok(token) = token.encode(&conf.address_token_key[0]) {
-                conn.token = Some(token);
-            }
-        }
-
         if !conf.max_handshake_timeout.is_zero() {
             conn.timers.set(
                 Timer::Handshake,
@@ -313,7 +305,7 @@ impl Connection {
         }
 
         // Prepare resume address token if needed
-        if is_server && conf.retry {
+        if is_server {
             let token = AddressToken::new_resume_token(remote);
             if let Ok(token) = token.encode(&conf.address_token_key[0]) {
                 conn.token = Some(token);
