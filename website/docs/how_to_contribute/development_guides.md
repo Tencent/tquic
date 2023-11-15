@@ -33,14 +33,16 @@ cbindgen -o include/tquic.h
 
 | Directory/File | Description |
 | -------------- | ----------- |
-| src/connection/         | Core implementation of the QUIC protocol |
-| src/congestion_control/ | Various congestion control algorithms |
-| src/tls/                | An wrapper of boringssl/rustls |
-| src/h3/                 | HTTP/3 protocol |
-| src/qlog/               | Qlog |
+| src/connection/           | Core implementation of the QUIC protocol |
+| src/congestion_control/   | Various congestion control algorithms |
+| src/multipath_scheduler/  | Various multipath scheduling algorithms |
+| src/tls/                  | An wrapper of boringssl/rustls |
+| src/h3/                   | HTTP/3 protocol |
+| src/qlog/                 | Qlog |
 | src/ffi.rs                | Foreign Function Interface for C/C++ |
 | src/build.rs              | Build tools for boringssl |
 | src/\*.rs                 | Fundamental building blocks for the TQUIC library |
+
 
 ## Unit testing
 
@@ -62,6 +64,28 @@ cargo install cargo-tarpaulin
 # change to the base directory of the project
 cargo tarpaulin --exclude-files "src/third_party/*" -o html
 ```
+
+
+## Fuzz testing
+
+* How to install the tool [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) for for fuzzing
+```
+rustup install nightly
+rustup default nightly
+cargo install cargo-fuzz
+```
+
+* How to list all the existing fuzz targets
+```
+cargo fuzz list
+```
+
+* How to run a fuzzing target
+```
+cargo fuzz run <target_name> -- -max_total_time=30
+```
+
+Refer to the [cargo-fuzz documentation](https://rust-fuzz.github.io/book/cargo-fuzz.html) for more information.
 
 
 ## Conformance testing
