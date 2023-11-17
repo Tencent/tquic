@@ -34,6 +34,14 @@ jobs:
     - name: Unit testing
       run: cargo test --verbose
 
+    - name: Report coverage
+      env:
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+      run: |
+        cargo install cargo-tarpaulin
+        cargo tarpaulin --exclude-files "deps/*" --exclude-files "src/congestion_control/*" --out Xml
+        bash <(curl -s https://codecov.io/bash) -X gcov -t $CODECOV_TOKEN
+
     - name: Fuzz testing
       run: |
         rustup install nightly
