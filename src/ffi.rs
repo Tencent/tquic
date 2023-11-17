@@ -250,7 +250,7 @@ pub extern "C" fn quic_config_set_address_token_lifetime(config: &mut Config, se
     config.set_address_token_lifetime(seconds);
 }
 
-/// Set the key for address token generation. It also enables retry.
+/// Set the key for address token generation.
 /// The token_key_len should be a multiple of 16.
 #[no_mangle]
 pub extern "C" fn quic_config_set_address_token_key(
