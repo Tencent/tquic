@@ -390,7 +390,7 @@ void quic_config_enable_stateless_reset(struct quic_config_t *config, bool enabl
 void quic_config_set_address_token_lifetime(struct quic_config_t *config, uint64_t seconds);
 
 /**
- * Set the key for address token generation. It also enables retry.
+ * Set the key for address token generation.
  * The token_key_len should be a multiple of 16.
  */
 int quic_config_set_address_token_key(struct quic_config_t *config,

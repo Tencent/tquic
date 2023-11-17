@@ -211,8 +211,17 @@ int quic_config_set_address_token_key(struct quic_config_t *config,
                                       const uint8_t *token_keys,
                                       size_t token_keys_len);
 ```
-* Set the key for address token generation. It also enables retry.
+* Set the key for address token generation.
 The `token_key_len` should be a multiple of 16.
+
+
+#### quic_config_enable_retry
+```c
+void quic_config_enable_retry(struct quic_config_t *config,
+                              bool enabled);
+```
+* Set whether stateless retry is allowed.
+* Default is not allowed.
 
 
 #### quic_config_set_cid_len
