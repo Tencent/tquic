@@ -63,7 +63,7 @@ RUST_LOG=trace cargo test test_name -- --nocapture
 cargo install cargo-tarpaulin
 
 # 在项目基目录执行
-cargo tarpaulin --exclude-files "src/third_party/*" -o html
+cargo tarpaulin --exclude-files "deps/*" -o html
 ```
 
 
