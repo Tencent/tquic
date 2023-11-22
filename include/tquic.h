@@ -492,6 +492,11 @@ struct quic_conn_t *quic_endpoint_get_connection(struct quic_endpoint_t *endpoin
 void quic_endpoint_close(struct quic_endpoint_t *endpoint);
 
 /**
+ * Get index of the connection
+ */
+uint64_t quic_conn_index(struct quic_conn_t *conn);
+
+/**
  * Check whether the connection is a server connection.
  */
 bool quic_conn_is_server(struct quic_conn_t *conn);

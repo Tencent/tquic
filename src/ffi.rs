@@ -458,6 +458,12 @@ pub extern "C" fn quic_endpoint_close(endpoint: &mut Endpoint) {
     endpoint.close()
 }
 
+/// Get index of the connection
+#[no_mangle]
+pub extern "C" fn quic_conn_index(conn: &mut Connection) -> u64 {
+    conn.index().unwrap_or(u64::MAX)
+}
+
 /// Check whether the connection is a server connection.
 #[no_mangle]
 pub extern "C" fn quic_conn_is_server(conn: &mut Connection) -> bool {
