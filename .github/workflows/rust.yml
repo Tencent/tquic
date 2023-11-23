@@ -19,6 +19,9 @@ jobs:
       with:
         submodules: 'recursive'
 
+    - name: Update rust
+      run: rustup update
+
     - name: Code format check
       run: cargo fmt --check
 
@@ -29,7 +32,7 @@ jobs:
       run: cargo build --all --verbose
 
     - name: Code lint check
-      run: cargo clippy
+      run: cargo clippy --all -- -D warnings
 
     - name: Unit testing
       run: cargo test --verbose

@@ -270,7 +270,7 @@ struct ConnectionHandler {
 impl ConnectionHandler {
     fn generate_file_path(uri: &str, root: &str) -> path::PathBuf {
         let uri = path::Path::new(uri);
-        let mut path = path::PathBuf::from(root.clone());
+        let mut path = path::PathBuf::from(root);
 
         for c in uri.components() {
             if let path::Component::Normal(v) = c {
