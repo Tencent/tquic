@@ -62,7 +62,7 @@ It is recommended to use `tarpaulin` to produce a unit test coverage report:
 cargo install cargo-tarpaulin
 
 # change to the base directory of the project
-cargo tarpaulin --exclude-files "src/third_party/*" -o html
+cargo tarpaulin --exclude-files "deps/*" -o html
 ```
 
 
