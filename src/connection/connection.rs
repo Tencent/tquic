@@ -2745,10 +2745,8 @@ impl Connection {
         info: &PacketInfo,
         buf_len: usize,
     ) -> Result<usize> {
-        let (cid_seq, mut cid_pid) = self
-            .cids
-            .find_scid(dcid)
-            .ok_or(Error::InvalidState("unknown dcid".into()))?;
+        // Note: If the incoming packet carrys an unknown dcid, just ignore and drop it.
+        let (cid_seq, mut cid_pid) = self.cids.find_scid(dcid).ok_or(Error::Done)?;
 
         // The incoming packet arrived on the existing path (for Client/Server).
         if let Some(recv_pid) = recv_pid {
@@ -5497,6 +5495,29 @@ pub(crate) mod tests {
             test_pair.server.recv(&mut packet, &info),
             Err(Error::ProtocolViolation)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn recv_packet_unknown_dcid() -> Result<()> {
+        let mut test_pair = TestPair::new_with_test_config()?;
+        test_pair.handshake()?;
+
+        // Client send NEW_CONNECTION_ID
+        let (scid, reset_token) = (ConnectionId::random(), Some(1));
+        test_pair
+            .server
+            .cids
+            .add_scid(scid, reset_token, true, None, true)?;
+        let mut packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+        assert!(!packets.is_empty());
+
+        // Tamper dcid field of the OneRTT packet
+        let (mut packet, info) = packets.pop().unwrap();
+        packet[1] = packet[1] + 1; // change first byte of dcid field
+
+        // Server drop the packet with unknown dcid
+        assert!(test_pair.server.recv(&mut packet, &info).is_ok());
         Ok(())
     }
 
