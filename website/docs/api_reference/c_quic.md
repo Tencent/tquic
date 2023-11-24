@@ -548,6 +548,13 @@ void quic_conn_trace_id(struct quic_conn_t *conn,
 
 ### Miscellaneous functions
 
+#### quic_conn_index
+```c
+uint64_t quic_conn_index(struct quic_conn_t *conn);
+```
+* Get index of the connection.
+
+
 #### quic_conn_is_server
 ```c
 bool quic_conn_is_server(struct quic_conn_t *conn);
