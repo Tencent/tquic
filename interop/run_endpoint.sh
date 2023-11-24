@@ -49,6 +49,7 @@ if [ "$ROLE" == "client" ]; then
     REQS=($REQUESTS)
 
     CLIENT_ARGS="--dump-path ${DOWNLOAD_DIR} --keylog-file $SSLKEYLOGFILE --log-level TRACE --max-concurrent-requests ${#REQS[@]}"
+    CLIENT_ALPN="--alpn hq-interop"
     case $TESTCASE in
     resumption)
         CLIENT_ARGS="$CLIENT_ARGS --session-file=session.bin"
@@ -56,9 +57,13 @@ if [ "$ROLE" == "client" ]; then
     zerortt)
         CLIENT_ARGS="$CLIENT_ARGS --session-file=session.bin --enable-early-data"
         ;;
+    http3)
+        CLIENT_ALPN="--alpn h3"
+        ;;
     *)
         ;;
     esac
+    CLIENT_ARGS="$CLIENT_ARGS $CLIENT_ALPN"
 
     case $TESTCASE in
     multiconnect|resumption)
