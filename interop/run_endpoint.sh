@@ -76,7 +76,7 @@ if [ "$ROLE" == "client" ]; then
         ;;
     esac
 elif [ "$ROLE" == "server" ]; then
-    SERVER_ARGS="-c /certs/cert.pem -k /certs/priv.key --listen [::]:443 --root $ROOT_DIR --keylog-file $SSLKEYLOGFILE --log-level TRACE"
+    SERVER_ARGS="-c /certs/cert.pem -k /certs/priv.key --listen [::]:443 --root $ROOT_DIR --log-level TRACE --keylog-file $SSLKEYLOGFILE"
     case $TESTCASE in
     retry)
         SERVER_ARGS="$SERVER_ARGS --enable-retry"
