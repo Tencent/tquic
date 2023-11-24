@@ -16,9 +16,12 @@ use std::cell::RefCell;
 use std::cell::RefMut;
 use std::cmp;
 use std::cmp::max;
+use std::fs::create_dir_all;
 use std::fs::File;
 use std::io::BufWriter;
 use std::io::Write;
+use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
 use std::rc::Rc;
@@ -28,9 +31,12 @@ use std::thread;
 use std::time::Instant;
 
 use bytes::Bytes;
+use clap::error::ErrorKind;
+use clap::CommandFactory;
 use clap::Parser;
 use log::debug;
 use log::error;
+use log::warn;
 use mio::event::Event;
 use rand::Rng;
 use rustc_hash::FxHashMap;
@@ -39,6 +45,7 @@ use statrs::statistics::Distribution;
 use statrs::statistics::Max;
 use statrs::statistics::Min;
 use statrs::statistics::OrderStatistics;
+use tquic::h3::NameValue;
 use url::Url;
 
 use tquic::connection::ConnectionStats;
@@ -98,9 +105,9 @@ pub struct ClientOpt {
     #[clap(long, default_value = "100000", value_name = "NUM")]
     pub max_sample: usize,
 
-    /// Print stats to stdout.
+    /// Print response header and body to stdout.
     #[clap(short, long)]
-    pub print_stats: bool,
+    pub print_res: bool,
 
     /// Log level, support OFF/ERROR/WARN/INFO/DEBUG/TRACE.
     #[clap(long, default_value = "INFO", value_name = "STR")]
@@ -115,12 +122,13 @@ pub struct ClientOpt {
         short,
         long,
         value_delimiter = ',',
-        default_value = "h3",
+        default_value = "h3,http/0.9,hq-interop",
         value_name = "STR"
     )]
     pub alpn: Vec<Vec<u8>>,
 
     /// Dump response body into the given directory.
+    /// If the specified directory does not exist, a new directory will be created.
     #[clap(long, value_name = "DIR")]
     pub dump_path: Option<String>,
 
@@ -227,9 +235,7 @@ impl Client {
 
     fn finish(&self) {
         // Print stats.
-        if self.option.print_stats {
-            self.stats();
-        }
+        self.stats();
 
         // Write session resumption file.
         let context = self.context.lock().unwrap();
@@ -245,6 +251,7 @@ impl Client {
         let d = context.end_time.unwrap() - self.start_time;
 
         // TODO: support more statistical items.
+        println!();
         println!(
             "finished in {:?}, {:.2} req/s",
             d,
@@ -291,6 +298,7 @@ impl Client {
             context.conn_stats.sent_bytes,
             context.conn_stats.lost_bytes
         );
+        println!();
     }
 }
 
@@ -701,26 +709,14 @@ impl Request {
 
 /// Used for sending http/0.9 or h3 requests. One connection has only one request sender.
 struct RequestSender {
-    /// Request URLs needed to be sent.
-    urls: Vec<Url>,
+    /// Sender option.
+    option: ClientOpt,
 
     /// Current index of URLs.
     current_url_idx: usize,
 
-    /// Request body needed to be sent.
-    request_body: Option<Vec<u8>>,
-
-    /// Response body dump path.
-    dump_path: Option<String>,
-
-    /// Maximum concurrent requests in client option.
-    max_concurrent_requests: u64,
-
     /// Concurrent requests of this sender.
     concurrent_requests: u64,
-
-    /// Maximum requests to be sent per connection in client option.
-    max_requests_per_conn: u64,
 
     /// Requests already sent of this sender.
     request_sent: u64,
@@ -750,22 +746,14 @@ struct RequestSender {
 impl RequestSender {
     /// Create a new request sender.
     pub fn new(
-        urls: Vec<Url>,
+        option: &ClientOpt,
         conn: &mut Connection,
-        dump_path: Option<String>,
         worker_ctx: Rc<RefCell<WorkerContext>>,
-        max_concurrent_requests: u64,
-        max_requests_per_conn: u64,
     ) -> Self {
-        // TODO: support body.
-        Self {
-            urls,
-            request_body: None,
-            dump_path,
+        let mut sender = Self {
+            option: option.clone(),
             current_url_idx: 0,
-            max_concurrent_requests,
             concurrent_requests: 0,
-            max_requests_per_conn,
             request_sent: 0,
             request_done: 0,
             buf: vec![0; MAX_BUF_SIZE],
@@ -773,10 +761,22 @@ impl RequestSender {
             worker_ctx,
             app_proto: AppProto::H3,
             next_stream_id: 0,
-            h3_conn: Some(
+            h3_conn: None,
+        };
+
+        let application_proto = conn.application_proto();
+        if alpns::HTTP_09.contains(&application_proto) {
+            sender.app_proto = AppProto::Http09;
+        } else if alpns::HTTP_3.contains(&application_proto) {
+            sender.app_proto = AppProto::H3;
+            sender.h3_conn = Some(
                 Http3Connection::new_with_quic_conn(conn, &Http3Config::new().unwrap()).unwrap(),
-            ),
+            );
+        } else {
+            unreachable!();
         }
+
+        sender
     }
 
     /// Send requests.
@@ -785,13 +785,14 @@ impl RequestSender {
             "{} send requests {} {} {} {}",
             conn.trace_id(),
             self.concurrent_requests,
-            self.max_concurrent_requests,
+            self.option.max_concurrent_requests,
             self.request_sent,
-            self.max_requests_per_conn
+            self.option.max_requests_per_conn
         );
 
-        while self.concurrent_requests < self.max_concurrent_requests
-            && (self.max_requests_per_conn == 0 || self.request_sent < self.max_requests_per_conn)
+        while self.concurrent_requests < self.option.max_concurrent_requests
+            && (self.option.max_requests_per_conn == 0
+                || self.request_sent < self.option.max_requests_per_conn)
         {
             if let Err(e) = self.send_request(conn) {
                 error!("{} send request error {}", conn.trace_id(), e);
@@ -819,8 +820,8 @@ impl RequestSender {
     }
 
     fn send_request(&mut self, conn: &mut Connection) -> Result<()> {
-        let url = &self.urls[self.current_url_idx];
-        let mut request = Request::new("GET", url, &None, &self.dump_path);
+        let url = &self.option.urls[self.current_url_idx];
+        let mut request = Request::new("GET", url, &None, &self.option.dump_path);
         debug!(
             "{} send request {} current index {}",
             conn.trace_id(),
@@ -839,7 +840,7 @@ impl RequestSender {
         request.start_time = Some(Instant::now());
         self.streams.insert(s, request);
         self.current_url_idx += 1;
-        if self.current_url_idx == self.urls.len() {
+        if self.current_url_idx == self.option.urls.len() {
             self.current_url_idx = 0;
         }
         self.concurrent_requests += 1;
@@ -884,12 +885,12 @@ impl RequestSender {
             }
         };
 
-        match self.h3_conn.as_mut().unwrap().send_headers(
-            conn,
-            s,
-            &request.headers,
-            self.request_body.is_none(),
-        ) {
+        match self
+            .h3_conn
+            .as_mut()
+            .unwrap()
+            .send_headers(conn, s, &request.headers, true)
+        {
             Ok(v) => v,
             Err(tquic::h3::Http3Error::StreamBlocked) => {
                 return Err("stream is blocked".to_string().into());
@@ -923,6 +924,23 @@ impl RequestSender {
         }
     }
 
+    fn print_headers(headers: &Vec<Header>) {
+        for header in headers {
+            let k = String::from_utf8(header.name().to_vec());
+            let v = String::from_utf8(header.value().to_vec());
+            if k.is_err() || v.is_err() {
+                continue;
+            }
+            println!("{}: {}", k.unwrap(), v.unwrap());
+        }
+    }
+
+    fn print_body(buf: &[u8]) {
+        if let Ok(data) = String::from_utf8(buf.to_vec()) {
+            print!("{}", data);
+        }
+    }
+
     fn recv_http09_responses(&mut self, conn: &mut Connection, stream_id: u64) {
         let mut worker_ctx = self.worker_ctx.borrow_mut();
         while let Ok((read, fin)) = conn.stream_read(stream_id, &mut self.buf) {
@@ -941,13 +959,16 @@ impl RequestSender {
             if let Some(writer) = &mut request.response_writer {
                 _ = writer.write_all(&self.buf[..read]);
             }
+            if self.option.print_res {
+                Self::print_body(&self.buf[..read]);
+            }
 
             if stream_id % 4 == 0 && fin {
                 debug!(
                     "{} done requests {}, total {}",
                     conn.trace_id(),
                     self.request_done,
-                    self.max_requests_per_conn
+                    self.option.max_requests_per_conn
                 );
 
                 self.request_done += 1;
@@ -957,7 +978,7 @@ impl RequestSender {
                 Self::sample_request_time(request, &mut worker_ctx);
                 self.streams.remove(&stream_id);
 
-                if self.request_done == self.max_requests_per_conn {
+                if self.request_done == self.option.max_requests_per_conn {
                     worker_ctx.concurrent_conns -= 1;
                     debug!(
                         "{} all requests finished, close connection",
@@ -986,6 +1007,9 @@ impl RequestSender {
                         headers,
                         stream_id
                     );
+                    if self.option.print_res {
+                        Self::print_headers(&headers);
+                    }
                 }
                 Ok((stream_id, tquic::h3::Http3Event::Data)) => {
                     while let Ok(read) = h3_conn.recv_body(conn, stream_id, &mut self.buf) {
@@ -1000,6 +1024,9 @@ impl RequestSender {
                         if let Some(writer) = &mut request.response_writer {
                             _ = writer.write_all(&self.buf[..read]);
                         }
+                        if self.option.print_res {
+                            Self::print_body(&self.buf[..read]);
+                        }
                     }
                 }
                 Ok((stream_id, tquic::h3::Http3Event::Finished)) => {
@@ -1007,7 +1034,7 @@ impl RequestSender {
                         "{} done requests {}, total {}",
                         conn.trace_id(),
                         self.request_done,
-                        self.max_requests_per_conn
+                        self.option.max_requests_per_conn
                     );
 
                     self.request_done += 1;
@@ -1018,7 +1045,7 @@ impl RequestSender {
                     Self::sample_request_time(request, &mut worker_ctx);
                     self.streams.remove(&stream_id);
 
-                    if self.request_done == self.max_requests_per_conn {
+                    if self.request_done == self.option.max_requests_per_conn {
                         worker_ctx.concurrent_conns -= 1;
                         debug!(
                             "{} all requests finished, close connection",
@@ -1038,7 +1065,7 @@ impl RequestSender {
                         conn.trace_id(),
                         e,
                         self.request_done,
-                        self.max_requests_per_conn
+                        self.option.max_requests_per_conn
                     );
 
                     self.request_done += 1;
@@ -1076,26 +1103,8 @@ impl RequestSender {
 }
 
 struct WorkerHandler {
-    /// Request URLs needed to be sent.
-    urls: Vec<Url>,
-
-    /// Response body dump path.
-    dump_path: Option<String>,
-
-    /// SSL key log file.
-    keylog_file: Option<String>,
-
-    /// Qlog file.
-    qlog_file: Option<String>,
-
-    /// Use session resumption or not.
-    resumption: bool,
-
-    /// Maximum concurrent requests in client option.
-    max_concurrent_requests: u64,
-
-    /// Maximum requests to be sent per connection in client option.
-    max_requests_per_conn: u64,
+    /// Worker option.
+    option: ClientOpt,
 
     /// Worker context.
     worker_ctx: Rc<RefCell<WorkerContext>>,
@@ -1117,13 +1126,7 @@ impl WorkerHandler {
         senders: Rc<RefCell<FxHashMap<u64, RequestSender>>>,
     ) -> Self {
         Self {
-            urls: option.urls.clone(),
-            dump_path: option.dump_path.clone(),
-            keylog_file: option.keylog_file.clone(),
-            qlog_file: option.qlog_file.clone(),
-            resumption: option.session_file.is_some(),
-            max_concurrent_requests: option.max_concurrent_requests,
-            max_requests_per_conn: option.max_requests_per_conn,
+            option: option.clone(),
             worker_ctx,
             senders,
             remote: option.connect_to.unwrap(),
@@ -1136,7 +1139,7 @@ impl TransportHandler for WorkerHandler {
     fn on_conn_created(&mut self, conn: &mut Connection) {
         debug!("{} connection is created", conn.trace_id());
 
-        if let Some(keylog_file) = &self.keylog_file {
+        if let Some(keylog_file) = &self.option.keylog_file {
             if let Ok(file) = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -1148,7 +1151,7 @@ impl TransportHandler for WorkerHandler {
             }
         }
 
-        if let Some(qlog_file) = &self.qlog_file {
+        if let Some(qlog_file) = &self.option.qlog_file {
             if let Ok(qlog) = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -1195,23 +1198,7 @@ impl TransportHandler for WorkerHandler {
             }
         }
 
-        let mut sender = RequestSender::new(
-            self.urls.clone(),
-            conn,
-            self.dump_path.clone(),
-            self.worker_ctx.clone(),
-            self.max_concurrent_requests,
-            self.max_requests_per_conn,
-        );
-        let app_proto = conn.application_proto();
-        if alpns::HTTP_09.contains(&app_proto) {
-            sender.app_proto = AppProto::Http09;
-        } else if alpns::HTTP_3.contains(&app_proto) {
-            sender.app_proto = AppProto::H3;
-        } else {
-            unreachable!();
-        }
-
+        let mut sender = RequestSender::new(&self.option, conn, self.worker_ctx.clone());
         sender.send_requests(conn);
         let mut senders = self.senders.borrow_mut();
         let index = conn.index().unwrap();
@@ -1227,7 +1214,7 @@ impl TransportHandler for WorkerHandler {
         let mut senders = self.senders.borrow_mut();
         senders.remove(&conn.index().unwrap());
 
-        if self.resumption {
+        if self.option.session_file.is_some() {
             debug!(
                 "{} session resumption enabled, save session to context",
                 conn.trace_id()
@@ -1300,28 +1287,66 @@ impl TransportHandler for WorkerHandler {
     fn on_new_token(&mut self, _conn: &mut Connection, _token: Vec<u8>) {}
 }
 
-fn parse_option() -> Result<ClientOpt> {
+fn process_connect_address(option: &mut ClientOpt) {
+    if option.connect_to.is_none() {
+        option.connect_to = option.urls[0].to_socket_addrs().unwrap().next();
+    }
+
+    let remote = option.connect_to.as_mut().unwrap();
+    if remote.is_ipv4() && remote.ip() == Ipv4Addr::UNSPECIFIED {
+        remote.set_ip(Ipv4Addr::LOCALHOST.into());
+    } else if remote.is_ipv6() && remote.ip() == Ipv6Addr::UNSPECIFIED {
+        remote.set_ip(Ipv6Addr::LOCALHOST.into());
+    }
+}
+
+fn parse_option() -> std::result::Result<ClientOpt, clap::error::Error> {
     let mut option = ClientOpt::parse();
+
+    if option.urls.is_empty() {
+        return Err(ClientOpt::command().error(
+            ErrorKind::MissingRequiredArgument,
+            "Specify at least one request URL",
+        ));
+    }
+
     if option.max_requests_per_conn != 0 {
         option.max_requests_per_conn = max(option.max_requests_per_conn, option.urls.len() as u64);
     }
+
     if option.max_requests_per_thread != 0 {
         option.max_requests_per_thread =
             max(option.max_requests_per_thread, option.urls.len() as u64);
     }
 
-    if option.connect_to.is_none() {
-        option.connect_to = option.urls[0].to_socket_addrs().unwrap().next();
-    }
-
     Ok(option)
 }
 
-fn main() -> Result<()> {
-    let option = parse_option()?;
-
-    // Initialize logging.
+fn process_option(option: &mut ClientOpt) {
     env_logger::builder().filter_level(option.log_level).init();
+
+    if let Some(dump_path) = &option.dump_path {
+        if let Err(e) = create_dir_all(dump_path) {
+            warn!(
+                "create dump path directory error: {:?}, can't dump response body",
+                e
+            );
+            option.dump_path = None;
+        }
+    }
+
+    process_connect_address(option);
+}
+
+fn main() -> Result<()> {
+    // Parse client option.
+    let mut option = match parse_option() {
+        Ok(option) => option,
+        Err(e) => e.exit(),
+    };
+
+    // Process client option.
+    process_option(&mut option);
 
     // Create client.
     let mut client = Client::new(option)?;
