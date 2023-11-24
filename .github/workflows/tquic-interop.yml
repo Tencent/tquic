@@ -15,8 +15,13 @@ jobs:
 
     strategy:
       matrix:
-        server: [tquic, lsquic]
-        client: [tquic, lsquic]
+        server: [tquic]
+        client: [tquic]
+        include:
+          - server: tquic
+            client: lsquic
+          - server: lsquic
+            client: tquic
 
     steps:
     - uses: actions/checkout@v4
