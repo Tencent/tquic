@@ -540,6 +540,13 @@ void quic_conn_trace_id(struct quic_conn_t *conn,
 
 ### 其他函数
 
+#### quic_conn_index
+```c
+uint64_t quic_conn_index(struct quic_conn_t *conn);
+```
+* 获取连接的索引号。
+
+
 #### quic_conn_is_server
 ```c
 bool quic_conn_is_server(struct quic_conn_t *conn);
