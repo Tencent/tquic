@@ -1463,7 +1463,7 @@ impl Connection {
             scid,
             pkt_num: 0,
             pkt_num_len,
-            token: if pkt_type == PacketType::Initial {
+            token: if !self.is_server && pkt_type == PacketType::Initial {
                 // Note: Retry packet is not sent by send_packet()
                 self.token.clone()
             } else {
