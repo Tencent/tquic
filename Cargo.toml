@@ -45,7 +45,6 @@ strum = "0.24"
 strum_macros = "0.24"
 rand = "0.8.5"
 smallvec = { version = "1.10", features = ["serde", "union"] }
-timer_heap = "0.3.0"
 serde = { version = "1.0.139", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 serde_derive = "1.0"
@@ -60,6 +59,7 @@ mio = { version = "0.8", features = ["net", "os-poll"] }
 tempfile = "3.5.0"
 ctor = "0.2.2"
 criterion = "0.3"
+timer_heap = "0.3.0"
 
 [build-dependencies]
 cmake = "0.1"
