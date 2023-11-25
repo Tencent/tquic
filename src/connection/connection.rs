@@ -4208,6 +4208,7 @@ pub(crate) mod tests {
             conf.set_ack_delay_exponent(3);
             conf.set_max_ack_delay(25);
             conf.set_reset_token_key([1u8; 64]);
+            conf.set_address_token_lifetime(3600);
             conf.set_send_batch_size(2);
             conf.set_max_handshake_timeout(0);
             conf.set_multipath(false);

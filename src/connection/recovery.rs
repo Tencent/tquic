@@ -46,7 +46,6 @@ const MAX_PTO_PROBES_COUNT: usize = 2;
 
 /// An implementation of the loss detection mechanisms described in
 /// RFC 9002 Section 6 and Appendix A.
-#[derive(Debug)]
 pub struct Recovery {
     /// The maximum amount of time by which the receiver intends to delay
     /// acknowledgments for packets in the Application Data packet number space.

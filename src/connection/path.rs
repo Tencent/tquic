@@ -480,16 +480,6 @@ impl PathMap {
         }
     }
 
-    /// Process a PATH_ABANDON frame on the give path
-    pub(super) fn on_path_abandon(&mut self, path_id: usize, error_code: u64, reason: Vec<u8>) {
-        // TODO
-    }
-
-    /// Process a PATH_STATUS frame on the give path
-    pub(super) fn on_path_status(&mut self, path_id: usize, seq_num: u64, status: u64) {
-        // TODO
-    }
-
     /// Handle the sent event of PATH_CHALLENGE.
     pub fn on_path_chal_sent(
         &mut self,
@@ -649,6 +639,10 @@ mod tests {
         assert_eq!(path_mgr.get_mut(pid)?.validated(), true);
         assert_eq!(path_mgr.get_mut(pid)?.state, PathState::Validated);
         assert_eq!(path_mgr.get_mut(pid)?.sent_chals.len(), 0);
+
+        // Fake receiving of depulicated PATH_RESPONSE
+        path_mgr.on_path_resp_received(pid, data);
+        assert_eq!(path_mgr.get_mut(pid)?.validated(), true);
 
         // Timeout event
         path_mgr.on_path_chal_timeout(now + time::Duration::from_millis(INITIAL_CHAL_TIMEOUT));

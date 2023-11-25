@@ -951,6 +951,7 @@ mod tests {
     use super::*;
     use crate::connection;
     use crate::Config;
+    use crate::CongestionControlAlgorithm;
     use crate::Error;
     use crate::TlsConfig;
     use bytes::Buf;
@@ -1050,11 +1051,13 @@ mod tests {
         }
 
         /// Run client/server endpoint with default config.
-        fn run_with_test_config(&mut self, hdr_opt: CaseConf) -> Result<()> {
-            let cli_conf = TestPair::new_test_config(false)?;
-            let srv_conf = TestPair::new_test_config(true)?;
+        fn run_with_test_config(&mut self, case_conf: CaseConf) -> Result<()> {
+            let mut cli_conf = TestPair::new_test_config(false)?;
+            cli_conf.set_congestion_control_algorithm(case_conf.cc_algor);
+            let mut srv_conf = TestPair::new_test_config(true)?;
+            srv_conf.set_congestion_control_algorithm(case_conf.cc_algor);
 
-            self.run(cli_conf, srv_conf, hdr_opt)
+            self.run(cli_conf, srv_conf, case_conf)
         }
 
         /// Run event loop for the endpoint.
@@ -1461,6 +1464,7 @@ mod tests {
         token: Option<Vec<u8>>,
         request_num: u32,
         request_size: usize,
+        cc_algor: CongestionControlAlgorithm,
         packet_loss: u32,
         packet_delay: u32,
         packet_reorder: u32,
@@ -2244,13 +2248,56 @@ mod tests {
     }
 
     #[test]
-    fn transfer_single_stream_with_packet_loss() -> Result<()> {
+    fn transfer_single_stream_cubic_with_packet_loss() -> Result<()> {
         let mut t = TestPair::new();
 
         let mut case_conf = CaseConf::default();
         case_conf.request_num = 1;
         case_conf.request_size = 1024 * 16;
         case_conf.packet_loss = 1;
+        case_conf.cc_algor = CongestionControlAlgorithm::Cubic;
+
+        t.run_with_test_config(case_conf)?;
+        Ok(())
+    }
+
+    #[test]
+    fn transfer_single_stream_bbr_with_packet_loss() -> Result<()> {
+        let mut t = TestPair::new();
+
+        let mut case_conf = CaseConf::default();
+        case_conf.request_num = 1;
+        case_conf.request_size = 1024 * 16;
+        case_conf.packet_loss = 1;
+        case_conf.cc_algor = CongestionControlAlgorithm::Bbr;
+
+        t.run_with_test_config(case_conf)?;
+        Ok(())
+    }
+
+    #[test]
+    fn transfer_single_stream_bbr3_with_packet_loss() -> Result<()> {
+        let mut t = TestPair::new();
+
+        let mut case_conf = CaseConf::default();
+        case_conf.request_num = 1;
+        case_conf.request_size = 1024 * 16;
+        case_conf.packet_loss = 1;
+        case_conf.cc_algor = CongestionControlAlgorithm::Bbr3;
+
+        t.run_with_test_config(case_conf)?;
+        Ok(())
+    }
+
+    #[test]
+    fn transfer_single_stream_copa_with_packet_loss() -> Result<()> {
+        let mut t = TestPair::new();
+
+        let mut case_conf = CaseConf::default();
+        case_conf.request_num = 1;
+        case_conf.request_size = 1024 * 16;
+        case_conf.packet_loss = 1;
+        case_conf.cc_algor = CongestionControlAlgorithm::Copa;
 
         t.run_with_test_config(case_conf)?;
         Ok(())

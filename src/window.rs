@@ -109,6 +109,9 @@ mod tests {
         assert!(!win.contains(137));
         assert!(win.contains(10));
         assert!(win.contains(0));
+
+        win.insert(8);
+        assert!(win.contains(8));
     }
 
     #[test]
