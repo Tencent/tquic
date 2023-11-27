@@ -474,7 +474,7 @@ impl Worker {
                 );
 
                 // Close endpoint.
-                self.endpoint.close();
+                self.endpoint.close(false);
 
                 // Close connections.
                 let mut senders = self.senders.borrow_mut();

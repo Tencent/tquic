@@ -3339,6 +3339,11 @@ impl Connection {
         self.streams.writable_iter()
     }
 
+    /// Return an iterator over all the existing streams on the connection.
+    pub fn stream_iter(&self) -> StreamIter {
+        self.streams.iter()
+    }
+
     /// Return true if the stream has enough flow control capacity to send data
     /// and application wants to send more data.
     pub(crate) fn stream_check_writable(&self, stream_id: u64) -> bool {
