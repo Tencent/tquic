@@ -463,78 +463,27 @@ impl Endpoint {
 
         // Process all tickable connections
         while let Some(idx) = self.conn_tickable_next() {
+            if self.process_connection(idx, &mut ready) {
+                continue;
+            }
+
+            // Try to clean up the closed connection.
             let conn = match self.conns.get_mut(idx) {
                 Some(v) => v,
                 None => continue,
             };
 
-            // Try to clean up the closed connection.
-            if conn.is_closed() {
-                self.handler.on_conn_closed(conn);
-
-                conn.mark_tickable(false);
-                conn.mark_sendable(false);
-                self.timers.del(&idx);
-                self.routes.remove(conn);
-                self.conns.remove(idx);
-                continue;
+            for stream_id in conn.stream_iter() {
+                self.handler.on_stream_closed(conn, stream_id);
+                conn.stream_destroy(stream_id);
             }
 
-            // Try to process endpoint-facing events on the connection.
-            while let Some(event) = conn.poll() {
-                match event {
-                    Event::ConnectionEstablished => self.handler.on_conn_established(conn),
-
-                    Event::NewToken(token) => self.handler.on_new_token(conn, token),
-
-                    Event::ScidToAdvertise(num) => {
-                        let key = &self.config.reset_token_key;
-                        Self::conn_add_scids(conn, num, &mut self.cid_gen, key, &mut self.routes);
-                    }
-
-                    Event::ScidRetired(cid) => self.routes.remove_with_cid(&cid),
-
-                    Event::DcidAdvertised(token) => self.routes.insert_with_token(token, idx),
-
-                    Event::DcidRetired(token) => self.routes.remove_with_token(&token),
-
-                    Event::StreamCreated(stream_id) => {
-                        self.handler.on_stream_created(conn, stream_id)
-                    }
-
-                    Event::StreamClosed(stream_id) => {
-                        self.handler.on_stream_closed(conn, stream_id);
-                        conn.stream_destroy(stream_id);
-                    }
-                }
-            }
-            for stream_id in conn.stream_readable_iter() {
-                if conn.stream_check_readable(stream_id) {
-                    self.handler.on_stream_readable(conn, stream_id);
-                }
-            }
-
-            for stream_id in conn.stream_writable_iter() {
-                if conn.stream_check_writable(stream_id) {
-                    self.handler.on_stream_writable(conn, stream_id);
-                }
-            }
-
-            // Add the connection to the sendable queue
-            conn.mark_sendable(true);
-
-            // Try to update the timer of the connection
-            if let Some(t) = conn.timeout() {
-                self.timers.add(idx, t, Instant::now());
-            } else {
-                self.timers.del(&idx);
-            }
-
-            if conn.is_ready() {
-                trace!("conn {} is still ready", conn.trace_id());
-                ready.push(idx);
-            }
+            self.handler.on_conn_closed(conn);
             conn.mark_tickable(false);
+            conn.mark_sendable(false);
+            self.timers.del(&idx);
+            self.routes.remove(conn);
+            self.conns.remove(idx);
         }
 
         // Process all sendable connections
@@ -548,6 +497,83 @@ impl Endpoint {
         }
 
         Ok(())
+    }
+
+    /// Process internal events of a tickable connection.
+    ///
+    /// Return `true` if the connection has been processed successfully.
+    /// Return `false` if the connection has been closed and need to be cleaned up.
+    fn process_connection(&mut self, idx: u64, ready: &mut Vec<u64>) -> bool {
+        let conn = match self.conns.get_mut(idx) {
+            Some(v) => v,
+            None => return true,
+        };
+        if conn.is_closed() {
+            return false;
+        }
+
+        // Try to process endpoint-facing events on the connection.
+        while let Some(event) = conn.poll() {
+            match event {
+                Event::ConnectionEstablished => self.handler.on_conn_established(conn),
+
+                Event::NewToken(token) => self.handler.on_new_token(conn, token),
+
+                Event::ScidToAdvertise(num) => {
+                    let key = &self.config.reset_token_key;
+                    Self::conn_add_scids(conn, num, &mut self.cid_gen, key, &mut self.routes);
+                }
+
+                Event::ScidRetired(cid) => self.routes.remove_with_cid(&cid),
+
+                Event::DcidAdvertised(token) => self.routes.insert_with_token(token, idx),
+
+                Event::DcidRetired(token) => self.routes.remove_with_token(&token),
+
+                Event::StreamCreated(stream_id) => self.handler.on_stream_created(conn, stream_id),
+
+                Event::StreamClosed(stream_id) => {
+                    self.handler.on_stream_closed(conn, stream_id);
+                    conn.stream_destroy(stream_id);
+                }
+            }
+            if conn.is_closed() {
+                return false;
+            }
+        }
+        for stream_id in conn.stream_readable_iter() {
+            if conn.stream_check_readable(stream_id) {
+                self.handler.on_stream_readable(conn, stream_id);
+                if conn.is_closed() {
+                    return false;
+                }
+            }
+        }
+        for stream_id in conn.stream_writable_iter() {
+            if conn.stream_check_writable(stream_id) {
+                self.handler.on_stream_writable(conn, stream_id);
+                if conn.is_closed() {
+                    return false;
+                }
+            }
+        }
+
+        // Add the connection to the sendable queue
+        conn.mark_sendable(true);
+
+        // Try to update the timer of the connection
+        if let Some(t) = conn.timeout() {
+            self.timers.add(idx, t, Instant::now());
+        } else {
+            self.timers.del(&idx);
+        }
+
+        if conn.is_ready() {
+            trace!("conn {} is still ready", conn.trace_id());
+            ready.push(idx);
+        }
+        conn.mark_tickable(false);
+        true
     }
 
     /// Add scids for the given connection
@@ -700,10 +726,31 @@ impl Endpoint {
         Ok(())
     }
 
-    /// Cease creating new connections and wait all active connections to
-    /// close.
-    pub fn close(&mut self) {
+    /// Gracefully or forcibly shutdown the endpoint.
+    /// If `force` is false, cease creating new connections and wait for all
+    /// active connections to close. Otherwise, forcibly close all the active
+    /// connections.
+    pub fn close(&mut self, force: bool) {
         self.closed = true;
+        if !force {
+            return;
+        }
+
+        trace!(
+            "{} forcibly close {} connections",
+            &self.trace_id,
+            self.conns.len()
+        );
+        for (_, conn) in self.conns.conns.iter_mut() {
+            for stream_id in conn.stream_iter() {
+                self.handler.on_stream_closed(conn, stream_id);
+                conn.stream_destroy(stream_id);
+            }
+            self.handler.on_conn_closed(conn);
+        }
+        self.timers.clear();
+        self.routes.clear();
+        self.conns.clear();
     }
 
     /// Set the unique trace id for the endpoint
@@ -750,6 +797,11 @@ impl ConnectionTable {
     /// Remove a QUIC connection by index
     fn remove(&mut self, index: u64) {
         self.conns.remove(&index);
+    }
+
+    /// Clear the connection table
+    fn clear(&mut self) {
+        self.conns.clear();
     }
 
     /// Return the number of connections
@@ -873,6 +925,13 @@ impl ConnectionRoutes {
                 }
             }
         }
+    }
+
+    /// Clear all the routes.
+    fn clear(&mut self) {
+        self.cid_table.clear();
+        self.addr_table.clear();
+        self.token_table.clear();
     }
 }
 
@@ -1546,7 +1605,7 @@ mod tests {
 
         fn on_conn_closed(&mut self, conn: &mut Connection) {
             trace!("{} connection closed", conn.trace_id());
-            assert_eq!(conn.is_established(), true);
+            assert_eq!(conn.stream_iter().count(), 0);
             if self.conf.new_token_expected {
                 assert!(self.token.is_some());
             }
@@ -1631,6 +1690,7 @@ mod tests {
 
         fn on_conn_closed(&mut self, conn: &mut Connection) {
             trace!("{} connection closed", conn.trace_id());
+            assert_eq!(conn.stream_iter().count(), 0);
         }
 
         fn on_stream_created(&mut self, conn: &mut Connection, stream_id: u64) {
@@ -1981,9 +2041,15 @@ mod tests {
         assert!(e.connect(cli_addr, srv_addr, host, None, None).is_ok());
         assert_eq!(e.conns.len(), 1);
 
-        // connect on closed client endpoint
-        e.close();
+        // gracefully close client endpoint
+        e.close(false);
+        assert_eq!(e.conns.len(), 1);
         assert!(e.connect(cli_addr, srv_addr, host, None, None).is_err());
+        assert_eq!(e.conns.len(), 1);
+
+        // forcibly close client endpoint
+        e.close(true);
+        assert_eq!(e.conns.len(), 0);
 
         // connect on server endpoint
         let mut e = Endpoint::new(

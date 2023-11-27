@@ -486,10 +486,12 @@ bool quic_endpoint_exist_connection(struct quic_endpoint_t *endpoint,
 struct quic_conn_t *quic_endpoint_get_connection(struct quic_endpoint_t *endpoint, uint64_t index);
 
 /**
- * Cease creating new connections and wait all active connections to
- * close.
+ * Gracefully or forcibly shutdown the endpoint.
+ * If `force` is false, cease creating new connections and wait for all
+ * active connections to close. Otherwise, forcibly close all the active
+ * connections.
  */
-void quic_endpoint_close(struct quic_endpoint_t *endpoint);
+void quic_endpoint_close(struct quic_endpoint_t *endpoint, bool force);
 
 /**
  * Get index of the connection

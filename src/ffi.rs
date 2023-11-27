@@ -451,11 +451,13 @@ pub extern "C" fn quic_endpoint_get_connection(
     }
 }
 
-/// Cease creating new connections and wait all active connections to
-/// close.
+/// Gracefully or forcibly shutdown the endpoint.
+/// If `force` is false, cease creating new connections and wait for all
+/// active connections to close. Otherwise, forcibly close all the active
+/// connections.
 #[no_mangle]
-pub extern "C" fn quic_endpoint_close(endpoint: &mut Endpoint) {
-    endpoint.close()
+pub extern "C" fn quic_endpoint_close(endpoint: &mut Endpoint, force: bool) {
+    endpoint.close(force)
 }
 
 /// Get index of the connection

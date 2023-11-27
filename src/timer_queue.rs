@@ -79,6 +79,11 @@ impl TimerQueue {
         }
         None
     }
+
+    /// Clear all the timers
+    pub fn clear(&mut self) {
+        self.timers.clear();
+    }
 }
 
 impl Default for TimerQueue {
