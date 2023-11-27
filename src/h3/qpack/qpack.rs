@@ -358,11 +358,6 @@ mod tests {
     fn static_table() {
         let mut encoded = [0u8; 158];
 
-        for (k, v, index) in static_table::STATIC_ENCODE_TABLE {
-            assert_eq!(static_table::STATIC_DECODE_TABLE[index as usize].0, k);
-            assert_eq!(static_table::STATIC_DECODE_TABLE[index as usize].1, v);
-        }
-
         let headers = vec![
             h3::Header::new(b":authority", b""),
             h3::Header::new(b":path", b"/"),

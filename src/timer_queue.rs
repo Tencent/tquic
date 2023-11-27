@@ -79,10 +79,6 @@ impl TimerQueue {
         }
         None
     }
-
-    fn pop_next_expire(&mut self) -> Option<Index> {
-        self.timers.pop_min().map(|(idx, _)| idx)
-    }
 }
 
 impl Default for TimerQueue {

@@ -504,6 +504,14 @@ mod tests {
     }
 
     #[test]
+    fn static_table_index() {
+        for (name, value, index) in STATIC_ENCODE_TABLE {
+            assert_eq!(STATIC_DECODE_TABLE[index as usize].0, name);
+            assert_eq!(STATIC_DECODE_TABLE[index as usize].1, value);
+        }
+    }
+
+    #[test]
     fn encode_static_with_name_and_value() {
         let name: &[u8] = b":method";
         let value: &[u8] = b"GET";
@@ -519,9 +527,36 @@ mod tests {
 
     #[test]
     fn encode_static_with_value_not_match() {
-        let name: &[u8] = b":method";
+        let names = vec![
+            "agf",
+            "varz",
+            "rangf",
+            "serves",
+            "referes",
+            "locatioo",
+            "forwardef",
+            "user-agenu",
+            "content-typf",
+            "last-modifiee",
+            "content-lengti",
+            "x-frame-optiont",
+            "x-xss-protectioo",
+            "if-modified-sincf",
+            "timing-allow-origio",
+            "x-content-type-optiont",
+            "content-security-policz",
+            "strict-transport-securitz",
+            "access-control-allow-origio",
+            "access-control-allow-headert",
+            "access-control-expose-headert",
+            "access-control-request-headert",
+            "access-control-allow-credentialt",
+        ];
+
         let value: &[u8] = b"UNKNOWN";
-        assert_eq!(encode_static(&(name, value)), Some((15, false)));
+        for name in names {
+            assert_eq!(encode_static(&(name.as_bytes(), value)), None);
+        }
     }
 
     #[test]

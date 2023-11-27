@@ -16,12 +16,16 @@
 
 use crate::frame::Frame;
 
+use strum::IntoEnumIterator;
+use strum_macros::EnumIter;
+
 /// QUIC transport error.
 #[allow(clippy::enum_variant_names)]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, EnumIter)]
 pub enum Error {
     /// An endpoint uses this with CONNECTION_CLOSE to signal that the
     /// connection is being closed abruptly in the absence of any error.
+    #[default]
     NoError,
 
     /// The endpoint encountered an internal error and cannot continue with the
@@ -175,8 +179,7 @@ impl Error {
         }
     }
 
-    #[cfg(feature = "ffi")]
-    pub(crate) fn to_c(self) -> libc::ssize_t {
+    pub(crate) fn to_c(&self) -> libc::ssize_t {
         match self {
             Error::NoError => 0,
             Error::InternalError => -1,
@@ -253,10 +256,82 @@ impl std::fmt::Debug for ConnectionError {
         write!(f, "is_app={:?} ", self.is_app)?;
         write!(f, "error_code={:?} ", self.error_code)?;
         match std::str::from_utf8(&self.reason) {
-            Ok(v) => write!(f, "reason={:?}", v),
-            Err(_) => write!(f, "reason={:?}", self.reason),
-        }?;
+            Ok(v) => write!(f, "reason={:?}", v)?,
+            Err(_) => write!(f, "reason={:?}", self.reason)?,
+        };
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Error::IoError;
+
+    #[test]
+    fn error_to_wire() {
+        let mut found_internal_err = false;
+        for err in Error::iter() {
+            if err == Error::NoError {
+                assert!(err.to_wire() == 0);
+                continue;
+            }
+            if err == Error::Done {
+                found_internal_err = true;
+            }
+            if found_internal_err {
+                assert_eq!(err.to_wire(), 0);
+                continue;
+            }
+            if let Error::CryptoError(_) = err {
+                assert_eq!(err.to_wire(), 0);
+            } else {
+                assert!(err.to_wire() > 0);
+            }
+        }
+    }
+
+    #[test]
+    fn error_to_c() {
+        for err in Error::iter() {
+            if err == Error::NoError {
+                assert_eq!(err.to_c(), 0);
+            } else {
+                assert!(err.to_c() < 0);
+            }
+        }
+    }
+
+    #[test]
+    fn io_error() {
+        use std::error::Error;
+        let e = std::io::Error::from(std::io::ErrorKind::UnexpectedEof);
+        let e = super::Error::from(e);
+
+        assert_eq!(format!("{}", e), "IoError(\"unexpected end of file\")");
+        assert!(e.source().is_none());
+    }
+
+    #[test]
+    fn connection_error() {
+        let e = ConnectionError {
+            is_app: false,
+            error_code: 0,
+            frame: None,
+            reason: vec![],
+        };
+        assert_eq!(format!("{:?}", e), "is_app=false error_code=0 reason=\"\"");
+
+        let e = ConnectionError {
+            is_app: true,
+            error_code: 1,
+            frame: None,
+            reason: vec![0x97, 0x61, 0x6C],
+        };
+        assert_eq!(
+            format!("{:?}", e),
+            "is_app=true error_code=1 reason=[151, 97, 108]"
+        );
     }
 }

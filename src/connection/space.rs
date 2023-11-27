@@ -343,7 +343,6 @@ impl std::fmt::Debug for SentPacket {
 }
 
 /// Metadata of acknowledged packet
-#[derive(Clone)]
 pub struct AckedPacket {
     /// The packet number of the sent packet.
     pub pkt_num: u64,
