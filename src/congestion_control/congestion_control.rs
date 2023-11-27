@@ -168,6 +168,7 @@ pub fn build_congestion_controller(conf: &RecoveryConfig) -> Box<dyn CongestionC
         CongestionControlAlgorithm::Cubic => Box::new(Cubic::new(CubicConfig::new(
             min_cwnd,
             initial_cwnd,
+            Some(conf.initial_rtt),
             max_datagram_size,
         ))),
         CongestionControlAlgorithm::Bbr => Box::new(Bbr::new(BbrConfig::new(
