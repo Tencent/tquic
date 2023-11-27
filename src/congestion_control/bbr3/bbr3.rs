@@ -103,7 +103,7 @@ impl Default for Bbr3Config {
         Self {
             min_cwnd: 4 * crate::DEFAULT_SEND_UDP_PAYLOAD_SIZE as u64,
             initial_cwnd: 80 * crate::DEFAULT_SEND_UDP_PAYLOAD_SIZE as u64,
-            initial_rtt: Some(Duration::from_millis(1)),
+            initial_rtt: Some(crate::INITIAL_RTT),
             max_datagram_size: crate::DEFAULT_SEND_UDP_PAYLOAD_SIZE as u64,
             full_bw_count_threshold: FULL_BW_COUNT_THRESHOLD,
             full_bw_growth_rate: FULL_BW_GROWTH_RATE,
@@ -546,8 +546,9 @@ pub struct Bbr3 {
 impl Bbr3 {
     pub fn new(config: Bbr3Config) -> Self {
         let now = Instant::now();
+        let initial_cwnd = config.initial_cwnd;
 
-        let mut bbr2 = Self {
+        let mut bbr3 = Self {
             config,
 
             stats: Default::default(),
@@ -556,11 +557,11 @@ impl Bbr3 {
 
             send_quantum: 0,
 
-            cwnd: 0,
+            cwnd: initial_cwnd,
 
-            pacing_gain: 0.0,
+            pacing_gain: 2.77,
 
-            cwnd_gain: 0.0,
+            cwnd_gain: 2.0,
 
             packet_conservation: false,
 
@@ -654,9 +655,9 @@ impl Bbr3 {
 
             recovery_epoch_start: Some(now),
         };
-        bbr2.init();
+        bbr3.init();
 
-        bbr2
+        bbr3
     }
 
     // Initialization Steps.
@@ -665,7 +666,10 @@ impl Bbr3 {
         let now = Instant::now();
 
         // init windowed max filter - max bw filter
-        self.min_rtt = self.config.initial_rtt.unwrap_or(Duration::MAX);
+        self.min_rtt = std::cmp::max(
+            self.config.initial_rtt.unwrap_or(crate::INITIAL_RTT),
+            Duration::from_micros(1),
+        );
         self.min_rtt_stamp = now;
         self.probe_rtt_done_stamp = None;
         self.probe_rtt_round_done = false;
@@ -1033,7 +1037,6 @@ impl Bbr3 {
         self.ack_phase = AckProbePhase::Starting;
         self.start_round();
 
-        self.init_full_pipe();
         self.full_pipe.full_bw = self.delivery_rate_estimator.delivery_rate();
 
         // Start wall clock.
@@ -1160,7 +1163,9 @@ impl Bbr3 {
             self.bw_probe_up_acks = self
                 .bw_probe_up_acks
                 .saturating_sub(delta * self.bw_probe_up_cnt);
-            self.inflight_hi = self.inflight_hi.saturating_add(delta);
+            self.inflight_hi = self
+                .inflight_hi
+                .saturating_add(delta * self.config.max_datagram_size);
         }
 
         if self.is_round_start() {
@@ -1187,7 +1192,7 @@ impl Bbr3 {
 
         if !self.check_inflight_too_high(now) {
             // Loss rate is safe. Adjust upper bounds upward.
-            if self.inflight_hi == u64::MAX || self.bw_hi == u64::MAX {
+            if self.inflight_hi == u64::MAX {
                 // no upper bounds to raise.
                 return;
             }
@@ -1201,7 +1206,7 @@ impl Bbr3 {
             }
 
             if self.state == State::ProbeBwUp {
-                self.probe_inflight_hi_upward(false);
+                self.probe_inflight_hi_upward(true);
             }
         }
     }
@@ -1855,6 +1860,8 @@ impl CongestionController for Bbr3 {
         self.ack_state.last_ack_packet_sent_time = now;
         self.ack_state.prior_bytes_in_flight = self.stats.bytes_in_flight;
         self.ack_state.now = now;
+        self.ack_state.tx_in_flight = 0;
+        self.ack_state.lost = 0;
     }
 
     fn on_ack(
@@ -1941,6 +1948,10 @@ impl CongestionController for Bbr3 {
                 }
             }
         }
+    }
+
+    fn pacing_rate(&self) -> Option<u64> {
+        Some(self.pacing_rate)
     }
 }
 

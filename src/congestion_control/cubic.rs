@@ -73,12 +73,16 @@ pub struct CubicConfig {
 
     /// Enable fast convergence, default to true.
     fast_convergence_enabled: bool,
+
+    /// Initial rtt.
+    initial_rtt: Option<Duration>,
 }
 
 impl CubicConfig {
     pub fn new(
         min_congestion_window: u64,
         initial_congestion_window: u64,
+        initial_rtt: Option<Duration>,
         max_datagram_size: u64,
     ) -> Self {
         let c = C;
@@ -88,6 +92,7 @@ impl CubicConfig {
             beta,
             min_congestion_window,
             initial_congestion_window,
+            initial_rtt,
             max_datagram_size,
             hystart_enabled: true,
             fast_convergence_enabled: true,
@@ -144,6 +149,7 @@ impl Default for CubicConfig {
             beta: BETA,
             min_congestion_window: 2 * crate::DEFAULT_SEND_UDP_PAYLOAD_SIZE as u64,
             initial_congestion_window: 10 * crate::DEFAULT_SEND_UDP_PAYLOAD_SIZE as u64,
+            initial_rtt: Some(crate::INITIAL_RTT),
             max_datagram_size: crate::DEFAULT_SEND_UDP_PAYLOAD_SIZE as u64,
             hystart_enabled: true,
             fast_convergence_enabled: true,
@@ -192,11 +198,22 @@ pub struct Cubic {
 
     /// Congestion statistics.
     stats: CongestionStats,
+
+    /// Pacing rate
+    pacing_rate: u64,
+
+    /// Initial rtt.
+    initial_rtt: Duration,
 }
 
 impl Cubic {
     pub fn new(config: CubicConfig) -> Self {
         let initial_cwnd = config.initial_congestion_window;
+        let initial_rtt = std::cmp::max(
+            config.initial_rtt.unwrap_or(crate::INITIAL_RTT),
+            Duration::from_micros(1),
+        );
+        let pacing_rate = (initial_cwnd as f64 / initial_rtt.as_secs_f64()) as u64;
         let hystart_enabled = config.hystart_enabled;
         let alpha = 3.0 * (1.0 - config.beta) / (1.0 + config.beta);
         Self {
@@ -212,6 +229,8 @@ impl Cubic {
             recovery_epoch_start: None,
             last_sent_time: None,
             stats: Default::default(),
+            pacing_rate,
+            initial_rtt,
         }
     }
 
@@ -381,6 +400,12 @@ impl CongestionController for Cubic {
                 self.cwnd_inc / self.config.max_datagram_size * self.config.max_datagram_size;
             self.cwnd_inc %= self.config.max_datagram_size;
         }
+
+        self.pacing_rate = if rtt.smoothed_rtt().is_zero() {
+            (self.cwnd as u128 * 1_000_000 / self.initial_rtt.as_micros()) as u64
+        } else {
+            (self.cwnd as u128 * 1_000_000 / rtt.smoothed_rtt().as_micros()) as u64
+        };
     }
 
     fn end_ack(&mut self) {
@@ -486,6 +511,10 @@ impl CongestionController for Cubic {
 
     fn stats(&self) -> &CongestionStats {
         &self.stats
+    }
+
+    fn pacing_rate(&self) -> Option<u64> {
+        Some(self.pacing_rate)
     }
 }
 

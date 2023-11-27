@@ -109,7 +109,7 @@ impl Default for CopaConfig {
         Self {
             min_cwnd: 4 * crate::DEFAULT_SEND_UDP_PAYLOAD_SIZE as u64,
             initial_cwnd: 80 * crate::DEFAULT_SEND_UDP_PAYLOAD_SIZE as u64,
-            initial_rtt: Some(Duration::from_millis(1)),
+            initial_rtt: Some(crate::INITIAL_RTT),
             max_datagram_size: crate::DEFAULT_SEND_UDP_PAYLOAD_SIZE as u64,
             slow_start_delta: COPA_DELTA,
             steady_delta: COPA_DELTA,
@@ -282,6 +282,7 @@ pub struct Copa {
 impl Copa {
     pub fn new(config: CopaConfig) -> Self {
         let slow_start_delta = config.slow_start_delta;
+        let initial_cwnd = config.initial_cwnd;
 
         Self {
             config,
@@ -289,7 +290,7 @@ impl Copa {
             init_time: Instant::now(),
             mode: CompetingMode::Default,
             slow_start: true,
-            cwnd: 0,
+            cwnd: initial_cwnd,
             velocity: Velocity::default(),
             delta: slow_start_delta,
             standing_rtt_filter: MinMax::new(STANDING_RTT_FILTER_WINDOW.as_micros() as u64),
@@ -519,7 +520,7 @@ impl Copa {
         self.update_mode();
 
         let min_rtt = Duration::from_micros(self.min_rtt_filter.get());
-        let standing_rtt = Duration::from_micros(self.standing_rtt_filter.get());
+        let standing_rtt = self.get_standing_rtt();
 
         trace!(
             "{}. round_min_rtt = {}us, elapsed = {}us, min_rtt = {}us, standing_rtt = {}us",
@@ -543,9 +544,7 @@ impl Copa {
                 min_rtt.as_micros()
             );
 
-            if !standing_rtt.is_zero() {
-                self.target_rate = (self.cwnd as f64 / standing_rtt.as_secs_f64()) as u64;
-            }
+            self.target_rate = (self.cwnd as f64 / standing_rtt.as_secs_f64()) as u64;
         } else {
             // Limit queueing_delay in case it's too small and get a huge target rate.
             self.target_rate = (self.config.max_datagram_size as f64
@@ -582,11 +581,23 @@ impl Copa {
             self.cwnd
         );
     }
+
+    /// Get standing rtt.
+    fn get_standing_rtt(&self) -> Duration {
+        let standing_rtt = Duration::from_micros(self.standing_rtt_filter.get());
+        if standing_rtt.is_zero() {
+            return std::cmp::max(
+                self.config.initial_rtt.unwrap_or(crate::INITIAL_RTT),
+                Duration::from_micros(1),
+            );
+        }
+        standing_rtt
+    }
 }
 
 impl CongestionController for Copa {
     fn pacing_rate(&self) -> Option<u64> {
-        let standing_rtt = Duration::from_micros(self.standing_rtt_filter.get());
+        let standing_rtt = self.get_standing_rtt();
         let current_rate = (self.cwnd as f64 / standing_rtt.as_secs_f64()) as u64;
 
         Some(PACING_GAIN * current_rate)
