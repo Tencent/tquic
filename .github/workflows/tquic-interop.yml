@@ -11,7 +11,7 @@ env:
 
 jobs:
   tquic_interop_testing:
-    name: TQUIC interop testing
+    name: Interop testing
     runs-on: ubuntu-latest
 
     strategy:
