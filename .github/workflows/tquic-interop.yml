@@ -1,4 +1,4 @@
-name: TQUIC interop testing
+name: Interop
 
 on:
   push:
@@ -10,7 +10,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  tquic_interop_testing:
+    name: TQUIC interop testing
     runs-on: ubuntu-latest
 
     strategy:
