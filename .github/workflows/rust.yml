@@ -11,61 +11,52 @@ env:
 
 jobs:
   static_analysis:
+    name: Static analysis
     runs-on: ubuntu-latest
-
     steps:
     - uses: actions/checkout@v4
       with:
         submodules: 'recursive'
-
     - name: Update rust
       run: rustup update
-
     - name: Code format check
       run: cargo fmt --check
-
     - name: Code lint check
       run: cargo clippy --all -- -D warnings
 
   build:
+    name: Build
     runs-on: ubuntu-latest
-
     steps:
     - uses: actions/checkout@v4
       with:
         submodules: 'recursive'
-
     - name: Update rust
       run: rustup update
-      
     - name: Build TQUIC library
       run: cargo build -F ffi --verbose
-
     - name: Build TQUIC tools
       run: cargo build --all --verbose
 
   unit_testing:
+    name: Unit testing
     runs-on: ubuntu-latest
-
     steps:
     - uses: actions/checkout@v4
       with:
         submodules: 'recursive'
-
     - name: Update rust
       run: rustup update
-
     - name: Unit testing
       run: cargo test --verbose
 
   fuzz_testing:
+    name: Fuzz testing
     runs-on: ubuntu-latest
-
     steps:
     - uses: actions/checkout@v4
       with:
         submodules: 'recursive'
-
     - name: Fuzz testing
       run: |
         rustup install nightly
