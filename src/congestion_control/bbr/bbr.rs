@@ -73,7 +73,7 @@ impl Default for BbrConfig {
         Self {
             min_cwnd: 4 * crate::DEFAULT_SEND_UDP_PAYLOAD_SIZE as u64,
             initial_cwnd: 80 * crate::DEFAULT_SEND_UDP_PAYLOAD_SIZE as u64,
-            initial_rtt: Some(Duration::from_millis(1)),
+            initial_rtt: Some(crate::INITIAL_RTT),
             max_datagram_size: crate::DEFAULT_SEND_UDP_PAYLOAD_SIZE as u64,
         }
     }
@@ -296,6 +296,7 @@ pub struct Bbr {
 impl Bbr {
     pub fn new(config: BbrConfig) -> Self {
         let now = Instant::now();
+        let initial_cwnd = config.initial_cwnd;
 
         let mut bbr = Self {
             config,
@@ -303,15 +304,15 @@ impl Bbr {
             state: BbrStateMachine::Startup,
             pacing_rate: 0,
             send_quantum: 0,
-            cwnd: 0,
+            cwnd: initial_cwnd,
             btlbw: 0,
             btlbwfilter: MinMax::new(BTLBW_FILTER_LEN),
             delivery_rate_estimator: DeliveryRateEstimator::default(),
             rtprop: Duration::MAX,
             rtprop_stamp: now,
             is_rtprop_expired: false,
-            pacing_gain: 0.0,
-            cwnd_gain: 0.0,
+            pacing_gain: HIGH_GAIN,
+            cwnd_gain: HIGH_GAIN,
             round: Default::default(),
             full_pipe: Default::default(),
             probe_rtt_done_stamp: None,

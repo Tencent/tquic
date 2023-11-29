@@ -250,7 +250,7 @@ pub extern "C" fn quic_config_set_address_token_lifetime(config: &mut Config, se
     config.set_address_token_lifetime(seconds);
 }
 
-/// Set the key for address token generation. It also enables retry.
+/// Set the key for address token generation.
 /// The token_key_len should be a multiple of 16.
 #[no_mangle]
 pub extern "C" fn quic_config_set_address_token_key(
@@ -451,11 +451,19 @@ pub extern "C" fn quic_endpoint_get_connection(
     }
 }
 
-/// Cease creating new connections and wait all active connections to
-/// close.
+/// Gracefully or forcibly shutdown the endpoint.
+/// If `force` is false, cease creating new connections and wait for all
+/// active connections to close. Otherwise, forcibly close all the active
+/// connections.
 #[no_mangle]
-pub extern "C" fn quic_endpoint_close(endpoint: &mut Endpoint) {
-    endpoint.close()
+pub extern "C" fn quic_endpoint_close(endpoint: &mut Endpoint, force: bool) {
+    endpoint.close(force)
+}
+
+/// Get index of the connection
+#[no_mangle]
+pub extern "C" fn quic_conn_index(conn: &mut Connection) -> u64 {
+    conn.index().unwrap_or(u64::MAX)
 }
 
 /// Check whether the connection is a server connection.

@@ -11,29 +11,62 @@ env:
 
 jobs:
   build:
-
+    name: Build
     runs-on: ubuntu-latest
-
     steps:
     - uses: actions/checkout@v4
       with:
         submodules: 'recursive'
-
-    - name: Code format check
-      run: cargo fmt --check
-
+    - name: Update rust
+      run: rustup update
     - name: Build TQUIC library
       run: cargo build -F ffi --verbose
-
     - name: Build TQUIC tools
       run: cargo build --all --verbose
 
+  static_analysis:
+    name: Static analysis
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: 'recursive'
+    - name: Update rust
+      run: rustup update
+    - name: Code format check
+      run: cargo fmt --check
     - name: Code lint check
-      run: cargo clippy
+      run: cargo clippy --all -- -D warnings
 
+  unit_testing:
+    name: Unit testing
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: 'recursive'
+    - name: Update rust
+      run: rustup update
+    - name: Install cargo-llvm-cov
+      uses: taiki-e/install-action@cargo-llvm-cov  
     - name: Unit testing
       run: cargo test --verbose
+    - name: Generate code coverage
+      run: cargo llvm-cov --lcov --output-path lcov.info
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        files: lcov.info
+        fail_ci_if_error: true  
 
+  fuzz_testing:
+    name: Fuzz testing
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: 'recursive'
     - name: Fuzz testing
       run: |
         rustup install nightly

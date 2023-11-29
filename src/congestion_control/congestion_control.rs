@@ -33,11 +33,12 @@ pub use hystart_plus_plus::HystartPlusPlus;
 
 /// Available congestion control algorithm
 #[repr(C)]
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Copy, Default)]
 pub enum CongestionControlAlgorithm {
     /// CUBIC uses a cubic function instead of a linear window increase function
     /// of the current TCP standards to improve scalability and stability under
     /// fast and long-distance networks..
+    #[default]
     Cubic,
 
     /// BBR uses recent measurements of a transport connection's delivery rate,
@@ -167,6 +168,7 @@ pub fn build_congestion_controller(conf: &RecoveryConfig) -> Box<dyn CongestionC
         CongestionControlAlgorithm::Cubic => Box::new(Cubic::new(CubicConfig::new(
             min_cwnd,
             initial_cwnd,
+            Some(conf.initial_rtt),
             max_datagram_size,
         ))),
         CongestionControlAlgorithm::Bbr => Box::new(Bbr::new(BbrConfig::new(

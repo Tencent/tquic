@@ -46,7 +46,6 @@ const MAX_PTO_PROBES_COUNT: usize = 2;
 
 /// An implementation of the loss detection mechanisms described in
 /// RFC 9002 Section 6 and Appendix A.
-#[derive(Debug)]
 pub struct Recovery {
     /// The maximum amount of time by which the receiver intends to delay
     /// acknowledgments for packets in the Application Data packet number space.
@@ -133,7 +132,8 @@ impl Recovery {
             self.congestion
                 .on_sent(now, &mut pkt, self.bytes_in_flight as u64);
             trace!(
-                "{} {} ON_SENT {:?} inflight={} cwnd={}",
+                "now={:?} {} {} ON_SENT {:?} inflight={} cwnd={}",
+                now,
                 self.trace_id,
                 self.congestion.name(),
                 pkt,
@@ -190,7 +190,8 @@ impl Recovery {
 
         self.congestion.begin_ack(now, self.bytes_in_flight as u64);
         trace!(
-            "{} {} BEGIN_ACK inflight={} cwnd={}",
+            "now={:?} {} {} BEGIN_ACK inflight={} cwnd={}",
+            now,
             self.trace_id,
             self.congestion.name(),
             self.bytes_in_flight,
@@ -293,7 +294,8 @@ impl Recovery {
                 );
 
                 trace!(
-                    "{} {} ON_ACK {:?} inflight={} cwnd={}",
+                    "now={:?} {} {} ON_ACK {:?} inflight={} cwnd={}",
+                    now,
                     self.trace_id,
                     self.congestion.name(),
                     sent_pkt,
@@ -382,7 +384,8 @@ impl Recovery {
                 }
                 latest_lost_packet = Some(unacked.clone());
                 trace!(
-                    "{} {} ON_LOST {:?} inflight={} cwnd={}",
+                    "now={:?} {} {} ON_LOST {:?} inflight={} cwnd={}",
+                    now,
                     self.trace_id,
                     self.congestion.name(),
                     unacked,
@@ -408,7 +411,8 @@ impl Recovery {
                 self.bytes_in_flight as u64,
             );
             trace!(
-                "{} {} ON_CONGESTION_EVENT lost_size={} inflight={} cwnd={}",
+                "now={:?} {} {} ON_CONGESTION_EVENT lost_size={} inflight={} cwnd={}",
+                now,
                 self.trace_id,
                 self.congestion.name(),
                 lost_bytes,

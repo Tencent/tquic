@@ -208,8 +208,17 @@ int quic_config_set_address_token_key(struct quic_config_t *config,
                                       const uint8_t *token_keys,
                                       size_t token_keys_len);
 ```
-* 设置生成地址令牌的密钥。设置后会同时启用Retry机制。
+* 设置生成地址令牌的密钥。
 参数`token_key_len`应该是16的倍数。
+
+
+#### quic_config_enable_retry
+```c
+void quic_config_enable_retry(struct quic_config_t *config,
+                              bool enabled);
+```
+* 设置是否启用Retry机制。
+* 默认禁用。
 
 
 #### quic_config_set_cid_len
@@ -530,6 +539,13 @@ void quic_conn_trace_id(struct quic_conn_t *conn,
 
 
 ### 其他函数
+
+#### quic_conn_index
+```c
+uint64_t quic_conn_index(struct quic_conn_t *conn);
+```
+* 获取连接的索引号。
+
 
 #### quic_conn_is_server
 ```c

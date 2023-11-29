@@ -2,6 +2,7 @@
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-green)](https://github.com/Tencent/tquic/blob/develop/LICENSE)
 [![Build Status](https://img.shields.io/github/actions/workflow/status/tencent/tquic/rust.yml)](https://github.com/Tencent/tquic/actions/workflows/rust.yml)
+[![docs.rs](https://docs.rs/tquic/badge.svg)](https://docs.rs/tquic)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/8010/badge)](https://www.bestpractices.dev/projects/8010)
 
 [English](README.md) | 中文

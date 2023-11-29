@@ -9,8 +9,8 @@ This tutorial describes how to use the TQUIC RUST API.
 
 :::tip
 The complete example code for this article can be found in the `app/src/bin` directory of the TQUIC repository on GitHub:
-* [simple_client.rs](https://git.woa.com/tquic/tquic/blob/master/apps/src/bin/simple_client.rs)
-* [simple_server.rs](https://git.woa.com/tquic/tquic/blob/master/apps/src/bin/simple_server.rs)
+* [simple_client.rs](https://github.com/Tencent/tquic/blob/develop/apps/src/bin/simple_client.rs)
+* [simple_server.rs](https://github.com/Tencent/tquic/blob/develop/apps/src/bin/simple_server.rs)
 :::
 
 

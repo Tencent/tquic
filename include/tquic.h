@@ -390,7 +390,7 @@ void quic_config_enable_stateless_reset(struct quic_config_t *config, bool enabl
 void quic_config_set_address_token_lifetime(struct quic_config_t *config, uint64_t seconds);
 
 /**
- * Set the key for address token generation. It also enables retry.
+ * Set the key for address token generation.
  * The token_key_len should be a multiple of 16.
  */
 int quic_config_set_address_token_key(struct quic_config_t *config,
@@ -486,10 +486,17 @@ bool quic_endpoint_exist_connection(struct quic_endpoint_t *endpoint,
 struct quic_conn_t *quic_endpoint_get_connection(struct quic_endpoint_t *endpoint, uint64_t index);
 
 /**
- * Cease creating new connections and wait all active connections to
- * close.
+ * Gracefully or forcibly shutdown the endpoint.
+ * If `force` is false, cease creating new connections and wait for all
+ * active connections to close. Otherwise, forcibly close all the active
+ * connections.
  */
-void quic_endpoint_close(struct quic_endpoint_t *endpoint);
+void quic_endpoint_close(struct quic_endpoint_t *endpoint, bool force);
+
+/**
+ * Get index of the connection
+ */
+uint64_t quic_conn_index(struct quic_conn_t *conn);
 
 /**
  * Check whether the connection is a server connection.
