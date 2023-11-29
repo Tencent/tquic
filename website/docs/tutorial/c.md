@@ -8,7 +8,7 @@ This tutorial describes how to use the TQUIC C API.
 
 :::tip
 The complete example code for this article can be found in the `app/src/bin` directory of the TQUIC repository on GitHub:
-* [simple_server.c](https://git.woa.com/tquic/tquic/blob/master/apps/src/bin/simple_server.c)
+* [simple_server.c](https://github.com/Tencent/tquic/blob/develop/apps/src/bin/simple_server.c)
 ::: 
 
 The TQUIC C API is functionally equivalent to the TQUIC RUST API, except programming language details.
