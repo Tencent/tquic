@@ -7,7 +7,7 @@ sidebar_position: 3
 
 :::tip
 本文的完整示例代码可在GitHub TQUIC代码库`apps/src/bin/`目录找到：
-* [simple_server.c](https://git.woa.com/tquic/tquic/blob/master/apps/src/bin/simple_server.c)
+* [simple_server.c](https://github.com/Tencent/tquic/blob/develop/apps/src/bin/simple_server.c)
 ::: 
 
 TQUIC的C语言接口与RUST语言接口相比，除了编程语言细节上差异，在使用方法上完全相同。

@@ -9,8 +9,8 @@ sidebar_position: 2
 
 :::tip
 本文的完整示例代码可在GitHub TQUIC代码库`apps/src/bin/`目录找到：
-* [simple_client.rs](https://git.woa.com/tquic/tquic/blob/master/apps/src/bin/simple_client.rs)
-* [simple_server.rs](https://git.woa.com/tquic/tquic/blob/master/apps/src/bin/simple_server.rs)
+* [simple_client.rs](https://github.com/Tencent/tquic/blob/develop/apps/src/bin/simple_client.rs)
+* [simple_server.rs](https://github.com/Tencent/tquic/blob/develop/apps/src/bin/simple_server.rs)
 :::
 
 
