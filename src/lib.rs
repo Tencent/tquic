@@ -294,6 +294,7 @@ fn version_is_supported(version: u32) -> bool {
 }
 
 /// Configurations about QUIC endpoint.
+#[derive(Clone)]
 pub struct Config {
     /// QUIC transport configuration.
     local_transport_params: TransportParams,
@@ -604,11 +605,7 @@ impl Config {
     }
 
     /// Create new tls session.
-    fn new_tls_session(
-        &mut self,
-        server_name: Option<&str>,
-        is_server: bool,
-    ) -> Result<TlsSession> {
+    fn new_tls_session(&self, server_name: Option<&str>, is_server: bool) -> Result<TlsSession> {
         if self.tls_config_selector.is_none() {
             return Err(Error::TlsFail("tls config selector is not set".into()));
         }
