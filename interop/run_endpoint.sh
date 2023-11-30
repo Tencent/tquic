@@ -48,7 +48,7 @@ if [ "$ROLE" == "client" ]; then
 
     REQS=($REQUESTS)
 
-    CLIENT_ARGS="--dump-path ${DOWNLOAD_DIR} --keylog-file $SSLKEYLOGFILE --log-level TRACE --max-concurrent-requests ${#REQS[@]}"
+    CLIENT_ARGS="--dump-path ${DOWNLOAD_DIR} --keylog-file $SSLKEYLOGFILE --log-level TRACE --idle-timeout 30000 --handshake-timeout 30000 --max-concurrent-requests ${#REQS[@]}"
     CLIENT_ALPN="--alpn hq-interop"
     case $TESTCASE in
     resumption)
@@ -67,6 +67,7 @@ if [ "$ROLE" == "client" ]; then
 
     case $TESTCASE in
     multiconnect|resumption)
+        CLIENT_ARGS="$CLIENT_ARGS --initial-rtt 100"
         for REQ in $REQUESTS
         do
             $TQUIC_DIR/$TQUIC_CLIENT $CLIENT_ARGS $REQ >> $LOG_DIR/$ROLE.log 2>&1
@@ -81,10 +82,13 @@ if [ "$ROLE" == "client" ]; then
         ;;
     esac
 elif [ "$ROLE" == "server" ]; then
-    SERVER_ARGS="-c /certs/cert.pem -k /certs/priv.key --listen [::]:443 --root $ROOT_DIR --log-level TRACE --keylog-file $SSLKEYLOGFILE"
+    SERVER_ARGS="-c /certs/cert.pem -k /certs/priv.key --listen [::]:443 --root $ROOT_DIR --keylog-file $SSLKEYLOGFILE --log-level TRACE --idle-timeout 30000 --handshake-timeout 30000"
     case $TESTCASE in
     retry)
         SERVER_ARGS="$SERVER_ARGS --enable-retry"
+        ;;
+    multiconnect)
+        SERVER_ARGS="$SERVER_ARGS --initial-rtt 100"
         ;;
     *)
         ;;

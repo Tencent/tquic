@@ -352,6 +352,13 @@ void quic_config_set_congestion_control_algorithm(struct quic_config_t *config,
                                                   enum quic_congestion_control_algorithm v);
 
 /**
+ * Set the initial RTT in milliseconds. The default value is 333ms.
+ * The configuration should be changed with caution. Setting a value less than the default
+ * will cause retransmission of handshake packets to be more aggressive.
+ */
+void quic_config_set_initial_rtt(struct quic_config_t *config, uint64_t v);
+
+/**
  * Set the `active_connection_id_limit` transport parameter.
  */
 void quic_config_set_active_connection_id_limit(struct quic_config_t *config, uint64_t v);

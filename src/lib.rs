@@ -486,11 +486,12 @@ impl Config {
         self.recovery.congestion_control_algorithm = cca;
     }
 
-    /// Set the initial RTT. The default value is 333ms.
-    /// The function is for unit testing only.
-    #[cfg(test)]
+    /// Set the initial RTT in milliseconds. The default value is 333ms.
+    ///
+    /// The configuration should be changed with caution. Setting a value less than the default
+    /// will cause retransmission of handshake packets to be more aggressive.
     pub fn set_initial_rtt(&mut self, millisecs: u64) {
-        self.recovery.initial_rtt = Duration::from_millis(millisecs);
+        self.recovery.initial_rtt = cmp::max(Duration::from_millis(millisecs), TIMER_GRANULARITY);
     }
 
     /// Set the `active_connection_id_limit` transport parameter.
@@ -824,6 +825,19 @@ mod tests {
             data: [0xa8; 20],
         };
         assert_eq!(format!("{}", cid), "a8a8a8a8");
+    }
+
+    #[test]
+    fn initial_rtt() -> Result<()> {
+        let mut config = Config::new()?;
+
+        config.set_initial_rtt(0);
+        assert_eq!(config.recovery.initial_rtt, TIMER_GRANULARITY);
+
+        config.set_initial_rtt(100);
+        assert_eq!(config.recovery.initial_rtt, Duration::from_millis(100));
+
+        Ok(())
     }
 }
 
