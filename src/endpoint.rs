@@ -149,7 +149,7 @@ impl Endpoint {
 
         // Create a client connection.
         let scid = self.cid_gen.generate();
-        let conn = Connection::new_client(&scid, local, remote, server_name, &mut self.config)?;
+        let conn = Connection::new_client(&scid, local, remote, server_name, &self.config)?;
         let idx = self.conns.insert(conn);
         if let Some(conn) = self.conns.get_mut(idx) {
             conn.set_index(idx);
@@ -249,8 +249,7 @@ impl Endpoint {
 
             // Create a server connection
             let scid = self.cid_gen.generate();
-            let conn =
-                Connection::new_server(&scid, local, remote, token.as_ref(), &mut self.config)?;
+            let conn = Connection::new_server(&scid, local, remote, token.as_ref(), &self.config)?;
             let idx = self.conns.insert(conn);
             if cid_len > 0 {
                 self.routes.insert_with_cid(scid, idx);

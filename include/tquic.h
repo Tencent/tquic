@@ -160,11 +160,6 @@ typedef struct quic_transport_methods_t {
 
 typedef void *quic_transport_context_t;
 
-typedef struct quic_transport_handler_t {
-  const struct quic_transport_methods_t *methods;
-  quic_transport_context_t context;
-} quic_transport_handler_t;
-
 /**
  * Data and meta information of a outgoing packet.
  */
@@ -189,11 +184,6 @@ typedef struct quic_packet_send_methods_t {
 } quic_packet_send_methods_t;
 
 typedef void *quic_packet_send_context_t;
-
-typedef struct quic_packet_send_handler_t {
-  const struct quic_packet_send_methods_t *methods;
-  quic_packet_send_context_t context;
-} quic_packet_send_handler_t;
 
 /**
  * Meta information of a incoming packet.
@@ -421,13 +411,20 @@ void quic_config_set_tls_selector(struct quic_config_t *config,
 
 /**
  * Create a QUIC endpoint.
+ *
  * The caller is responsible for the memory of the Endpoint and properly
  * destroy it by calling `quic_endpoint_free`.
+ *
+ * Note: The endpoint doesn't own the underlying resources provided by the C
+ * caller. It is the responsibility of the caller to ensure that these
+ * resources outlive the endpoint and release them correctly.
  */
 struct quic_endpoint_t *quic_endpoint_new(struct quic_config_t *config,
                                           bool is_server,
-                                          struct quic_transport_handler_t *handler,
-                                          struct quic_packet_send_handler_t *sender);
+                                          const struct quic_transport_methods_t *handler_methods,
+                                          quic_transport_context_t handler_ctx,
+                                          const struct quic_packet_send_methods_t *sender_methods,
+                                          quic_packet_send_context_t sender_ctx);
 
 /**
  * Destroy a QUIC endpoint.

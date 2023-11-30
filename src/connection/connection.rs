@@ -168,7 +168,7 @@ impl Connection {
         local: SocketAddr,
         remote: SocketAddr,
         server_name: Option<&str>,
-        conf: &mut Config,
+        conf: &Config,
     ) -> Result<Self> {
         Connection::new(scid, local, remote, server_name, None, conf, false)
     }
@@ -180,7 +180,7 @@ impl Connection {
         local: SocketAddr,
         remote: SocketAddr,
         token: Option<&AddressToken>,
-        conf: &mut Config,
+        conf: &Config,
     ) -> Result<Self> {
         Connection::new(scid, local, remote, None, token, conf, true)
     }
@@ -196,7 +196,7 @@ impl Connection {
         remote: SocketAddr,
         server_name: Option<&str>,
         addr_token: Option<&AddressToken>,
-        conf: &mut Config,
+        conf: &Config,
         is_server: bool,
     ) -> Result<Self> {
         let trace_id = format!("{}-{}", if is_server { "SERVER" } else { "CLIENT" }, scid);

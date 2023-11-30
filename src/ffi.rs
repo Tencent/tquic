@@ -309,19 +309,33 @@ pub extern "C" fn quic_config_set_tls_selector(
 }
 
 /// Create a QUIC endpoint.
+///
 /// The caller is responsible for the memory of the Endpoint and properly
 /// destroy it by calling `quic_endpoint_free`.
+///
+/// Note: The endpoint doesn't own the underlying resources provided by the C
+/// caller. It is the responsibility of the caller to ensure that these
+/// resources outlive the endpoint and release them correctly.
 #[no_mangle]
 pub extern "C" fn quic_endpoint_new(
     config: *mut Config,
     is_server: bool,
-    handler: *mut TransportHandler,
-    sender: *mut PacketSendHandler,
+    handler_methods: *const TransportMethods,
+    handler_ctx: TransportContext,
+    sender_methods: *const PacketSendMethods,
+    sender_ctx: PacketSendContext,
 ) -> *mut Endpoint {
     let config = unsafe { Box::from_raw(config) };
-    let handler = unsafe { Box::from_raw(handler) };
-    let sender = unsafe { Rc::from_raw(sender) };
-    let e = Endpoint::new(config, is_server, handler, sender);
+    let handler = Box::new(TransportHandler {
+        methods: handler_methods,
+        context: handler_ctx,
+    });
+    let sender = Rc::new(PacketSendHandler {
+        methods: sender_methods,
+        context: sender_ctx,
+    });
+    let e = Endpoint::new(config.clone(), is_server, handler, sender);
+    Box::into_raw(config);
     Box::into_raw(Box::new(e))
 }
 
@@ -1012,6 +1026,7 @@ pub struct TransportMethods {
 #[repr(transparent)]
 pub struct TransportContext(*mut c_void);
 
+/// cbindgen:no-export
 #[repr(C)]
 pub struct TransportHandler {
     pub methods: *const TransportMethods,
@@ -1100,6 +1115,7 @@ pub struct PacketSendMethods {
 #[repr(transparent)]
 pub struct PacketSendContext(*mut c_void);
 
+/// cbindgen:no-export
 #[repr(C)]
 pub struct PacketSendHandler {
     pub methods: *const PacketSendMethods,
