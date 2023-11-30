@@ -11,7 +11,7 @@ env:
 
 jobs:
   build_linux:
-    name: Build For Linux
+    name: Build for Linux
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -25,6 +25,7 @@ jobs:
       run: cargo build --all --verbose
 
   build_ios:
+    name: Build for iOS
     runs-on: macos-latest
     strategy:
       matrix:
@@ -42,6 +43,40 @@ jobs:
         with:
           command: build
           args: --target=${{ matrix.target }} --verbose
+
+  build_android:
+    name: Build for Android
+    runs-on: ubuntu-latest
+    env:
+      NDK_LTS_VER: "25"
+      API_LEVEL: "21"
+    strategy:
+      matrix:
+        target: ["aarch64-linux-android"]
+        include:
+          - target: "aarch64-linux-android"
+            arch: "arm64-v8a"
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: 'recursive'
+      - name: Install rust toolchain
+        run: rustup target add ${{ matrix.target }}
+      - name: Download Android NDK
+        run: |
+          curl --http1.1 -O https://dl.google.com/android/repository/android-ndk-r${{ env.NDK_LTS_VER }}-linux.zip
+          unzip -q android-ndk-r${{ env.NDK_LTS_VER }}-linux.zip
+      - name: Install cargo-ndk
+        uses: actions-rs/install@v0.1
+        with:
+          crate: cargo-ndk
+      - name: Run cargo ndk
+        uses: actions-rs/cargo@v1
+        with:
+          command: ndk
+          args: -t ${{ matrix.arch }} -p ${{ env.API_LEVEL }} -- build --verbose --features ffi
+        env:
+          ANDROID_NDK_HOME: ${{ github.workspace }}/android-ndk-r${{ env.NDK_LTS_VER  }}
 
   static_analysis:
     name: Static analysis
