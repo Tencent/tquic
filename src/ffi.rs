@@ -193,6 +193,14 @@ pub extern "C" fn quic_config_set_congestion_control_algorithm(
     config.set_congestion_control_algorithm(v);
 }
 
+/// Set the initial RTT in milliseconds. The default value is 333ms.
+/// The configuration should be changed with caution. Setting a value less than the default
+/// will cause retransmission of handshake packets to be more aggressive.
+#[no_mangle]
+pub extern "C" fn quic_config_set_initial_rtt(config: &mut Config, v: u64) {
+    config.set_initial_rtt(v);
+}
+
 /// Set the `active_connection_id_limit` transport parameter.
 #[no_mangle]
 pub extern "C" fn quic_config_set_active_connection_id_limit(config: &mut Config, v: u64) {
