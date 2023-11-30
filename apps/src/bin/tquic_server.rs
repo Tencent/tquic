@@ -111,12 +111,16 @@ pub struct ServerOpt {
     pub send_udp_payload_size: usize,
 
     /// Handshake timeout in microseconds.
-    #[clap(long, default_value = "5000", value_name = "TIME")]
+    #[clap(long, default_value = "10000", value_name = "TIME")]
     pub handshake_timeout: u64,
 
     /// Connection idle timeout in microseconds.
-    #[clap(long, default_value = "5000", value_name = "TIME")]
+    #[clap(long, default_value = "30000", value_name = "TIME")]
     pub idle_timeout: u64,
+
+    /// Initial RTT in milliseconds.
+    #[clap(long, default_value = "333", value_name = "TIME")]
+    pub initial_rtt: u64,
 
     /// Save TLS key log into the given file.
     #[clap(long, value_name = "FILE")]
@@ -158,6 +162,7 @@ impl Server {
         config.enable_stateless_reset(!option.disable_stateless_reset);
         config.set_max_handshake_timeout(option.handshake_timeout);
         config.set_max_idle_timeout(option.idle_timeout);
+        config.set_initial_rtt(option.initial_rtt);
         config.set_send_batch_size(option.send_batch_size);
         config.set_multipath(option.enable_multipath);
         config.set_multipath_algor(option.multipath_algor);
