@@ -10,8 +10,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    name: Build
+  build_linux:
+    name: Build For Linux
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -23,6 +23,25 @@ jobs:
       run: cargo build -F ffi --verbose
     - name: Build TQUIC tools
       run: cargo build --all --verbose
+
+  build_ios:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        target: ["x86_64-apple-ios"]
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: 'recursive'
+      - name: Install rust toolchain
+        run: rustup target add ${{ matrix.target }}
+      - name: Remove cdylib from iOS build
+        run: sed -i -e 's/, "cdylib"//g' Cargo.toml
+      - name: Run cargo build
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --target=${{ matrix.target }} --verbose
 
   static_analysis:
     name: Static analysis
