@@ -160,11 +160,6 @@ typedef struct quic_transport_methods_t {
 
 typedef void *quic_transport_context_t;
 
-typedef struct quic_transport_handler_t {
-  const struct quic_transport_methods_t *methods;
-  quic_transport_context_t context;
-} quic_transport_handler_t;
-
 /**
  * Data and meta information of a outgoing packet.
  */
@@ -189,11 +184,6 @@ typedef struct quic_packet_send_methods_t {
 } quic_packet_send_methods_t;
 
 typedef void *quic_packet_send_context_t;
-
-typedef struct quic_packet_send_handler_t {
-  const struct quic_packet_send_methods_t *methods;
-  quic_packet_send_context_t context;
-} quic_packet_send_handler_t;
 
 /**
  * Meta information of a incoming packet.
@@ -352,6 +342,13 @@ void quic_config_set_congestion_control_algorithm(struct quic_config_t *config,
                                                   enum quic_congestion_control_algorithm v);
 
 /**
+ * Set the initial RTT in milliseconds. The default value is 333ms.
+ * The configuration should be changed with caution. Setting a value less than the default
+ * will cause retransmission of handshake packets to be more aggressive.
+ */
+void quic_config_set_initial_rtt(struct quic_config_t *config, uint64_t v);
+
+/**
  * Set the `active_connection_id_limit` transport parameter.
  */
 void quic_config_set_active_connection_id_limit(struct quic_config_t *config, uint64_t v);
@@ -390,12 +387,17 @@ void quic_config_enable_stateless_reset(struct quic_config_t *config, bool enabl
 void quic_config_set_address_token_lifetime(struct quic_config_t *config, uint64_t seconds);
 
 /**
- * Set the key for address token generation. It also enables retry.
+ * Set the key for address token generation.
  * The token_key_len should be a multiple of 16.
  */
 int quic_config_set_address_token_key(struct quic_config_t *config,
                                       const uint8_t *token_keys,
                                       size_t token_keys_len);
+
+/**
+ * Set whether stateless retry is allowed. Default is not allowed.
+ */
+void quic_config_enable_retry(struct quic_config_t *config, bool enabled);
 
 /**
  * Set the length of source cid. The length should not be greater than 20.
@@ -416,13 +418,20 @@ void quic_config_set_tls_selector(struct quic_config_t *config,
 
 /**
  * Create a QUIC endpoint.
+ *
  * The caller is responsible for the memory of the Endpoint and properly
  * destroy it by calling `quic_endpoint_free`.
+ *
+ * Note: The endpoint doesn't own the underlying resources provided by the C
+ * caller. It is the responsibility of the caller to ensure that these
+ * resources outlive the endpoint and release them correctly.
  */
 struct quic_endpoint_t *quic_endpoint_new(struct quic_config_t *config,
                                           bool is_server,
-                                          struct quic_transport_handler_t *handler,
-                                          struct quic_packet_send_handler_t *sender);
+                                          const struct quic_transport_methods_t *handler_methods,
+                                          quic_transport_context_t handler_ctx,
+                                          const struct quic_packet_send_methods_t *sender_methods,
+                                          quic_packet_send_context_t sender_ctx);
 
 /**
  * Destroy a QUIC endpoint.
@@ -481,10 +490,17 @@ bool quic_endpoint_exist_connection(struct quic_endpoint_t *endpoint,
 struct quic_conn_t *quic_endpoint_get_connection(struct quic_endpoint_t *endpoint, uint64_t index);
 
 /**
- * Cease creating new connections and wait all active connections to
- * close.
+ * Gracefully or forcibly shutdown the endpoint.
+ * If `force` is false, cease creating new connections and wait for all
+ * active connections to close. Otherwise, forcibly close all the active
+ * connections.
  */
-void quic_endpoint_close(struct quic_endpoint_t *endpoint);
+void quic_endpoint_close(struct quic_endpoint_t *endpoint, bool force);
+
+/**
+ * Get index of the connection
+ */
+uint64_t quic_conn_index(struct quic_conn_t *conn);
 
 /**
  * Check whether the connection is a server connection.

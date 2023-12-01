@@ -193,6 +193,14 @@ pub extern "C" fn quic_config_set_congestion_control_algorithm(
     config.set_congestion_control_algorithm(v);
 }
 
+/// Set the initial RTT in milliseconds. The default value is 333ms.
+/// The configuration should be changed with caution. Setting a value less than the default
+/// will cause retransmission of handshake packets to be more aggressive.
+#[no_mangle]
+pub extern "C" fn quic_config_set_initial_rtt(config: &mut Config, v: u64) {
+    config.set_initial_rtt(v);
+}
+
 /// Set the `active_connection_id_limit` transport parameter.
 #[no_mangle]
 pub extern "C" fn quic_config_set_active_connection_id_limit(config: &mut Config, v: u64) {
@@ -250,7 +258,7 @@ pub extern "C" fn quic_config_set_address_token_lifetime(config: &mut Config, se
     config.set_address_token_lifetime(seconds);
 }
 
-/// Set the key for address token generation. It also enables retry.
+/// Set the key for address token generation.
 /// The token_key_len should be a multiple of 16.
 #[no_mangle]
 pub extern "C" fn quic_config_set_address_token_key(
@@ -279,6 +287,12 @@ pub extern "C" fn quic_config_set_address_token_key(
     }
 }
 
+/// Set whether stateless retry is allowed. Default is not allowed.
+#[no_mangle]
+pub extern "C" fn quic_config_enable_retry(config: &mut Config, enabled: bool) {
+    config.enable_retry(enabled);
+}
+
 /// Set the length of source cid. The length should not be greater than 20.
 #[no_mangle]
 pub extern "C" fn quic_config_set_cid_len(config: &mut Config, v: u8) {
@@ -303,19 +317,33 @@ pub extern "C" fn quic_config_set_tls_selector(
 }
 
 /// Create a QUIC endpoint.
+///
 /// The caller is responsible for the memory of the Endpoint and properly
 /// destroy it by calling `quic_endpoint_free`.
+///
+/// Note: The endpoint doesn't own the underlying resources provided by the C
+/// caller. It is the responsibility of the caller to ensure that these
+/// resources outlive the endpoint and release them correctly.
 #[no_mangle]
 pub extern "C" fn quic_endpoint_new(
     config: *mut Config,
     is_server: bool,
-    handler: *mut TransportHandler,
-    sender: *mut PacketSendHandler,
+    handler_methods: *const TransportMethods,
+    handler_ctx: TransportContext,
+    sender_methods: *const PacketSendMethods,
+    sender_ctx: PacketSendContext,
 ) -> *mut Endpoint {
     let config = unsafe { Box::from_raw(config) };
-    let handler = unsafe { Box::from_raw(handler) };
-    let sender = unsafe { Rc::from_raw(sender) };
-    let e = Endpoint::new(config, is_server, handler, sender);
+    let handler = Box::new(TransportHandler {
+        methods: handler_methods,
+        context: handler_ctx,
+    });
+    let sender = Rc::new(PacketSendHandler {
+        methods: sender_methods,
+        context: sender_ctx,
+    });
+    let e = Endpoint::new(config.clone(), is_server, handler, sender);
+    Box::into_raw(config);
     Box::into_raw(Box::new(e))
 }
 
@@ -445,11 +473,19 @@ pub extern "C" fn quic_endpoint_get_connection(
     }
 }
 
-/// Cease creating new connections and wait all active connections to
-/// close.
+/// Gracefully or forcibly shutdown the endpoint.
+/// If `force` is false, cease creating new connections and wait for all
+/// active connections to close. Otherwise, forcibly close all the active
+/// connections.
 #[no_mangle]
-pub extern "C" fn quic_endpoint_close(endpoint: &mut Endpoint) {
-    endpoint.close()
+pub extern "C" fn quic_endpoint_close(endpoint: &mut Endpoint, force: bool) {
+    endpoint.close(force)
+}
+
+/// Get index of the connection
+#[no_mangle]
+pub extern "C" fn quic_conn_index(conn: &mut Connection) -> u64 {
+    conn.index().unwrap_or(u64::MAX)
 }
 
 /// Check whether the connection is a server connection.
@@ -998,6 +1034,7 @@ pub struct TransportMethods {
 #[repr(transparent)]
 pub struct TransportContext(*mut c_void);
 
+/// cbindgen:no-export
 #[repr(C)]
 pub struct TransportHandler {
     pub methods: *const TransportMethods,
@@ -1086,6 +1123,7 @@ pub struct PacketSendMethods {
 #[repr(transparent)]
 pub struct PacketSendContext(*mut c_void);
 
+/// cbindgen:no-export
 #[repr(C)]
 pub struct PacketSendHandler {
     pub methods: *const PacketSendMethods,

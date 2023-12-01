@@ -44,7 +44,7 @@ cargo build --release --all
 如果要启用C语言接口，请在`cargo build`命令后添加参数`-F ffi`：
 
 ```bash
-cargo build --release --all -F ffi
+cargo build --release -F ffi
 ```
   </TabItem>
 

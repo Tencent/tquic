@@ -80,8 +80,9 @@ impl TimerQueue {
         None
     }
 
-    fn pop_next_expire(&mut self) -> Option<Index> {
-        self.timers.pop_min().map(|(idx, _)| idx)
+    /// Clear all the timers
+    pub fn clear(&mut self) {
+        self.timers.clear();
     }
 }
 

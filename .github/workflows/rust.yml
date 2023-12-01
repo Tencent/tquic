@@ -10,30 +10,112 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-
+  build_linux:
+    name: Build for Linux
     runs-on: ubuntu-latest
-
     steps:
     - uses: actions/checkout@v4
       with:
         submodules: 'recursive'
-
-    - name: Code format check
-      run: cargo fmt --check
-
+    - name: Update rust
+      run: rustup update
     - name: Build TQUIC library
       run: cargo build -F ffi --verbose
-
     - name: Build TQUIC tools
       run: cargo build --all --verbose
 
-    - name: Code lint check
-      run: cargo clippy
+  build_ios:
+    name: Build for iOS
+    runs-on: macos-latest
+    env:
+      TARGET: "x86_64-apple-ios"
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: 'recursive'
+      - name: Install rust toolchain
+        run: rustup target add ${{ env.TARGET }}
+      - name: Remove cdylib from iOS build
+        run: sed -i -e 's/, "cdylib"//g' Cargo.toml
+      - name: Run cargo build
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --target=${{ env.TARGET }} --verbose
 
+  build_android:
+    name: Build for Android
+    runs-on: ubuntu-latest
+    env:
+      NDK_LTS_VER: "25"
+      API_LEVEL: "21"
+      TARGET: "aarch64-linux-android"
+      ARCH: "arm64-v8a"
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: 'recursive'
+      - name: Install rust toolchain
+        run: rustup target add ${{ env.TARGET }}
+      - name: Download Android NDK
+        run: |
+          curl --http1.1 -O https://dl.google.com/android/repository/android-ndk-r${{ env.NDK_LTS_VER }}-linux.zip
+          unzip -q android-ndk-r${{ env.NDK_LTS_VER }}-linux.zip
+      - name: Install cargo-ndk
+        uses: actions-rs/install@v0.1
+        with:
+          crate: cargo-ndk
+      - name: Run cargo ndk
+        uses: actions-rs/cargo@v1
+        with:
+          command: ndk
+          args: -t ${{ env.ARCH }} -p ${{ env.API_LEVEL }} -- build --verbose --features ffi
+        env:
+          ANDROID_NDK_HOME: ${{ github.workspace }}/android-ndk-r${{ env.NDK_LTS_VER  }}
+
+  static_analysis:
+    name: Static analysis
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: 'recursive'
+    - name: Update rust
+      run: rustup update
+    - name: Code format check
+      run: cargo fmt --check
+    - name: Code lint check
+      run: cargo clippy --all -- -D warnings
+
+  unit_testing:
+    name: Unit testing
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: 'recursive'
+    - name: Update rust
+      run: rustup update
+    - name: Install cargo-llvm-cov
+      uses: taiki-e/install-action@cargo-llvm-cov  
     - name: Unit testing
       run: cargo test --verbose
+    - name: Generate code coverage
+      run: cargo llvm-cov --lcov --output-path lcov.info
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        files: lcov.info
+        fail_ci_if_error: true  
 
+  fuzz_testing:
+    name: Fuzz testing
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: 'recursive'
     - name: Fuzz testing
       run: |
         rustup install nightly

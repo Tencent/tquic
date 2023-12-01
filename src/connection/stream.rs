@@ -919,6 +919,13 @@ impl StreamMap {
         }
     }
 
+    /// Return an iterator over all the existing streams.
+    pub fn iter(&self) -> StreamIter {
+        StreamIter {
+            streams: self.streams.keys().copied().collect(),
+        }
+    }
+
     /// Return an iterator over streams that have outstanding data to be read
     /// by the application.
     pub fn readable_iter(&self) -> StreamIter {

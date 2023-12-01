@@ -15,9 +15,12 @@
 use std::fmt;
 use std::fmt::Write;
 
+use strum::IntoEnumIterator;
+use strum_macros::EnumIter;
+
 /// An HTTP/3 error.
 /// See RFC 9114 and RFC 9204.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, EnumIter)]
 pub enum Http3Error {
     /// This is used when the connection or stream needs to be closed, but there
     /// is no error to signal.
@@ -134,8 +137,7 @@ impl Http3Error {
         }
     }
 
-    #[cfg(feature = "ffi")]
-    pub(crate) fn to_c(self) -> libc::ssize_t {
+    pub(crate) fn to_c(&self) -> libc::ssize_t {
         match self {
             Http3Error::NoError => 0,
             Http3Error::Done => -1,
@@ -184,5 +186,44 @@ impl std::convert::From<crate::error::Error> for Http3Error {
             crate::error::Error::Done => Http3Error::Done,
             _ => Http3Error::TransportError(err),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_to_wire() {
+        let mut found_internal_err = false;
+        for err in Http3Error::iter() {
+            assert!(err.to_wire() > 0);
+            if let Http3Error::TransportError(_) = err {
+                found_internal_err = true;
+            }
+            if found_internal_err {
+                assert_eq!(err.to_wire(), 0x102);
+            }
+        }
+    }
+
+    #[test]
+    fn error_to_c() {
+        for err in Http3Error::iter() {
+            if err == Http3Error::NoError {
+                assert_eq!(err.to_c(), 0);
+            } else {
+                assert!(err.to_c() < 0);
+            }
+        }
+    }
+
+    #[test]
+    fn internal_error() {
+        let e = Http3Error::InternalError;
+        assert_eq!(format!("{}", e), "InternalError");
+
+        use std::error::Error;
+        assert!(e.source().is_none());
     }
 }

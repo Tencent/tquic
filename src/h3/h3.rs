@@ -207,6 +207,29 @@ pub trait Http3Handler {
     fn on_conn_goaway(&self, stream_id: u64);
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fmt_readable() {
+        let h = Header::new(b"proto", b"h3");
+        assert_eq!(format!("{:?}", h), "\"proto: h3\"");
+
+        let h = Header::new(b"proto", &vec![0x97, 0x61, 0x6c]);
+        assert_eq!(format!("{:?}", h), "\"proto: [151, 97, 108]\"");
+    }
+
+    #[test]
+    fn header_ref() {
+        let name = b"x-powered-by";
+        let value = b"tquic";
+        let h = HeaderRef::new(name, value);
+        assert_eq!(h.name(), name);
+        assert_eq!(h.value(), value);
+    }
+}
+
 pub use error::Http3Error;
 
 #[path = "qpack/qpack.rs"]

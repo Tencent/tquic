@@ -294,6 +294,7 @@ fn version_is_supported(version: u32) -> bool {
 }
 
 /// Configurations about QUIC endpoint.
+#[derive(Clone)]
 pub struct Config {
     /// QUIC transport configuration.
     local_transport_params: TransportParams,
@@ -393,7 +394,7 @@ impl Config {
             retry: false,
             stateless_reset: true,
             address_token_lifetime: Duration::from_secs(86400),
-            address_token_key: vec![],
+            address_token_key: Self::rand_address_token_key()?,
             reset_token_key,
             cid_len: 8,
             send_batch_size: 64,
@@ -486,11 +487,12 @@ impl Config {
         self.recovery.congestion_control_algorithm = cca;
     }
 
-    /// Set the initial RTT. The default value is 333ms.
-    /// The function is for unit testing only.
-    #[cfg(test)]
+    /// Set the initial RTT in milliseconds. The default value is 333ms.
+    ///
+    /// The configuration should be changed with caution. Setting a value less than the default
+    /// will cause retransmission of handshake packets to be more aggressive.
     pub fn set_initial_rtt(&mut self, millisecs: u64) {
-        self.recovery.initial_rtt = Duration::from_millis(millisecs);
+        self.recovery.initial_rtt = cmp::max(Duration::from_millis(millisecs), TIMER_GRANULARITY);
     }
 
     /// Set the `active_connection_id_limit` transport parameter.
@@ -542,20 +544,27 @@ impl Config {
         self.address_token_lifetime = Duration::from_secs(seconds);
     }
 
-    /// Set the key for address token generation. It also enables retry.
+    /// Set the key for address token generation.
     pub fn set_address_token_key(&mut self, keys: Vec<[u8; 16]>) -> Result<()> {
         if keys.is_empty() {
             return Err(Error::InvalidConfig("address token key empty".into()));
         }
 
+        let mut address_token_key = vec![];
         for key in keys {
             // AES-128 uses a 128-bit key length
             let key = UnboundKey::new(&aead::AES_128_GCM, &key).map_err(|_| Error::CryptoFail)?;
             let key = LessSafeKey::new(key);
-            self.address_token_key.push(key);
+            address_token_key.push(key);
         }
-        self.retry = true;
+        self.address_token_key = address_token_key;
+
         Ok(())
+    }
+
+    /// Set whether stateless retry is allowed. Default is not allowed.
+    pub fn enable_retry(&mut self, enable_retry: bool) {
+        self.retry = enable_retry;
     }
 
     /// Set whether stateless reset is allowed.
@@ -586,12 +595,17 @@ impl Config {
         self.tls_config_selector = Some(tls_config_selector);
     }
 
+    /// Generate random address token key.
+    fn rand_address_token_key() -> Result<Vec<LessSafeKey>> {
+        let mut key = [0_u8; 16];
+        rand::thread_rng().fill_bytes(&mut key);
+        Ok(vec![LessSafeKey::new(
+            UnboundKey::new(&aead::AES_128_GCM, &key).map_err(|_| Error::CryptoFail)?,
+        )])
+    }
+
     /// Create new tls session.
-    fn new_tls_session(
-        &mut self,
-        server_name: Option<&str>,
-        is_server: bool,
-    ) -> Result<TlsSession> {
+    fn new_tls_session(&self, server_name: Option<&str>, is_server: bool) -> Result<TlsSession> {
         if self.tls_config_selector.is_none() {
             return Err(Error::TlsFail("tls config selector is not set".into()));
         }
@@ -808,6 +822,19 @@ mod tests {
             data: [0xa8; 20],
         };
         assert_eq!(format!("{}", cid), "a8a8a8a8");
+    }
+
+    #[test]
+    fn initial_rtt() -> Result<()> {
+        let mut config = Config::new()?;
+
+        config.set_initial_rtt(0);
+        assert_eq!(config.recovery.initial_rtt, TIMER_GRANULARITY);
+
+        config.set_initial_rtt(100);
+        assert_eq!(config.recovery.initial_rtt, Duration::from_millis(100));
+
+        Ok(())
     }
 }
 

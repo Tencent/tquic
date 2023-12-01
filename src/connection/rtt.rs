@@ -19,7 +19,6 @@ use crate::TIMER_GRANULARITY;
 
 /// RTT estimation for a network path
 /// See RFC 9001 Section 5
-#[derive(Copy, Clone, Debug)]
 pub struct RttEstimator {
     /// The most recent RTT sample.
     latest_rtt: Duration,

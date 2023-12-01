@@ -168,7 +168,7 @@ impl Connection {
         local: SocketAddr,
         remote: SocketAddr,
         server_name: Option<&str>,
-        conf: &mut Config,
+        conf: &Config,
     ) -> Result<Self> {
         Connection::new(scid, local, remote, server_name, None, conf, false)
     }
@@ -180,7 +180,7 @@ impl Connection {
         local: SocketAddr,
         remote: SocketAddr,
         token: Option<&AddressToken>,
-        conf: &mut Config,
+        conf: &Config,
     ) -> Result<Self> {
         Connection::new(scid, local, remote, None, token, conf, true)
     }
@@ -196,7 +196,7 @@ impl Connection {
         remote: SocketAddr,
         server_name: Option<&str>,
         addr_token: Option<&AddressToken>,
-        conf: &mut Config,
+        conf: &Config,
         is_server: bool,
     ) -> Result<Self> {
         let trace_id = format!("{}-{}", if is_server { "SERVER" } else { "CLIENT" }, scid);
@@ -297,14 +297,6 @@ impl Connection {
             conn.flags.insert(DerivedInitialSecrets);
         }
 
-        // Prepare resume address token if needed
-        if is_server && conf.retry {
-            let token = AddressToken::new_resume_token(remote);
-            if let Ok(token) = token.encode(&conf.address_token_key[0]) {
-                conn.token = Some(token);
-            }
-        }
-
         if !conf.max_handshake_timeout.is_zero() {
             conn.timers.set(
                 Timer::Handshake,
@@ -313,7 +305,7 @@ impl Connection {
         }
 
         // Prepare resume address token if needed
-        if is_server && conf.retry {
+        if is_server {
             let token = AddressToken::new_resume_token(remote);
             if let Ok(token) = token.encode(&conf.address_token_key[0]) {
                 conn.token = Some(token);
@@ -1471,7 +1463,7 @@ impl Connection {
             scid,
             pkt_num: 0,
             pkt_num_len,
-            token: if pkt_type == PacketType::Initial {
+            token: if !self.is_server && pkt_type == PacketType::Initial {
                 // Note: Retry packet is not sent by send_packet()
                 self.token.clone()
             } else {
@@ -2753,10 +2745,8 @@ impl Connection {
         info: &PacketInfo,
         buf_len: usize,
     ) -> Result<usize> {
-        let (cid_seq, mut cid_pid) = self
-            .cids
-            .find_scid(dcid)
-            .ok_or(Error::InvalidState("unknown dcid".into()))?;
+        // Note: If the incoming packet carrys an unknown dcid, just ignore and drop it.
+        let (cid_seq, mut cid_pid) = self.cids.find_scid(dcid).ok_or(Error::Done)?;
 
         // The incoming packet arrived on the existing path (for Client/Server).
         if let Some(recv_pid) = recv_pid {
@@ -3347,6 +3337,11 @@ impl Connection {
     /// Return an iterator over streams that can be written
     pub fn stream_writable_iter(&self) -> StreamIter {
         self.streams.writable_iter()
+    }
+
+    /// Return an iterator over all the existing streams on the connection.
+    pub fn stream_iter(&self) -> StreamIter {
+        self.streams.iter()
     }
 
     /// Return true if the stream has enough flow control capacity to send data
@@ -4218,6 +4213,7 @@ pub(crate) mod tests {
             conf.set_ack_delay_exponent(3);
             conf.set_max_ack_delay(25);
             conf.set_reset_token_key([1u8; 64]);
+            conf.set_address_token_lifetime(3600);
             conf.set_send_batch_size(2);
             conf.set_max_handshake_timeout(0);
             conf.set_multipath(false);
@@ -4698,7 +4694,7 @@ pub(crate) mod tests {
         assert!(!packets.is_empty());
         let packet = &mut packets[0].0;
         let packet_len = packet.len();
-        packet[packet_len - 1] += 1;
+        packet[packet_len - 1] = packet[packet_len - 1].wrapping_add(1);
 
         // Server recv a corrupted Handshake
         TestPair::conn_packets_in(&mut test_pair.server, packets)?;
@@ -5505,6 +5501,29 @@ pub(crate) mod tests {
             test_pair.server.recv(&mut packet, &info),
             Err(Error::ProtocolViolation)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn recv_packet_unknown_dcid() -> Result<()> {
+        let mut test_pair = TestPair::new_with_test_config()?;
+        test_pair.handshake()?;
+
+        // Client send NEW_CONNECTION_ID
+        let (scid, reset_token) = (ConnectionId::random(), Some(1));
+        test_pair
+            .server
+            .cids
+            .add_scid(scid, reset_token, true, None, true)?;
+        let mut packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+        assert!(!packets.is_empty());
+
+        // Tamper dcid field of the OneRTT packet
+        let (mut packet, info) = packets.pop().unwrap();
+        packet[1] = packet[1].wrapping_add(1); // change first byte of dcid field
+
+        // Server drop the packet with unknown dcid
+        assert!(test_pair.server.recv(&mut packet, &info).is_ok());
         Ok(())
     }
 

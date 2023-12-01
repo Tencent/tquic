@@ -152,6 +152,19 @@ void quic_config_set_congestion_control_algorithm(struct quic_config_t *config,
 * The default value is `QUIC_CONGESTION_CONTROL_ALGORITHM_CUBIC`.
 
 
+#### quic_config_set_initial_rtt
+```c
+void quic_config_set_initial_rtt(struct quic_config_t *config, uint64_t v);
+```
+* Set the initial RTT in milliseconds.
+* The default value is 333ms.
+
+:::note
+The configuration should be changed with caution. Setting a value less than the default
+will cause retransmission of handshake packets to be more aggressive.
+:::
+
+
 #### quic_config_set_active_connection_id_limit
 ```c
 void quic_config_set_active_connection_id_limit(struct quic_config_t *config,
@@ -211,8 +224,17 @@ int quic_config_set_address_token_key(struct quic_config_t *config,
                                       const uint8_t *token_keys,
                                       size_t token_keys_len);
 ```
-* Set the key for address token generation. It also enables retry.
+* Set the key for address token generation.
 The `token_key_len` should be a multiple of 16.
+
+
+#### quic_config_enable_retry
+```c
+void quic_config_enable_retry(struct quic_config_t *config,
+                              bool enabled);
+```
+* Set whether stateless retry is allowed.
+* Default is not allowed.
 
 
 #### quic_config_set_cid_len
@@ -250,10 +272,18 @@ void quic_config_set_tls_selector(struct quic_config_t *config,
 ```c
 struct quic_endpoint_t *quic_endpoint_new(struct quic_config_t *config,
                                           bool is_server,
-                                          struct quic_transport_handler_t *handler,
-                                          struct quic_packet_send_handler_t *sender);
+                                          const struct quic_transport_methods_t *handler_methods,
+                                          quic_transport_context_t handler_ctx,
+                                          const struct quic_packet_send_methods_t *sender_methods,
+                                          quic_packet_send_context_t sender_ctx);
 ```
 * Create a QUIC endpoint. The caller is responsible for the memory of the Endpoint and properly destroy it by calling `quic_endpoint_free`.
+
+:::note
+The endpoint doesn't own the underlying resources provided by the C caller. It is
+the responsibility of the caller to ensure that these resources outlive the 
+endpoint and release them correctly.
+:::
 
 
 #### quic_endpoint_free
@@ -450,9 +480,11 @@ struct quic_conn_t *quic_endpoint_get_connection(struct quic_endpoint_t *endpoin
 
 #### quic_endpoint_close
 ```c
-void quic_endpoint_close(struct quic_endpoint_t *endpoint);
+void quic_endpoint_close(struct quic_endpoint_t *endpoint, bool force);
 ```
-* Cease creating new connections and wait all active connections to close.
+* Gracefully or forcibly shutdown the endpoint.
+* If `force` is false, cease creating new connections and wait for all active
+connections to close. Otherwise, forcibly close all the active connections.
 
 
 ## Connection
@@ -538,6 +570,13 @@ void quic_conn_trace_id(struct quic_conn_t *conn,
 
 
 ### Miscellaneous functions
+
+#### quic_conn_index
+```c
+uint64_t quic_conn_index(struct quic_conn_t *conn);
+```
+* Get index of the connection.
+
 
 #### quic_conn_is_server
 ```c

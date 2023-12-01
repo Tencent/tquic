@@ -23,7 +23,7 @@ use crate::Result;
 const MAX_CIDS_COUNT: u64 = 16;
 
 /// Connection Id and related metadata.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct ConnectionIdItem {
     /// The Connection ID.
     pub cid: ConnectionId,

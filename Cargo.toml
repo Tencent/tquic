@@ -1,6 +1,6 @@
 [package]
 name = "tquic"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.70.0"
 license = "Apache-2.0"
@@ -37,7 +37,7 @@ bytes = "1"
 rustc-hash = "1.1"
 slab = "0.4"
 enumflags2 = "0.7.5"
-ring = "0.16"
+ring = "0.17"
 libc = "0.2"
 lazy_static = "1"
 log = { version = "0.4", features = ["std"] }
@@ -45,7 +45,6 @@ strum = "0.24"
 strum_macros = "0.24"
 rand = "0.8.5"
 smallvec = { version = "1.10", features = ["serde", "union"] }
-timer_heap = "0.3.0"
 serde = { version = "1.0.139", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 serde_derive = "1.0"
@@ -60,6 +59,7 @@ mio = { version = "0.8", features = ["net", "os-poll"] }
 tempfile = "3.5.0"
 ctor = "0.2.2"
 criterion = "0.3"
+timer_heap = "0.3.0"
 
 [build-dependencies]
 cmake = "0.1"

@@ -149,7 +149,7 @@ impl Endpoint {
 
         // Create a client connection.
         let scid = self.cid_gen.generate();
-        let conn = Connection::new_client(&scid, local, remote, server_name, &mut self.config)?;
+        let conn = Connection::new_client(&scid, local, remote, server_name, &self.config)?;
         let idx = self.conns.insert(conn);
         if let Some(conn) = self.conns.get_mut(idx) {
             conn.set_index(idx);
@@ -249,8 +249,7 @@ impl Endpoint {
 
             // Create a server connection
             let scid = self.cid_gen.generate();
-            let conn =
-                Connection::new_server(&scid, local, remote, token.as_ref(), &mut self.config)?;
+            let conn = Connection::new_server(&scid, local, remote, token.as_ref(), &self.config)?;
             let idx = self.conns.insert(conn);
             if cid_len > 0 {
                 self.routes.insert_with_cid(scid, idx);
@@ -463,78 +462,27 @@ impl Endpoint {
 
         // Process all tickable connections
         while let Some(idx) = self.conn_tickable_next() {
+            if self.process_connection(idx, &mut ready) {
+                continue;
+            }
+
+            // Try to clean up the closed connection.
             let conn = match self.conns.get_mut(idx) {
                 Some(v) => v,
                 None => continue,
             };
 
-            // Try to clean up the closed connection.
-            if conn.is_closed() {
-                self.handler.on_conn_closed(conn);
-
-                conn.mark_tickable(false);
-                conn.mark_sendable(false);
-                self.timers.del(&idx);
-                self.routes.remove(conn);
-                self.conns.remove(idx);
-                continue;
+            for stream_id in conn.stream_iter() {
+                self.handler.on_stream_closed(conn, stream_id);
+                conn.stream_destroy(stream_id);
             }
 
-            // Try to process endpoint-facing events on the connection.
-            while let Some(event) = conn.poll() {
-                match event {
-                    Event::ConnectionEstablished => self.handler.on_conn_established(conn),
-
-                    Event::NewToken(token) => self.handler.on_new_token(conn, token),
-
-                    Event::ScidToAdvertise(num) => {
-                        let key = &self.config.reset_token_key;
-                        Self::conn_add_scids(conn, num, &mut self.cid_gen, key, &mut self.routes);
-                    }
-
-                    Event::ScidRetired(cid) => self.routes.remove_with_cid(&cid),
-
-                    Event::DcidAdvertised(token) => self.routes.insert_with_token(token, idx),
-
-                    Event::DcidRetired(token) => self.routes.remove_with_token(&token),
-
-                    Event::StreamCreated(stream_id) => {
-                        self.handler.on_stream_created(conn, stream_id)
-                    }
-
-                    Event::StreamClosed(stream_id) => {
-                        self.handler.on_stream_closed(conn, stream_id);
-                        conn.stream_destroy(stream_id);
-                    }
-                }
-            }
-            for stream_id in conn.stream_readable_iter() {
-                if conn.stream_check_readable(stream_id) {
-                    self.handler.on_stream_readable(conn, stream_id);
-                }
-            }
-
-            for stream_id in conn.stream_writable_iter() {
-                if conn.stream_check_writable(stream_id) {
-                    self.handler.on_stream_writable(conn, stream_id);
-                }
-            }
-
-            // Add the connection to the sendable queue
-            conn.mark_sendable(true);
-
-            // Try to update the timer of the connection
-            if let Some(t) = conn.timeout() {
-                self.timers.add(idx, t, Instant::now());
-            } else {
-                self.timers.del(&idx);
-            }
-
-            if conn.is_ready() {
-                trace!("conn {} is still ready", conn.trace_id());
-                ready.push(idx);
-            }
+            self.handler.on_conn_closed(conn);
             conn.mark_tickable(false);
+            conn.mark_sendable(false);
+            self.timers.del(&idx);
+            self.routes.remove(conn);
+            self.conns.remove(idx);
         }
 
         // Process all sendable connections
@@ -548,6 +496,83 @@ impl Endpoint {
         }
 
         Ok(())
+    }
+
+    /// Process internal events of a tickable connection.
+    ///
+    /// Return `true` if the connection has been processed successfully.
+    /// Return `false` if the connection has been closed and need to be cleaned up.
+    fn process_connection(&mut self, idx: u64, ready: &mut Vec<u64>) -> bool {
+        let conn = match self.conns.get_mut(idx) {
+            Some(v) => v,
+            None => return true,
+        };
+        if conn.is_closed() {
+            return false;
+        }
+
+        // Try to process endpoint-facing events on the connection.
+        while let Some(event) = conn.poll() {
+            match event {
+                Event::ConnectionEstablished => self.handler.on_conn_established(conn),
+
+                Event::NewToken(token) => self.handler.on_new_token(conn, token),
+
+                Event::ScidToAdvertise(num) => {
+                    let key = &self.config.reset_token_key;
+                    Self::conn_add_scids(conn, num, &mut self.cid_gen, key, &mut self.routes);
+                }
+
+                Event::ScidRetired(cid) => self.routes.remove_with_cid(&cid),
+
+                Event::DcidAdvertised(token) => self.routes.insert_with_token(token, idx),
+
+                Event::DcidRetired(token) => self.routes.remove_with_token(&token),
+
+                Event::StreamCreated(stream_id) => self.handler.on_stream_created(conn, stream_id),
+
+                Event::StreamClosed(stream_id) => {
+                    self.handler.on_stream_closed(conn, stream_id);
+                    conn.stream_destroy(stream_id);
+                }
+            }
+            if conn.is_closed() {
+                return false;
+            }
+        }
+        for stream_id in conn.stream_readable_iter() {
+            if conn.stream_check_readable(stream_id) {
+                self.handler.on_stream_readable(conn, stream_id);
+                if conn.is_closed() {
+                    return false;
+                }
+            }
+        }
+        for stream_id in conn.stream_writable_iter() {
+            if conn.stream_check_writable(stream_id) {
+                self.handler.on_stream_writable(conn, stream_id);
+                if conn.is_closed() {
+                    return false;
+                }
+            }
+        }
+
+        // Add the connection to the sendable queue
+        conn.mark_sendable(true);
+
+        // Try to update the timer of the connection
+        if let Some(t) = conn.timeout() {
+            self.timers.add(idx, t, Instant::now());
+        } else {
+            self.timers.del(&idx);
+        }
+
+        if conn.is_ready() {
+            trace!("conn {} is still ready", conn.trace_id());
+            ready.push(idx);
+        }
+        conn.mark_tickable(false);
+        true
     }
 
     /// Add scids for the given connection
@@ -700,10 +725,31 @@ impl Endpoint {
         Ok(())
     }
 
-    /// Cease creating new connections and wait all active connections to
-    /// close.
-    pub fn close(&mut self) {
+    /// Gracefully or forcibly shutdown the endpoint.
+    /// If `force` is false, cease creating new connections and wait for all
+    /// active connections to close. Otherwise, forcibly close all the active
+    /// connections.
+    pub fn close(&mut self, force: bool) {
         self.closed = true;
+        if !force {
+            return;
+        }
+
+        trace!(
+            "{} forcibly close {} connections",
+            &self.trace_id,
+            self.conns.len()
+        );
+        for (_, conn) in self.conns.conns.iter_mut() {
+            for stream_id in conn.stream_iter() {
+                self.handler.on_stream_closed(conn, stream_id);
+                conn.stream_destroy(stream_id);
+            }
+            self.handler.on_conn_closed(conn);
+        }
+        self.timers.clear();
+        self.routes.clear();
+        self.conns.clear();
     }
 
     /// Set the unique trace id for the endpoint
@@ -750,6 +796,11 @@ impl ConnectionTable {
     /// Remove a QUIC connection by index
     fn remove(&mut self, index: u64) {
         self.conns.remove(&index);
+    }
+
+    /// Clear the connection table
+    fn clear(&mut self) {
+        self.conns.clear();
     }
 
     /// Return the number of connections
@@ -874,6 +925,13 @@ impl ConnectionRoutes {
             }
         }
     }
+
+    /// Clear all the routes.
+    fn clear(&mut self) {
+        self.cid_table.clear();
+        self.addr_table.clear();
+        self.token_table.clear();
+    }
 }
 
 const MAX_BUFFER_SIZE: usize = 2048;
@@ -951,6 +1009,7 @@ mod tests {
     use super::*;
     use crate::connection;
     use crate::Config;
+    use crate::CongestionControlAlgorithm;
     use crate::Error;
     use crate::TlsConfig;
     use bytes::Buf;
@@ -1050,11 +1109,13 @@ mod tests {
         }
 
         /// Run client/server endpoint with default config.
-        fn run_with_test_config(&mut self, hdr_opt: CaseConf) -> Result<()> {
-            let cli_conf = TestPair::new_test_config(false)?;
-            let srv_conf = TestPair::new_test_config(true)?;
+        fn run_with_test_config(&mut self, case_conf: CaseConf) -> Result<()> {
+            let mut cli_conf = TestPair::new_test_config(false)?;
+            cli_conf.set_congestion_control_algorithm(case_conf.cc_algor);
+            let mut srv_conf = TestPair::new_test_config(true)?;
+            srv_conf.set_congestion_control_algorithm(case_conf.cc_algor);
 
-            self.run(cli_conf, srv_conf, hdr_opt)
+            self.run(cli_conf, srv_conf, case_conf)
         }
 
         /// Run event loop for the endpoint.
@@ -1461,6 +1522,7 @@ mod tests {
         token: Option<Vec<u8>>,
         request_num: u32,
         request_size: usize,
+        cc_algor: CongestionControlAlgorithm,
         packet_loss: u32,
         packet_delay: u32,
         packet_reorder: u32,
@@ -1542,7 +1604,7 @@ mod tests {
 
         fn on_conn_closed(&mut self, conn: &mut Connection) {
             trace!("{} connection closed", conn.trace_id());
-            assert_eq!(conn.is_established(), true);
+            assert_eq!(conn.stream_iter().count(), 0);
             if self.conf.new_token_expected {
                 assert!(self.token.is_some());
             }
@@ -1627,6 +1689,7 @@ mod tests {
 
         fn on_conn_closed(&mut self, conn: &mut Connection) {
             trace!("{} connection closed", conn.trace_id());
+            assert_eq!(conn.stream_iter().count(), 0);
         }
 
         fn on_stream_created(&mut self, conn: &mut Connection, stream_id: u64) {
@@ -1749,7 +1812,7 @@ mod tests {
 
         let cli_conf = TestPair::new_test_config(false)?;
         let mut srv_conf = TestPair::new_test_config(true)?;
-        srv_conf.set_address_token_key(vec![[1; 16]])?;
+        srv_conf.enable_retry(true);
 
         let mut case_conf = CaseConf::default();
         case_conf.handshake_only = true;
@@ -1785,7 +1848,7 @@ mod tests {
 
         let cli_conf = TestPair::new_test_config(false)?;
         let mut srv_conf = TestPair::new_test_config(true)?;
-        srv_conf.set_address_token_key(vec![token_key])?;
+        srv_conf.enable_retry(true);
 
         let mut case_conf = CaseConf::default();
         case_conf.handshake_only = true;
@@ -1947,7 +2010,7 @@ mod tests {
     }
 
     #[test]
-    fn handshake_with_packet_dupulication() -> Result<()> {
+    fn handshake_with_packet_duplication() -> Result<()> {
         let mut t = TestPair::new();
 
         let mut case_conf = CaseConf::default();
@@ -1977,9 +2040,15 @@ mod tests {
         assert!(e.connect(cli_addr, srv_addr, host, None, None).is_ok());
         assert_eq!(e.conns.len(), 1);
 
-        // connect on closed client endpoint
-        e.close();
+        // gracefully close client endpoint
+        e.close(false);
+        assert_eq!(e.conns.len(), 1);
         assert!(e.connect(cli_addr, srv_addr, host, None, None).is_err());
+        assert_eq!(e.conns.len(), 1);
+
+        // forcibly close client endpoint
+        e.close(true);
+        assert_eq!(e.conns.len(), 0);
 
         // connect on server endpoint
         let mut e = Endpoint::new(
@@ -2244,13 +2313,56 @@ mod tests {
     }
 
     #[test]
-    fn transfer_single_stream_with_packet_loss() -> Result<()> {
+    fn transfer_single_stream_cubic_with_packet_loss() -> Result<()> {
         let mut t = TestPair::new();
 
         let mut case_conf = CaseConf::default();
         case_conf.request_num = 1;
         case_conf.request_size = 1024 * 16;
         case_conf.packet_loss = 1;
+        case_conf.cc_algor = CongestionControlAlgorithm::Cubic;
+
+        t.run_with_test_config(case_conf)?;
+        Ok(())
+    }
+
+    #[test]
+    fn transfer_single_stream_bbr_with_packet_loss() -> Result<()> {
+        let mut t = TestPair::new();
+
+        let mut case_conf = CaseConf::default();
+        case_conf.request_num = 1;
+        case_conf.request_size = 1024 * 16;
+        case_conf.packet_loss = 1;
+        case_conf.cc_algor = CongestionControlAlgorithm::Bbr;
+
+        t.run_with_test_config(case_conf)?;
+        Ok(())
+    }
+
+    #[test]
+    fn transfer_single_stream_bbr3_with_packet_loss() -> Result<()> {
+        let mut t = TestPair::new();
+
+        let mut case_conf = CaseConf::default();
+        case_conf.request_num = 1;
+        case_conf.request_size = 1024 * 16;
+        case_conf.packet_loss = 1;
+        case_conf.cc_algor = CongestionControlAlgorithm::Bbr3;
+
+        t.run_with_test_config(case_conf)?;
+        Ok(())
+    }
+
+    #[test]
+    fn transfer_single_stream_copa_with_packet_loss() -> Result<()> {
+        let mut t = TestPair::new();
+
+        let mut case_conf = CaseConf::default();
+        case_conf.request_num = 1;
+        case_conf.request_size = 1024 * 16;
+        case_conf.packet_loss = 1;
+        case_conf.cc_algor = CongestionControlAlgorithm::Copa;
 
         t.run_with_test_config(case_conf)?;
         Ok(())
