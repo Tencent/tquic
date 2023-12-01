@@ -2010,7 +2010,7 @@ mod tests {
     }
 
     #[test]
-    fn handshake_with_packet_dupulication() -> Result<()> {
+    fn handshake_with_packet_duplication() -> Result<()> {
         let mut t = TestPair::new();
 
         let mut case_conf = CaseConf::default();
