@@ -4694,7 +4694,7 @@ pub(crate) mod tests {
         assert!(!packets.is_empty());
         let packet = &mut packets[0].0;
         let packet_len = packet.len();
-        packet[packet_len - 1] += 1;
+        packet[packet_len - 1] = packet[packet_len - 1].wrapping_add(1);
 
         // Server recv a corrupted Handshake
         TestPair::conn_packets_in(&mut test_pair.server, packets)?;
@@ -5520,7 +5520,7 @@ pub(crate) mod tests {
 
         // Tamper dcid field of the OneRTT packet
         let (mut packet, info) = packets.pop().unwrap();
-        packet[1] = packet[1] + 1; // change first byte of dcid field
+        packet[1] = packet[1].wrapping_add(1); // change first byte of dcid field
 
         // Server drop the packet with unknown dcid
         assert!(test_pair.server.recv(&mut packet, &info).is_ok());
