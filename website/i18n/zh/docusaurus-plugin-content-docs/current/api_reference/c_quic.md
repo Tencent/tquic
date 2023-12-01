@@ -149,6 +149,18 @@ void quic_config_set_congestion_control_algorithm(struct quic_config_t *config,
 * 默认值是`QUIC_CONGESTION_CONTROL_ALGORITHM_CUBIC`。
 
 
+#### quic_config_set_initial_rtt
+```c
+void quic_config_set_initial_rtt(struct quic_config_t *config, uint64_t v);
+```
+* 设置初始RTT，单位是毫秒。
+* 默认值是333毫秒。
+
+:::note
+请谨慎更改该配置。如果设置的值小于默认值，将导致握手数据包的重传更激进。
+:::
+
+
 #### quic_config_set_active_connection_id_limit
 ```c
 void quic_config_set_active_connection_id_limit(struct quic_config_t *config,
@@ -256,10 +268,16 @@ void quic_config_set_tls_selector(struct quic_config_t *config,
 ```c
 struct quic_endpoint_t *quic_endpoint_new(struct quic_config_t *config,
                                           bool is_server,
-                                          struct quic_transport_handler_t *handler,
-                                          struct quic_packet_send_handler_t *sender);
+                                          const struct quic_transport_methods_t *handler_methods,
+                                          quic_transport_context_t handler_ctx,
+                                          const struct quic_packet_send_methods_t *sender_methods,
+                                          quic_packet_send_context_t sender_ctx);
 ```
 * 创建一个QUIC端点。调用方负责管理端点的内存, 并调用`quic_endpoint_free`进行释放。
+
+:::note
+端点并不拥有由C调用方传入的这些资源。调用者需确保这些资源的生命周期比端点更长，并正确地释放它们。
+:::
 
 
 #### quic_endpoint_free
@@ -442,9 +460,10 @@ struct quic_conn_t *quic_endpoint_get_connection(struct quic_endpoint_t *endpoin
 
 #### quic_endpoint_close
 ```c
-void quic_endpoint_close(struct quic_endpoint_t *endpoint);
+void quic_endpoint_close(struct quic_endpoint_t *endpoint, bool force);
 ```
-* 停止创建新的连接并等待所有活跃连接关闭。
+* 优雅关闭端点或强制关闭端点。
+* 如果`force`为假，则停止创建新的连接并等待所有活跃连接关闭。否则，强制关闭所有活跃连接。
 
 
 ## 连接
