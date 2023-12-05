@@ -28,11 +28,3 @@ path="src/bin/tquic_client.rs"
 [[bin]]
 name="tquic_server"
 path="src/bin/tquic_server.rs"
-
-[[bin]]
-name="simple_client"
-path="src/bin/simple_client.rs"
-
-[[bin]]
-name="simple_server"
-path="src/bin/simple_server.rs"
