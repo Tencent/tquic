@@ -2299,7 +2299,7 @@ mod tests {
             true,
         )?;
         tls_config.set_ticket_key(&vec![0x01; 48])?;
-        srv_conf.set_tls_config_selector(Arc::new(tls_config));
+        srv_conf.set_tls_config(tls_config);
 
         let mut case_conf = CaseConf::default();
         case_conf.session = Some(TestPair::new_test_session_state());

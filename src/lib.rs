@@ -584,7 +584,9 @@ impl Config {
 
     /// Set TLS config.
     pub fn set_tls_config(&mut self, tls_config: tls::TlsConfig) {
-        self.set_tls_config_selector(Arc::new(tls_config));
+        self.set_tls_config_selector(Arc::new(tls::DefaultTlsConfigSelector {
+            tls_config: Arc::new(tls_config),
+        }));
     }
 
     /// Set TLS config selector. Used for selecting TLS config according to SNI.

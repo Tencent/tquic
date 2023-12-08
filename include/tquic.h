@@ -108,8 +108,8 @@ typedef struct http3_conn_t http3_conn_t;
 typedef struct http3_headers_t http3_headers_t;
 
 typedef struct quic_tls_config_select_methods_t {
-  const SSL_CTX *(*get_default)(void *ctx);
-  const SSL_CTX *(*select)(void *ctx, const uint8_t *server_name, size_t server_name_len);
+  SSL_CTX *(*get_default)(void *ctx);
+  SSL_CTX *(*select)(void *ctx, const uint8_t *server_name, size_t server_name_len);
 } quic_tls_config_select_methods_t;
 
 typedef void *quic_tls_config_select_context_t;
@@ -415,6 +415,12 @@ void quic_config_set_send_batch_size(struct quic_config_t *config, uint16_t v);
 void quic_config_set_tls_selector(struct quic_config_t *config,
                                   const struct quic_tls_config_select_methods_t *methods,
                                   quic_tls_config_select_context_t context);
+
+/**
+ * Set TLS config.
+ * The caller is responsible for the memory of SSL_CTX when use this function.
+ */
+void quic_config_set_tls_config(struct quic_config_t *config, SSL_CTX *ssl_ctx);
 
 /**
  * Create a QUIC endpoint.

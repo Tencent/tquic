@@ -316,6 +316,17 @@ pub extern "C" fn quic_config_set_tls_selector(
     config.set_tls_config_selector(Arc::new(selector));
 }
 
+/// Set TLS config.
+/// The caller is responsible for the memory of SSL_CTX when use this function.
+#[no_mangle]
+pub extern "C" fn quic_config_set_tls_config(
+    config: &mut Config,
+    ssl_ctx: *mut crate::tls::SslCtx,
+) {
+    let tls_config = crate::tls::TlsConfig::new_with_ssl_ctx(ssl_ctx);
+    config.set_tls_config(tls_config);
+}
+
 /// Create a QUIC endpoint.
 ///
 /// The caller is responsible for the memory of the Endpoint and properly
@@ -949,12 +960,12 @@ pub struct TlsConfigSelectorContext(*mut c_void);
 
 #[repr(C)]
 pub struct TlsConfigSelectMethods {
-    pub get_default: fn(ctx: *mut c_void) -> *const crate::tls::SslCtx,
+    pub get_default: fn(ctx: *mut c_void) -> *mut crate::tls::SslCtx,
     pub select: fn(
         ctx: *mut c_void,
         server_name: *const u8,
         server_name_len: size_t,
-    ) -> *const crate::tls::SslCtx,
+    ) -> *mut crate::tls::SslCtx,
 }
 
 #[repr(C)]
@@ -967,17 +978,17 @@ unsafe impl Send for TlsConfigSelector {}
 unsafe impl Sync for TlsConfigSelector {}
 
 impl crate::tls::TlsConfigSelector for TlsConfigSelector {
-    fn get_default(&self) -> Option<&crate::tls::TlsConfig> {
+    fn get_default(&self) -> Option<Arc<crate::tls::TlsConfig>> {
         let ssl_ctx = unsafe { ((*self.methods).get_default)(self.context.0) };
         if ssl_ctx.is_null() {
             return None;
         }
 
-        let tls_config = unsafe { &(*(ssl_ctx as *const crate::tls::TlsConfig)) };
+        let tls_config = Arc::new(crate::tls::TlsConfig::new_with_ssl_ctx(ssl_ctx));
         Some(tls_config)
     }
 
-    fn select(&self, server_name: &str) -> Option<&crate::tls::TlsConfig> {
+    fn select(&self, server_name: &str) -> Option<Arc<crate::tls::TlsConfig>> {
         let ssl_ctx = unsafe {
             ((*self.methods).select)(
                 self.context.0,
@@ -989,7 +1000,7 @@ impl crate::tls::TlsConfigSelector for TlsConfigSelector {
             return None;
         }
 
-        let tls_config = unsafe { &(*(ssl_ctx as *const crate::tls::TlsConfig)) };
+        let tls_config = Arc::new(crate::tls::TlsConfig::new_with_ssl_ctx(ssl_ctx));
         Some(tls_config)
     }
 }
