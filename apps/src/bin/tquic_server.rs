@@ -34,6 +34,7 @@ use tquic::h3::Header;
 use tquic::h3::Http3Config;
 use tquic::h3::NameValue;
 use tquic::Config;
+use tquic::CongestionControlAlgorithm;
 use tquic::Connection;
 use tquic::Endpoint;
 use tquic::Error;
@@ -93,6 +94,10 @@ pub struct ServerOpt {
     /// Disable stateless reset.
     #[clap(long)]
     pub disable_stateless_reset: bool,
+
+    /// Congestion control algorithm.
+    #[clap(long, default_value = "CUBIC")]
+    pub congestion_control_algor: CongestionControlAlgorithm,
 
     /// Enable multipath transport.
     #[clap(long)]
@@ -163,6 +168,7 @@ impl Server {
         config.set_max_handshake_timeout(option.handshake_timeout);
         config.set_max_idle_timeout(option.idle_timeout);
         config.set_initial_rtt(option.initial_rtt);
+        config.set_congestion_control_algorithm(option.congestion_control_algor);
         config.set_send_batch_size(option.send_batch_size);
         config.set_multipath(option.enable_multipath);
         config.set_multipath_algor(option.multipath_algor);
