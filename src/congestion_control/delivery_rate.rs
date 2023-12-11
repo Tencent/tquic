@@ -136,27 +136,24 @@ impl DeliveryRateEstimator {
             self.rate_sample.prior_delivered = packet.rate_sample_state.delivered;
             self.rate_sample.prior_time = packet.rate_sample_state.delivered_time;
             self.rate_sample.is_app_limited = packet.rate_sample_state.is_app_limited;
-            self.rate_sample.send_elapsed = packet.time_sent.saturating_duration_since(
-                packet
-                    .rate_sample_state
-                    .first_sent_time
-                    .unwrap_or(packet.time_sent),
-            );
-            self.rate_sample.ack_elapsed = self.delivered_time.saturating_duration_since(
-                packet
-                    .rate_sample_state
-                    .delivered_time
-                    .unwrap_or(packet.time_sent),
-            );
-            self.rate_sample.rtt = self
-                .delivered_time
-                .saturating_duration_since(packet.time_sent);
             self.first_sent_time = packet.time_sent;
         }
 
-        self.rate_sample.delivered = self
-            .delivered
-            .saturating_sub(self.rate_sample.prior_delivered);
+        self.rate_sample.send_elapsed = packet.time_sent.saturating_duration_since(
+            packet
+                .rate_sample_state
+                .first_sent_time
+                .unwrap_or(packet.time_sent),
+        );
+        self.rate_sample.ack_elapsed = self.delivered_time.saturating_duration_since(
+            packet
+                .rate_sample_state
+                .delivered_time
+                .unwrap_or(packet.time_sent),
+        );
+        self.rate_sample.rtt = self
+            .delivered_time
+            .saturating_duration_since(packet.time_sent);
 
         // Mark the packet as delivered once it's SACKed to
         // avoid being used again when it's cumulatively acked.

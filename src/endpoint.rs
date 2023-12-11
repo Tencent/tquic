@@ -149,7 +149,7 @@ impl Endpoint {
 
         // Create a client connection.
         let scid = self.cid_gen.generate();
-        let conn = Connection::new_client(&scid, local, remote, server_name, &mut self.config)?;
+        let conn = Connection::new_client(&scid, local, remote, server_name, &self.config)?;
         let idx = self.conns.insert(conn);
         if let Some(conn) = self.conns.get_mut(idx) {
             conn.set_index(idx);
@@ -249,8 +249,7 @@ impl Endpoint {
 
             // Create a server connection
             let scid = self.cid_gen.generate();
-            let conn =
-                Connection::new_server(&scid, local, remote, token.as_ref(), &mut self.config)?;
+            let conn = Connection::new_server(&scid, local, remote, token.as_ref(), &self.config)?;
             let idx = self.conns.insert(conn);
             if cid_len > 0 {
                 self.routes.insert_with_cid(scid, idx);
@@ -2011,7 +2010,7 @@ mod tests {
     }
 
     #[test]
-    fn handshake_with_packet_dupulication() -> Result<()> {
+    fn handshake_with_packet_duplication() -> Result<()> {
         let mut t = TestPair::new();
 
         let mut case_conf = CaseConf::default();
@@ -2300,7 +2299,7 @@ mod tests {
             true,
         )?;
         tls_config.set_ticket_key(&vec![0x01; 48])?;
-        srv_conf.set_tls_config_selector(Arc::new(tls_config));
+        srv_conf.set_tls_config(tls_config);
 
         let mut case_conf = CaseConf::default();
         case_conf.session = Some(TestPair::new_test_session_state());

@@ -68,13 +68,11 @@ where
     }
 }
 
-#[repr(transparent)]
 pub struct TlsConfig {
     /// Boringssl SSL context.
     tls_ctx: boringssl::tls::Context,
 }
 
-#[cfg(not(feature = "ffi"))]
 impl TlsConfig {
     /// Create a new TlsConfig.
     pub fn new() -> Result<TlsConfig> {
@@ -82,6 +80,14 @@ impl TlsConfig {
         tls_ctx.enable_keylog();
 
         Ok(TlsConfig { tls_ctx })
+    }
+
+    /// Create a new TlsConfig with SSL_CTX.
+    /// The caller is responsible for the memory of SSL_CTX when use this function.
+    pub fn new_with_ssl_ctx(ssl_ctx: *mut boringssl::tls::SslCtx) -> TlsConfig {
+        Self {
+            tls_ctx: boringssl::tls::Context::new_with_ssl_ctx(ssl_ctx),
+        }
     }
 
     /// Create a new client side TlsConfig.
@@ -188,25 +194,29 @@ impl TlsConfig {
     }
 }
 
-impl TlsConfigSelector for TlsConfig {
+pub(crate) struct DefaultTlsConfigSelector {
+    pub tls_config: Arc<TlsConfig>,
+}
+
+impl TlsConfigSelector for DefaultTlsConfigSelector {
     // TODO: support local and peer address.
     /// Get default TLS config.
-    fn get_default(&self) -> Option<&TlsConfig> {
-        Some(self)
+    fn get_default(&self) -> Option<Arc<TlsConfig>> {
+        Some(self.tls_config.clone())
     }
 
     /// Find TLS config according to server name.
-    fn select(&self, _server_name: &str) -> Option<&TlsConfig> {
-        Some(self)
+    fn select(&self, _server_name: &str) -> Option<Arc<TlsConfig>> {
+        Some(self.tls_config.clone())
     }
 }
 
 pub trait TlsConfigSelector: Send + Sync {
     /// Get default TLS config.
-    fn get_default(&self) -> Option<&TlsConfig>;
+    fn get_default(&self) -> Option<Arc<TlsConfig>>;
 
     /// Find TLS config according to server name.
-    fn select(&self, server_name: &str) -> Option<&TlsConfig>;
+    fn select(&self, server_name: &str) -> Option<Arc<TlsConfig>>;
 }
 
 #[derive(Default)]
@@ -404,11 +414,12 @@ pub(crate) mod tests {
     use std::rc::Rc;
 
     fn create_client_session(
+        hostname: Option<&str>,
         resumption: Option<&[u8]>,
         enable_early_data: bool,
     ) -> Result<TlsSession> {
         let tls_config = TlsConfig::new_client_config(vec![b"h3".to_vec()], enable_early_data)?;
-        let mut tls_session = tls_config.new_session(Some("example.org"), false)?;
+        let mut tls_session = tls_config.new_session(hostname, false)?;
         if let Some(mut b) = resumption {
             let session_len = b
                 .read_u64()
@@ -499,12 +510,56 @@ pub(crate) mod tests {
             server_session_ticket_key: Vec<u8>,
             server_enable_early_data: bool,
         ) -> Result<TlsSessionPair> {
-            let mut client = create_client_session(client_resumption, client_enable_early_data)?;
+            Self::new_with_hostname(
+                Some("example.org"),
+                client_resumption,
+                client_enable_early_data,
+                server_session_ticket_key,
+                server_enable_early_data,
+            )
+        }
+
+        fn new_with_hostname(
+            client_hostname: Option<&str>,
+            client_resumption: Option<&[u8]>,
+            client_enable_early_data: bool,
+            server_session_ticket_key: Vec<u8>,
+            server_enable_early_data: bool,
+        ) -> Result<TlsSessionPair> {
+            let mut client = create_client_session(
+                client_hostname,
+                client_resumption,
+                client_enable_early_data,
+            )?;
             let client_out_queue = generate_tls_session_data_buf(&mut client);
 
             let mut server =
                 create_server_session(server_session_ticket_key, server_enable_early_data)?;
             let server_out_queue = generate_tls_session_data_buf(&mut server);
+            Ok(TlsSessionPair {
+                client,
+                client_out_queue,
+                server,
+                server_out_queue,
+            })
+        }
+
+        fn new_with_tls_config(
+            client_config: &TlsConfig,
+            server_config: &TlsConfig,
+        ) -> Result<TlsSessionPair> {
+            let mut client = client_config.new_session(Some("example.org"), false)?;
+            client.set_keylog(Box::new(Vec::new()));
+            client.set_transport_params(b"tp")?;
+            client.derive_initial_secrets(&ConnectionId::new(b"dcid"), crate::QUIC_VERSION_V1)?;
+            let client_out_queue = generate_tls_session_data_buf(&mut client);
+
+            let mut server = server_config.new_session(Some("example.org"), true)?;
+            server.set_keylog(Box::new(Vec::new()));
+            server.set_transport_params(b"tp")?;
+            server.derive_initial_secrets(&ConnectionId::new(b"dcid"), crate::QUIC_VERSION_V1)?;
+            let server_out_queue = generate_tls_session_data_buf(&mut server);
+
             Ok(TlsSessionPair {
                 client,
                 client_out_queue,
@@ -615,6 +670,75 @@ pub(crate) mod tests {
             }
             Ok(())
         }
+    }
+
+    #[test]
+    fn cert_or_key_format_error() -> Result<()> {
+        let mut tls_config = TlsConfig::new()?;
+
+        // Load ca from file failed.
+        assert!(tls_config
+            .set_ca_certs("./src/tls/testdata/error.crt")
+            .is_err());
+
+        // Load cert failed.
+        assert!(tls_config
+            .set_certificate_file("./src/tls/testdata/error.crt")
+            .is_err());
+
+        // Load key failed.
+        assert!(tls_config
+            .set_private_key_file("./src/tls/testdata/error.key")
+            .is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_cstring_file() -> Result<()> {
+        let mut tls_config = TlsConfig::new()?;
+        let funcs: Vec<Box<dyn Fn(&mut TlsConfig, &str) -> Result<()>>> = vec![
+            Box::new(TlsConfig::set_ca_certs),
+            Box::new(TlsConfig::set_certificate_file),
+            Box::new(TlsConfig::set_private_key_file),
+        ];
+        let file = "invalid\0file";
+        for func in &funcs {
+            match func(&mut tls_config, file) {
+                Err(Error::TlsFail(err)) => assert!(err.contains("format error")),
+                Err(_) | Ok(_) => assert!(false),
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_cstring_hostname() -> Result<()> {
+        let mut client = create_client_session(None, None, false)?;
+        match client.session.set_host_name("invalid\0hostname") {
+            Err(Error::TlsFail(err)) => assert!(err.contains("host name format error")),
+            Err(_) | Ok(_) => assert!(false),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_ticket_key() -> Result<()> {
+        let mut tls_config = TlsConfig::new()?;
+        let session_ticket_key = vec![0x0a; 1];
+        assert!(tls_config.set_ticket_key(&session_ticket_key).is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_alpn() -> Result<()> {
+        let mut tls_config = TlsConfig::new()?;
+        assert!(tls_config.set_application_protos(vec![vec![]]).is_err());
+
+        Ok(())
     }
 
     #[test]
@@ -789,8 +913,69 @@ pub(crate) mod tests {
         tls_session_pair.check_keys(false)
     }
 
+    fn handshake_with_cert_verify(
+        ca_path: &str,
+        srv_crt: &str,
+        srv_key: &str,
+    ) -> Result<TlsSessionPair> {
+        const TESTDATA: &str = "./src/tls/testdata/";
+
+        let mut client_config = TlsConfig::new_client_config(vec![b"h3".to_vec()], false)?;
+        client_config.set_verify(true);
+        client_config.set_ca_certs(&(TESTDATA.to_owned() + ca_path))?;
+
+        let server_config = new_server_config(
+            vec![0x0a; 48],
+            false,
+            vec![b"h3".to_vec()],
+            &(TESTDATA.to_owned() + srv_crt),
+            &(TESTDATA.to_owned() + srv_key),
+        )?;
+
+        let mut tls_session_pair =
+            TlsSessionPair::new_with_tls_config(&client_config, &server_config)?;
+
+        // 1-RTT handshake.
+        tls_session_pair.do_handshake(false)?;
+
+        Ok(tls_session_pair)
+    }
+
+    /// Load ca certificate from file.
+    #[test]
+    fn handshake_with_cert_verify_success() -> Result<()> {
+        // `cert3` is issued by `ca.crt`.
+        let tls_session_pair = handshake_with_cert_verify("ca.crt", "cert3.crt", "cert3.key")?;
+        assert!(tls_session_pair.client.is_completed());
+        assert!(tls_session_pair.server.is_completed());
+
+        Ok(())
+    }
+
+    /// Load ca certificate from directory.
+    #[test]
+    fn handshake_with_cert_verify_success2() -> Result<()> {
+        // `cas/56c899cd.0` is same as `cert3.crt`.
+        let tls_session_pair = handshake_with_cert_verify("cas", "cert3.crt", "cert3.key")?;
+        assert!(tls_session_pair.client.is_completed());
+        assert!(tls_session_pair.server.is_completed());
+
+        Ok(())
+    }
+
+    #[test]
+    fn handshake_with_cert_verify_failed() -> Result<()> {
+        // `cert.crt` is self-signed.
+        match handshake_with_cert_verify("ca.crt", "cert.crt", "cert.key") {
+            Err(Error::TlsFail(err)) => assert!(err.contains("CERTIFICATE_VERIFY_FAILED")),
+            Err(_) | Ok(_) => assert!(false),
+        }
+
+        Ok(())
+    }
+
     pub struct ServerConfigSelector {
-        hash_map: HashMap<String, TlsConfig>,
+        hash_map: HashMap<String, Arc<TlsConfig>>,
     }
 
     impl ServerConfigSelector {
@@ -810,7 +995,9 @@ pub(crate) mod tests {
                     cert,
                     keys[index],
                 )?;
-                cert_manager.hash_map.insert(index.to_string(), tls_config);
+                cert_manager
+                    .hash_map
+                    .insert(index.to_string(), tls_config.into());
             }
 
             Ok(cert_manager)
@@ -822,35 +1009,39 @@ pub(crate) mod tests {
     }
 
     impl TlsConfigSelector for ServerConfigSelector {
-        fn get_default(&self) -> Option<&TlsConfig> {
-            self.hash_map.get("0")
+        fn get_default(&self) -> Option<Arc<TlsConfig>> {
+            self.select("0")
         }
 
-        fn select(&self, server_name: &str) -> Option<&TlsConfig> {
-            self.hash_map.get(server_name)
+        fn select(&self, server_name: &str) -> Option<Arc<TlsConfig>> {
+            self.hash_map.get(server_name).cloned()
         }
+    }
+
+    fn handshake_with_multi_cert(
+        conf_selector: Arc<ServerConfigSelector>,
+        hostname: Option<&str>,
+    ) -> Result<TlsSessionPair> {
+        // New client and server tls session pair.
+        let session_ticket_key = vec![0x0a; 48];
+        let mut tls_session_pair =
+            TlsSessionPair::new_with_hostname(hostname, None, true, session_ticket_key, true)?;
+        tls_session_pair.server.set_config_selector(conf_selector);
+
+        // 1-RTT handshake.
+        tls_session_pair.do_handshake(false)?;
+
+        Ok(tls_session_pair)
     }
 
     #[test]
     fn multi_cert_with_known_sni() -> Result<()> {
-        // New config selector.
         let conf_selector = Arc::new(ServerConfigSelector::new()?);
 
         for i in 0..conf_selector.len() {
-            // New client and server tls session pair.
-            let session_ticket_key = vec![0x0a; 48];
-            let mut tls_session_pair = TlsSessionPair::new(None, true, session_ticket_key, true)?;
             let server_name = i.to_string();
-            tls_session_pair
-                .client
-                .session
-                .set_host_name(&server_name)?;
-            tls_session_pair
-                .server
-                .set_config_selector(conf_selector.clone());
-
-            // 1-RTT handshake.
-            tls_session_pair.do_handshake(false)?;
+            let tls_session_pair =
+                handshake_with_multi_cert(conf_selector.clone(), Some(&server_name))?;
             assert!(tls_session_pair.client.is_completed());
             assert!(tls_session_pair.client.peer_cert_chain().is_some());
             assert_eq!(
@@ -865,28 +1056,24 @@ pub(crate) mod tests {
 
     #[test]
     fn multi_cert_with_unknown_sni() -> Result<()> {
-        // New config selector.
         let conf_selector = Arc::new(ServerConfigSelector::new()?);
 
-        // New client and server tls session pair.
-        let session_ticket_key = vec![0x0a; 48];
-        let mut tls_session_pair = TlsSessionPair::new(None, true, session_ticket_key, true)?;
-        tls_session_pair.client.session.set_host_name("unknown")?;
-        tls_session_pair
-            .server
-            .set_config_selector(conf_selector.clone());
-
-        // 1-RTT handshake failed.
-        let result = tls_session_pair.do_handshake(false);
-        assert!(result.is_err());
-        if let Error::TlsFail(err) = result.err().unwrap() {
-            assert!(err.contains("CERT_CB_ERROR"));
-        } else {
-            // Incorrect error type.
-            assert!(false);
+        match handshake_with_multi_cert(conf_selector.clone(), Some("unknown")) {
+            Err(Error::TlsFail(err)) => assert!(err.contains("CERT_CB_ERROR")),
+            Err(_) | Ok(_) => assert!(false),
         }
-        assert!(!tls_session_pair.client.is_completed());
-        assert!(!tls_session_pair.server.is_completed());
+
+        Ok(())
+    }
+
+    #[test]
+    fn multi_cert_without_sni() -> Result<()> {
+        let conf_selector = Arc::new(ServerConfigSelector::new()?);
+
+        let tls_session_pair = handshake_with_multi_cert(conf_selector.clone(), None)?;
+        assert!(tls_session_pair.client.is_completed());
+        assert!(tls_session_pair.server.is_completed());
+        assert!(tls_session_pair.client.server_name() == None);
 
         Ok(())
     }

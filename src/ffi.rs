@@ -193,6 +193,14 @@ pub extern "C" fn quic_config_set_congestion_control_algorithm(
     config.set_congestion_control_algorithm(v);
 }
 
+/// Set the initial RTT in milliseconds. The default value is 333ms.
+/// The configuration should be changed with caution. Setting a value less than the default
+/// will cause retransmission of handshake packets to be more aggressive.
+#[no_mangle]
+pub extern "C" fn quic_config_set_initial_rtt(config: &mut Config, v: u64) {
+    config.set_initial_rtt(v);
+}
+
 /// Set the `active_connection_id_limit` transport parameter.
 #[no_mangle]
 pub extern "C" fn quic_config_set_active_connection_id_limit(config: &mut Config, v: u64) {
@@ -308,20 +316,45 @@ pub extern "C" fn quic_config_set_tls_selector(
     config.set_tls_config_selector(Arc::new(selector));
 }
 
+/// Set TLS config.
+/// The caller is responsible for the memory of SSL_CTX when use this function.
+#[no_mangle]
+pub extern "C" fn quic_config_set_tls_config(
+    config: &mut Config,
+    ssl_ctx: *mut crate::tls::SslCtx,
+) {
+    let tls_config = crate::tls::TlsConfig::new_with_ssl_ctx(ssl_ctx);
+    config.set_tls_config(tls_config);
+}
+
 /// Create a QUIC endpoint.
+///
 /// The caller is responsible for the memory of the Endpoint and properly
 /// destroy it by calling `quic_endpoint_free`.
+///
+/// Note: The endpoint doesn't own the underlying resources provided by the C
+/// caller. It is the responsibility of the caller to ensure that these
+/// resources outlive the endpoint and release them correctly.
 #[no_mangle]
 pub extern "C" fn quic_endpoint_new(
     config: *mut Config,
     is_server: bool,
-    handler: *mut TransportHandler,
-    sender: *mut PacketSendHandler,
+    handler_methods: *const TransportMethods,
+    handler_ctx: TransportContext,
+    sender_methods: *const PacketSendMethods,
+    sender_ctx: PacketSendContext,
 ) -> *mut Endpoint {
     let config = unsafe { Box::from_raw(config) };
-    let handler = unsafe { Box::from_raw(handler) };
-    let sender = unsafe { Rc::from_raw(sender) };
-    let e = Endpoint::new(config, is_server, handler, sender);
+    let handler = Box::new(TransportHandler {
+        methods: handler_methods,
+        context: handler_ctx,
+    });
+    let sender = Rc::new(PacketSendHandler {
+        methods: sender_methods,
+        context: sender_ctx,
+    });
+    let e = Endpoint::new(config.clone(), is_server, handler, sender);
+    Box::into_raw(config);
     Box::into_raw(Box::new(e))
 }
 
@@ -927,12 +960,12 @@ pub struct TlsConfigSelectorContext(*mut c_void);
 
 #[repr(C)]
 pub struct TlsConfigSelectMethods {
-    pub get_default: fn(ctx: *mut c_void) -> *const crate::tls::SslCtx,
+    pub get_default: fn(ctx: *mut c_void) -> *mut crate::tls::SslCtx,
     pub select: fn(
         ctx: *mut c_void,
         server_name: *const u8,
         server_name_len: size_t,
-    ) -> *const crate::tls::SslCtx,
+    ) -> *mut crate::tls::SslCtx,
 }
 
 #[repr(C)]
@@ -945,17 +978,17 @@ unsafe impl Send for TlsConfigSelector {}
 unsafe impl Sync for TlsConfigSelector {}
 
 impl crate::tls::TlsConfigSelector for TlsConfigSelector {
-    fn get_default(&self) -> Option<&crate::tls::TlsConfig> {
+    fn get_default(&self) -> Option<Arc<crate::tls::TlsConfig>> {
         let ssl_ctx = unsafe { ((*self.methods).get_default)(self.context.0) };
         if ssl_ctx.is_null() {
             return None;
         }
 
-        let tls_config = unsafe { &(*(ssl_ctx as *const crate::tls::TlsConfig)) };
+        let tls_config = Arc::new(crate::tls::TlsConfig::new_with_ssl_ctx(ssl_ctx));
         Some(tls_config)
     }
 
-    fn select(&self, server_name: &str) -> Option<&crate::tls::TlsConfig> {
+    fn select(&self, server_name: &str) -> Option<Arc<crate::tls::TlsConfig>> {
         let ssl_ctx = unsafe {
             ((*self.methods).select)(
                 self.context.0,
@@ -967,7 +1000,7 @@ impl crate::tls::TlsConfigSelector for TlsConfigSelector {
             return None;
         }
 
-        let tls_config = unsafe { &(*(ssl_ctx as *const crate::tls::TlsConfig)) };
+        let tls_config = Arc::new(crate::tls::TlsConfig::new_with_ssl_ctx(ssl_ctx));
         Some(tls_config)
     }
 }
@@ -1012,6 +1045,7 @@ pub struct TransportMethods {
 #[repr(transparent)]
 pub struct TransportContext(*mut c_void);
 
+/// cbindgen:no-export
 #[repr(C)]
 pub struct TransportHandler {
     pub methods: *const TransportMethods,
@@ -1100,6 +1134,7 @@ pub struct PacketSendMethods {
 #[repr(transparent)]
 pub struct PacketSendContext(*mut c_void);
 
+/// cbindgen:no-export
 #[repr(C)]
 pub struct PacketSendHandler {
     pub methods: *const PacketSendMethods,

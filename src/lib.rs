@@ -294,6 +294,7 @@ fn version_is_supported(version: u32) -> bool {
 }
 
 /// Configurations about QUIC endpoint.
+#[derive(Clone)]
 pub struct Config {
     /// QUIC transport configuration.
     local_transport_params: TransportParams,
@@ -486,11 +487,12 @@ impl Config {
         self.recovery.congestion_control_algorithm = cca;
     }
 
-    /// Set the initial RTT. The default value is 333ms.
-    /// The function is for unit testing only.
-    #[cfg(test)]
+    /// Set the initial RTT in milliseconds. The default value is 333ms.
+    ///
+    /// The configuration should be changed with caution. Setting a value less than the default
+    /// will cause retransmission of handshake packets to be more aggressive.
     pub fn set_initial_rtt(&mut self, millisecs: u64) {
-        self.recovery.initial_rtt = Duration::from_millis(millisecs);
+        self.recovery.initial_rtt = cmp::max(Duration::from_millis(millisecs), TIMER_GRANULARITY);
     }
 
     /// Set the `active_connection_id_limit` transport parameter.
@@ -582,7 +584,9 @@ impl Config {
 
     /// Set TLS config.
     pub fn set_tls_config(&mut self, tls_config: tls::TlsConfig) {
-        self.set_tls_config_selector(Arc::new(tls_config));
+        self.set_tls_config_selector(Arc::new(tls::DefaultTlsConfigSelector {
+            tls_config: Arc::new(tls_config),
+        }));
     }
 
     /// Set TLS config selector. Used for selecting TLS config according to SNI.
@@ -603,11 +607,7 @@ impl Config {
     }
 
     /// Create new tls session.
-    fn new_tls_session(
-        &mut self,
-        server_name: Option<&str>,
-        is_server: bool,
-    ) -> Result<TlsSession> {
+    fn new_tls_session(&self, server_name: Option<&str>, is_server: bool) -> Result<TlsSession> {
         if self.tls_config_selector.is_none() {
             return Err(Error::TlsFail("tls config selector is not set".into()));
         }
@@ -824,6 +824,19 @@ mod tests {
             data: [0xa8; 20],
         };
         assert_eq!(format!("{}", cid), "a8a8a8a8");
+    }
+
+    #[test]
+    fn initial_rtt() -> Result<()> {
+        let mut config = Config::new()?;
+
+        config.set_initial_rtt(0);
+        assert_eq!(config.recovery.initial_rtt, TIMER_GRANULARITY);
+
+        config.set_initial_rtt(100);
+        assert_eq!(config.recovery.initial_rtt, Duration::from_millis(100));
+
+        Ok(())
     }
 }
 

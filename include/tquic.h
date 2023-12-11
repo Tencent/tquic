@@ -108,8 +108,8 @@ typedef struct http3_conn_t http3_conn_t;
 typedef struct http3_headers_t http3_headers_t;
 
 typedef struct quic_tls_config_select_methods_t {
-  const SSL_CTX *(*get_default)(void *ctx);
-  const SSL_CTX *(*select)(void *ctx, const uint8_t *server_name, size_t server_name_len);
+  SSL_CTX *(*get_default)(void *ctx);
+  SSL_CTX *(*select)(void *ctx, const uint8_t *server_name, size_t server_name_len);
 } quic_tls_config_select_methods_t;
 
 typedef void *quic_tls_config_select_context_t;
@@ -160,11 +160,6 @@ typedef struct quic_transport_methods_t {
 
 typedef void *quic_transport_context_t;
 
-typedef struct quic_transport_handler_t {
-  const struct quic_transport_methods_t *methods;
-  quic_transport_context_t context;
-} quic_transport_handler_t;
-
 /**
  * Data and meta information of a outgoing packet.
  */
@@ -189,11 +184,6 @@ typedef struct quic_packet_send_methods_t {
 } quic_packet_send_methods_t;
 
 typedef void *quic_packet_send_context_t;
-
-typedef struct quic_packet_send_handler_t {
-  const struct quic_packet_send_methods_t *methods;
-  quic_packet_send_context_t context;
-} quic_packet_send_handler_t;
 
 /**
  * Meta information of a incoming packet.
@@ -352,6 +342,13 @@ void quic_config_set_congestion_control_algorithm(struct quic_config_t *config,
                                                   enum quic_congestion_control_algorithm v);
 
 /**
+ * Set the initial RTT in milliseconds. The default value is 333ms.
+ * The configuration should be changed with caution. Setting a value less than the default
+ * will cause retransmission of handshake packets to be more aggressive.
+ */
+void quic_config_set_initial_rtt(struct quic_config_t *config, uint64_t v);
+
+/**
  * Set the `active_connection_id_limit` transport parameter.
  */
 void quic_config_set_active_connection_id_limit(struct quic_config_t *config, uint64_t v);
@@ -420,14 +417,27 @@ void quic_config_set_tls_selector(struct quic_config_t *config,
                                   quic_tls_config_select_context_t context);
 
 /**
+ * Set TLS config.
+ * The caller is responsible for the memory of SSL_CTX when use this function.
+ */
+void quic_config_set_tls_config(struct quic_config_t *config, SSL_CTX *ssl_ctx);
+
+/**
  * Create a QUIC endpoint.
+ *
  * The caller is responsible for the memory of the Endpoint and properly
  * destroy it by calling `quic_endpoint_free`.
+ *
+ * Note: The endpoint doesn't own the underlying resources provided by the C
+ * caller. It is the responsibility of the caller to ensure that these
+ * resources outlive the endpoint and release them correctly.
  */
 struct quic_endpoint_t *quic_endpoint_new(struct quic_config_t *config,
                                           bool is_server,
-                                          struct quic_transport_handler_t *handler,
-                                          struct quic_packet_send_handler_t *sender);
+                                          const struct quic_transport_methods_t *handler_methods,
+                                          quic_transport_context_t handler_ctx,
+                                          const struct quic_packet_send_methods_t *sender_methods,
+                                          quic_packet_send_context_t sender_ctx);
 
 /**
  * Destroy a QUIC endpoint.
