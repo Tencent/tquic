@@ -7,6 +7,7 @@ sidebar_position: 3
 
 :::tip
 本文的完整示例代码可在GitHub [TQUIC C示例](https://github.com/tquic-group/tquic-example-c)代码库找到：
+* [simple_client.c](https://github.com/tquic-group/tquic-example-c/blob/main/simple_client.c)
 * [simple_server.c](https://github.com/tquic-group/tquic-example-c/blob/main/simple_server.c)
 ::: 
 
