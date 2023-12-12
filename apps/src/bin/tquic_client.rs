@@ -54,6 +54,7 @@ use tquic::h3::connection::Http3Connection;
 use tquic::h3::Header;
 use tquic::h3::Http3Config;
 use tquic::Config;
+use tquic::CongestionControlAlgorithm;
 use tquic::Connection;
 use tquic::Endpoint;
 use tquic::MultipathAlgorithm;
@@ -144,6 +145,10 @@ pub struct ClientOpt {
     /// Disable stateless reset.
     #[clap(long)]
     pub disable_stateless_reset: bool,
+
+    /// Congestion control algorithm.
+    #[clap(long, default_value = "CUBIC")]
+    pub congestion_control_algor: CongestionControlAlgorithm,
 
     /// Enable multipath transport.
     #[clap(long)]
@@ -385,6 +390,7 @@ impl Worker {
         config.set_send_batch_size(option.send_batch_size);
         config.set_recv_udp_payload_size(option.recv_udp_payload_size);
         config.set_send_udp_payload_size(option.send_udp_payload_size);
+        config.set_congestion_control_algorithm(option.congestion_control_algor);
         config.set_multipath(option.enable_multipath);
         config.set_multipath_algor(option.multipath_algor);
         let tls_config =
