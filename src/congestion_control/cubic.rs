@@ -300,6 +300,10 @@ impl CongestionController for Cubic {
         }
     }
 
+    fn begin_ack(&mut self, now: Instant, bytes_in_flight: u64) {
+        // Do nothing.
+    }
+
     fn on_ack(
         &mut self,
         packet: &mut SentPacket,
