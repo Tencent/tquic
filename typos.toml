@@ -1,0 +1,24 @@
+[default]
+binary = false
+check-filename = true
+
+[default.extend-identifiers]
+referes = "referes"
+StatuS = "StatuS"
+
+[default.extend-words]
+# ECN Capable Transport
+ect = "ect"
+
+[files]
+extend-exclude = [
+    "*.snap",
+    "*.bin",
+    "*.der",
+    "*.pem",
+    "LICENSE",
+    "**/website/**/*",
+    "**/target/**/*",
+    "**/deps/**/*",
+    "**/corpus/**/*",
+]

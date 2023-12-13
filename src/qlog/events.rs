@@ -721,7 +721,7 @@ impl EventImportance {
 /// The "time" field indicates the timestamp at which the event occurred.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub enum TimeFormat {
-    /// Iclude the full absolute timestamp with each event. This approach uses
+    /// Include the full absolute timestamp with each event. This approach uses
     /// the largest amount of characters.
     Absolute,
 
