@@ -535,6 +535,16 @@ mod tests {
 
         cubic.w_max = 10240.0;
 
+        // Default settings.
+        assert_eq!(
+            cubic.minimal_window(),
+            2 * crate::DEFAULT_SEND_UDP_PAYLOAD_SIZE as u64
+        );
+        assert_eq!(
+            cubic.initial_window(),
+            10 * crate::DEFAULT_SEND_UDP_PAYLOAD_SIZE as u64
+        );
+
         // Valid cwnd.
         let cwnd = 7040;
         assert_eq!(cubic.cubic_k(cwnd, max_datagram_size), 2.0);
@@ -542,6 +552,154 @@ mod tests {
         // Invalid cwnd (larger than w_max).
         let cwnd = 20000;
         assert_eq!(cubic.cubic_k(cwnd, max_datagram_size), 0.0);
+    }
+
+    #[test]
+    fn cubic_on_sent() {
+        let cubic_cfg = CubicConfig::default();
+        let mut cubic = Cubic::new(cubic_cfg);
+        let now = Instant::now();
+        let mut pkts: Vec<SentPacket> = Vec::new(); // let mut pkts_part3: Vec<SentPacket> = Vec::new();
+        let bytes_lost = 0;
+        let mut bytes_in_flight = 0;
+        let pkt_size: u64 = 240;
+        let n_pkts = 6;
+
+        // Packets for sample 1.
+        for n in 0..n_pkts {
+            pkts.push(SentPacket {
+                pkt_num: n,
+                frames: Vec::new(),
+                // Sent timestamp differs.
+                time_sent: now + Duration::from_millis(10 * (n / (n_pkts / 2))),
+                time_acked: Some(now + Duration::from_millis(20 + n)),
+                time_lost: None,
+                ack_eliciting: true,
+                in_flight: true,
+                has_data: false,
+                sent_size: pkt_size as usize,
+                rate_sample_state: Default::default(),
+                reinjected: false,
+            });
+        }
+
+        for i in 0..(n_pkts / 2) {
+            bytes_in_flight += pkt_size;
+            cubic.on_sent(now, &mut pkts[i as usize], bytes_in_flight);
+        }
+        assert_eq!(cubic.last_sent_time.unwrap(), now);
+        assert_eq!(cubic.in_slow_start(), true);
+        assert_eq!(
+            cubic.stats().bytes_sent_in_slow_start,
+            n_pkts / 2 * pkt_size
+        );
+        assert_eq!(cubic.stats().bytes_sent_in_total, n_pkts / 2 * pkt_size);
+        assert_eq!(cubic.stats().bytes_in_flight, n_pkts / 2 * pkt_size);
+
+        // Assume all sent packets are acked, and recovery epoch starts.
+        bytes_in_flight = 0;
+        cubic.recovery_epoch_start = Some(now + Duration::from_millis(5));
+
+        for i in (n_pkts / 2)..n_pkts {
+            cubic.on_sent(now, &mut pkts[i as usize], bytes_in_flight);
+            bytes_in_flight += pkt_size;
+        }
+
+        assert_eq!(
+            cubic.last_sent_time.unwrap(),
+            now + Duration::from_millis(10)
+        );
+        assert_eq!(cubic.in_slow_start(), true);
+        assert_eq!(cubic.stats().bytes_sent_in_slow_start, n_pkts * pkt_size);
+        assert_eq!(cubic.stats().bytes_sent_in_total, n_pkts * pkt_size);
+        // recovery_epoch_start would be delayed to follow better cubic curve.
+        assert_eq!(
+            cubic.recovery_epoch_start,
+            Some(now + Duration::from_millis(5) + Duration::from_millis(10))
+        );
+    }
+
+    #[test]
+    fn cubic_ack() {
+        let cubic_cfg = CubicConfig::default();
+        let mut cubic = Cubic::new(cubic_cfg);
+        let now = Instant::now();
+        let mut pkts: Vec<SentPacket> = Vec::new(); // let mut pkts_part3: Vec<SentPacket> = Vec::new();
+        let rtt = RttEstimator::new(Duration::from_millis(20));
+        let bytes_lost = 0;
+        let pkt_size: u64 = 240;
+        let n_pkts = 6;
+
+        // Packets for sample 1.
+        for n in 0..n_pkts {
+            pkts.push(SentPacket {
+                pkt_num: n,
+                frames: Vec::new(),
+                // Sent timestamp differs.
+                time_sent: now + Duration::from_millis(n),
+                time_acked: Some(now + Duration::from_millis(20)),
+                time_lost: None,
+                ack_eliciting: true,
+                in_flight: true,
+                has_data: false,
+                sent_size: pkt_size as usize,
+                rate_sample_state: Default::default(),
+                reinjected: false,
+            });
+        }
+
+        // In slow start.
+        let mut time_acked = now + Duration::from_millis(20);
+        let mut cwnd = cubic.congestion_window();
+        cubic.begin_ack(time_acked, pkt_size);
+        for i in 0..(n_pkts - 3) {
+            cubic.on_ack(&mut pkts[i as usize], time_acked, false, &rtt, 0);
+        }
+        cubic.end_ack();
+        assert_eq!(cubic.hystart.has_exited(), false);
+        assert_eq!(cubic.in_slow_start(), true);
+        assert_eq!(cubic.congestion_window(), cwnd + (n_pkts - 3) * pkt_size);
+
+        // Congestion event.
+        cwnd = cubic.congestion_window();
+        cubic.on_congestion_event(time_acked, &pkts[(n_pkts - 3) as usize], false, pkt_size, 0);
+        assert_eq!(cubic.w_max, cwnd as f64);
+        assert_eq!(cubic.ssthresh, (cwnd as f64 * cubic.config.beta) as u64);
+        assert_eq!(cubic.cwnd, cubic.ssthresh);
+
+        cwnd = cubic.congestion_window();
+        pkts[(n_pkts - 2) as usize].time_sent = time_acked + Duration::from_millis(5);
+        cubic.on_congestion_event(
+            time_acked + Duration::from_millis(20),
+            &pkts[(n_pkts - 2) as usize],
+            false,
+            pkt_size,
+            0,
+        );
+        assert_eq!(cubic.w_max, cwnd as f64 * (1.0 + cubic.config.beta) / 2.0);
+        assert_eq!(cubic.ssthresh, (cwnd as f64 * cubic.config.beta) as u64);
+        assert_eq!(cubic.cwnd, cubic.ssthresh);
+
+        // In congestion avoidance.
+        assert_eq!(cubic.in_slow_start(), false);
+        assert_eq!(cubic.hystart.has_exited(), true);
+        pkts[(n_pkts - 1) as usize].time_sent = time_acked + Duration::from_millis(25);
+        time_acked += Duration::from_millis(30);
+        cubic.begin_ack(time_acked, 0);
+        cubic.on_ack(&mut pkts[(n_pkts - 1) as usize], time_acked, false, &rtt, 0);
+        cubic.end_ack();
+        assert!(cubic.cwnd >= cubic.ssthresh);
+    }
+
+    #[test]
+    fn cubic_in_recovery() {
+        let cubic_cfg = CubicConfig::default();
+        let mut cubic = Cubic::new(cubic_cfg);
+        let now = Instant::now();
+
+        cubic.recovery_epoch_start = Some(now + Duration::from_millis(10));
+        assert_eq!(cubic.in_recovery(now), true);
+        assert_eq!(cubic.in_recovery(now + Duration::from_millis(15)), false);
     }
 
     #[test]

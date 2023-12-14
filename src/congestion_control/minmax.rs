@@ -214,8 +214,12 @@ mod test {
 
     #[test]
     fn minmax_update_max() {
-        let mut min_max = MinMax::new(10);
+        let mut min_max = MinMax::new(15);
         let round: u64 = 20;
+
+        min_max.set_window(10);
+        assert_eq!(min_max.window, 10);
+
         // Uninitialised.
         min_max.update_max(1, 200);
         assert_eq!(min_max.get(), 200);
