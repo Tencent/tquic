@@ -154,6 +154,8 @@ pub enum Error {
 }
 
 impl Error {
+    /// Return the wire value of the error.
+    /// See RFC 9000 Section 22.5
     pub(crate) fn to_wire(&self) -> u64 {
         match *self {
             Error::NoError => 0x0,
@@ -179,7 +181,8 @@ impl Error {
         }
     }
 
-    pub(crate) fn to_c(&self) -> libc::ssize_t {
+    /// Return the error number using by the C caller.
+    pub(crate) fn to_errno(&self) -> libc::ssize_t {
         match self {
             Error::NoError => 0,
             Error::InternalError => -1,
@@ -293,12 +296,12 @@ mod tests {
     }
 
     #[test]
-    fn error_to_c() {
+    fn error_to_errno() {
         for err in Error::iter() {
             if err == Error::NoError {
-                assert_eq!(err.to_c(), 0);
+                assert_eq!(err.to_errno(), 0);
             } else {
-                assert!(err.to_c() < 0);
+                assert!(err.to_errno() < 0);
             }
         }
     }
