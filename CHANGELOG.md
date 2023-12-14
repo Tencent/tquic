@@ -20,13 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add quic_conn_index() for getting connection index
 - tquic_client: create the output directory if it does not exist
 - tquic_client: convert unspecified address to localhost address
-- tquic_client: prompt help messages for wrong command args -
+- tquic_client: prompt help messages for wrong command args
 - tquic_client: print statistics at the end of execution
 - Improve unit testing
 - Improve static analysis
 
 ### Changed
-- endpoint: change Endpoint.close() to support forcily close the endpint
+- endpoint: change Endpoint.close() to support forcily close the endpoint
 - endpoint: quic_endpoint_new() no longer takes ownership of the resources provides by the C caller
 - tquic_client: change `-p` option to write the response header and body to stdout
 

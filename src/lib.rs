@@ -144,7 +144,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct ConnectionId {
     /// length of cid
     len: u8,
-    /// octects of cid
+    /// octets of cid
     data: [u8; MAX_CID_LEN],
 }
 

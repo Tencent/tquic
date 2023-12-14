@@ -109,6 +109,8 @@ pub enum Http3Error {
 }
 
 impl Http3Error {
+    /// Return the wire value of the error.
+    /// See RFC 9114 Section 11.2.3
     pub fn to_wire(&self) -> u64 {
         match self {
             Http3Error::NoError => 0x100,
@@ -137,7 +139,8 @@ impl Http3Error {
         }
     }
 
-    pub(crate) fn to_c(&self) -> libc::ssize_t {
+    /// Return the error number using by the C caller.
+    pub(crate) fn to_errno(&self) -> libc::ssize_t {
         match self {
             Http3Error::NoError => 0,
             Http3Error::Done => -1,
@@ -163,7 +166,7 @@ impl Http3Error {
             Http3Error::QpackEncoderStreamError => -21,
             Http3Error::QpackDecoderStreamError => -22,
 
-            Http3Error::TransportError(quic_error) => quic_error.to_c() - 1000,
+            Http3Error::TransportError(quic_error) => quic_error.to_errno() - 1000,
         }
     }
 }
@@ -208,12 +211,12 @@ mod tests {
     }
 
     #[test]
-    fn error_to_c() {
+    fn error_to_errno() {
         for err in Http3Error::iter() {
             if err == Http3Error::NoError {
-                assert_eq!(err.to_c(), 0);
+                assert_eq!(err.to_errno(), 0);
             } else {
-                assert!(err.to_c() < 0);
+                assert!(err.to_errno() < 0);
             }
         }
     }

@@ -84,6 +84,10 @@ jobs:
       run: rustup update
     - name: Code format check
       run: cargo fmt --check
+    - name: Code spell check
+      run: |
+        cargo install typos-cli
+        typos -c ./typos.toml
     - name: Code lint check
       run: cargo clippy --all -- -D warnings
 
