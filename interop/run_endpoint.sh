@@ -15,6 +15,7 @@
 # limitations under the License.
 
 set -e
+set -x
 
 # Set up the routing needed for the simulation.
 /setup.sh
@@ -42,13 +43,30 @@ ROOT_DIR="/www"
 DOWNLOAD_DIR="/downloads"
 LOG_DIR="/logs"
 
+CC_ALGOR="CUBIC"
+case ${CONGESTION^^} in
+BBR)
+    CC_ALGOR="BBR"
+    ;;
+BBR3)
+    CC_ALGOR="BBR3"
+    ;;
+COPA)
+    CC_ALGOR="COPA"
+    ;;
+*)
+    ;;
+esac
+
+COMMON_ARGS="--keylog-file $SSLKEYLOGFILE --log-level TRACE --idle-timeout 30000 --handshake-timeout 30000 --congestion-control-algor $CC_ALGOR"
+
 if [ "$ROLE" == "client" ]; then
     # Wait for the simulator to start up.
     /wait-for-it.sh sim:57832 -s -t 30
 
     REQS=($REQUESTS)
 
-    CLIENT_ARGS="--dump-path ${DOWNLOAD_DIR} --keylog-file $SSLKEYLOGFILE --log-level TRACE --idle-timeout 30000 --handshake-timeout 30000 --max-concurrent-requests ${#REQS[@]}"
+    CLIENT_ARGS="$COMMON_ARGS --dump-path ${DOWNLOAD_DIR} --max-concurrent-requests ${#REQS[@]}"
     CLIENT_ALPN="--alpn hq-interop"
     case $TESTCASE in
     resumption)
@@ -82,7 +100,7 @@ if [ "$ROLE" == "client" ]; then
         ;;
     esac
 elif [ "$ROLE" == "server" ]; then
-    SERVER_ARGS="-c /certs/cert.pem -k /certs/priv.key --listen [::]:443 --root $ROOT_DIR --keylog-file $SSLKEYLOGFILE --log-level TRACE --idle-timeout 30000 --handshake-timeout 30000"
+    SERVER_ARGS="$COMMON_ARGS -c /certs/cert.pem -k /certs/priv.key --listen [::]:443 --root $ROOT_DIR"
     case $TESTCASE in
     retry)
         SERVER_ARGS="$SERVER_ARGS --enable-retry"

@@ -16,6 +16,7 @@ jobs:
       matrix:
         impl: [tquic,lsquic,quiche]
         case: [goodput100k,goodput1m,goodput10m]
+        cc: [cubic, bbr]
 
     steps:
     - name: Install quic-interop-runner
@@ -33,10 +34,10 @@ jobs:
     - name: Run the interop tests 
       run: |
         cd quic-interop-runner   
-        python3 run.py -s ${{ matrix.impl }} -c ${{ matrix.impl }} -t ${{ matrix.case }} -d -n "drop-rate --delay=15ms --bandwidth=10Mbps --queue=25 --rate_to_server=0 --rate_to_client=0" -j ${{ matrix.case }}-0-${{ matrix.impl }}.json 
-        python3 run.py -s ${{ matrix.impl }} -c ${{ matrix.impl }} -t ${{ matrix.case }} -d -n "drop-rate --delay=15ms --bandwidth=10Mbps --queue=25 --rate_to_server=1 --rate_to_client=1" -j ${{ matrix.case }}-1-${{ matrix.impl }}.json
-        python3 run.py -s ${{ matrix.impl }} -c ${{ matrix.impl }} -t ${{ matrix.case }} -d -n "drop-rate --delay=15ms --bandwidth=10Mbps --queue=25 --rate_to_server=3 --rate_to_client=3" -j ${{ matrix.case }}-5_-${{ matrix.impl }}.json
-        python3 run.py -s ${{ matrix.impl }} -c ${{ matrix.impl }} -t ${{ matrix.case }} -d -n "drop-rate --delay=15ms --bandwidth=10Mbps --queue=25 --rate_to_server=5 --rate_to_client=5" -j ${{ matrix.case }}-10-${{ matrix.impl }}.json
+        python3 run.py -s ${{ matrix.impl }} -c ${{ matrix.impl }} -t ${{ matrix.case }} -a ${{ matrix.cc }} -d -n "drop-rate --delay=15ms --bandwidth=10Mbps --queue=25 --rate_to_server=0 --rate_to_client=0" -j ${{ matrix.case }}-0-${{ matrix.cc }}-${{ matrix.impl }}.json
+        python3 run.py -s ${{ matrix.impl }} -c ${{ matrix.impl }} -t ${{ matrix.case }} -a ${{ matrix.cc }} -d -n "drop-rate --delay=15ms --bandwidth=10Mbps --queue=25 --rate_to_server=1 --rate_to_client=1" -j ${{ matrix.case }}-1-${{ matrix.cc }}-${{ matrix.impl }}.json
+        python3 run.py -s ${{ matrix.impl }} -c ${{ matrix.impl }} -t ${{ matrix.case }} -a ${{ matrix.cc }} -d -n "drop-rate --delay=15ms --bandwidth=10Mbps --queue=25 --rate_to_server=3 --rate_to_client=3" -j ${{ matrix.case }}-3-${{ matrix.cc }}-${{ matrix.impl }}.json
+        python3 run.py -s ${{ matrix.impl }} -c ${{ matrix.impl }} -t ${{ matrix.case }} -a ${{ matrix.cc }} -d -n "drop-rate --delay=15ms --bandwidth=10Mbps --queue=25 --rate_to_server=5 --rate_to_client=5" -j ${{ matrix.case }}-5-${{ matrix.cc }}-${{ matrix.impl }}.json
 
     - name: Store measurement results
       uses: actions/upload-artifact@v3
