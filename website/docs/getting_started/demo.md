@@ -59,6 +59,10 @@ Options:
           Disable stateless reset
       --congestion-control-algor <CONGESTION_CONTROL_ALGOR>
           Congestion control algorithm [default: CUBIC]
+      --initial-congestion-window <NUM>
+          Initial congestion window in packets [default: 32]
+      --min-congestion-window <NUM>
+          Minimum congestion window in packets [default: 4]
       --enable-multipath
           Enable multipath transport
       --multipath-algor <MULTIPATH_ALGOR>
@@ -141,6 +145,10 @@ Options:
           Disable stateless reset
       --congestion-control-algor <CONGESTION_CONTROL_ALGOR>
           Congestion control algorithm [default: CUBIC]
+      --initial-congestion-window <NUM>
+          Initial congestion window in packets [default: 32]
+      --min-congestion-window <NUM>
+          Minimum congestion window in packets [default: 4]
       --enable-multipath
           Enable multipath transport
       --multipath-algor <MULTIPATH_ALGOR>
