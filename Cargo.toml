@@ -68,7 +68,7 @@ cmake = "0.1"
 crate-type = ["lib", "staticlib"]
 
 [workspace]
-members = ["apps"]
+members = ["tools"]
 
 [[bench]]
 name = "timer_queue"

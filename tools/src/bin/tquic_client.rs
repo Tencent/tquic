@@ -62,10 +62,10 @@ use tquic::PacketInfo;
 use tquic::TlsConfig;
 use tquic::TransportHandler;
 use tquic::TIMER_GRANULARITY;
-use tquic_apps::alpns;
-use tquic_apps::AppProto;
-use tquic_apps::QuicSocket;
-use tquic_apps::Result;
+use tquic_tools::alpns;
+use tquic_tools::AppProto;
+use tquic_tools::QuicSocket;
+use tquic_tools::Result;
 
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;

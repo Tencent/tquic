@@ -13,7 +13,7 @@ The top directories are as followings:
 | Directory | Description |
 | --------- | ----------- |
 | src/       | TQUIC implementation |
-| apps/      | TQUIC Example tools |
+| tools/      | TQUIC Example tools |
 | benches/   | Benchmark tests |
 | fuzz/      | Fuzzing tests |
 | interop/   | Interoperability testing |
