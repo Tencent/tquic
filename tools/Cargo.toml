@@ -1,7 +1,14 @@
 [package]
-name = "tquic_apps"
-version = "0.1.0"
+name = "tquic_tools"
+version = "0.3.0"
 edition = "2021"
+rust-version = "1.70.0"
+license = "Apache-2.0"
+repository = "https://github.com/tencent/tquic"
+homepage = "https://tquic.net"
+description = "TQUIC client and server tools"
+keywords = ["quic"]
+categories = ["network-programming"]
 
 [dependencies]
 bytes = "1"
@@ -15,7 +22,7 @@ slab = "0.4"
 rand = "0.8.5"
 statrs = "0.16"
 tikv-jemallocator = "0.5"
-tquic = { path = ".." }
+tquic = { path = "..", version = "0.3.0"}
 
 [lib]
 crate-type = ["lib"]

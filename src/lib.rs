@@ -38,7 +38,7 @@
 //! ## Get started
 //!
 //! See the [documents](https://tquic.net/docs/category/getting-started) and
-//! [examples](https://github.com/tencent/tquic/tree/master/apps/) to get
+//! [examples](https://github.com/tencent/tquic/tree/master/tools/) to get
 //! started with TQUIC.
 //!
 //! ## Feature flags

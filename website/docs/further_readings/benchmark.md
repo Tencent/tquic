@@ -35,7 +35,7 @@ The application logic of each server program is simplified to reflect the actual
 Each server program is compiled in release mode and configured to run in single-thread mode. For detailed configuration parameters, please refer to the [Appendix](benchmark.md#appendix).
 
 
-**Client-side Setup**: The [TQUIC client](https://github.com/tencent/tquic/apps/src/bin/client.rs) is used as a stress testing tool due to its highly flexible parameters, and support for multiple threads, which helps increase the pressure to a test server.
+**Client-side Setup**: The [TQUIC client](https://github.com/tencent/tquic/tools/src/bin/tquic_client.rs) is used as a stress testing tool due to its highly flexible parameters, and support for multiple threads, which helps increase the pressure to a test server.
 
 
 ### Scenarios tested
