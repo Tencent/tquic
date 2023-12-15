@@ -5,6 +5,7 @@
 [![codecov](https://codecov.io/gh/tencent/tquic/graph/badge.svg)](https://codecov.io/gh/tencent/tquic)
 [![docs.rs](https://docs.rs/tquic/badge.svg)](https://docs.rs/tquic)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/8010/badge)](https://www.bestpractices.dev/projects/8010)
+[![Website](https://img.shields.io/website?url=https%3A%2F%2Ftquic.net&up_message=tquic.net)](https://tquic.net)
 
 [English](README.md) | 中文
 
