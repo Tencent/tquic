@@ -150,6 +150,14 @@ pub struct ClientOpt {
     #[clap(long, default_value = "CUBIC")]
     pub congestion_control_algor: CongestionControlAlgorithm,
 
+    /// Initial congestion window in packets.
+    #[clap(long, default_value = "32", value_name = "NUM")]
+    pub initial_congestion_window: u64,
+
+    /// Minimum congestion window in packets.
+    #[clap(long, default_value = "4", value_name = "NUM")]
+    pub min_congestion_window: u64,
+
     /// Enable multipath transport.
     #[clap(long)]
     pub enable_multipath: bool,
@@ -391,6 +399,8 @@ impl Worker {
         config.set_recv_udp_payload_size(option.recv_udp_payload_size);
         config.set_send_udp_payload_size(option.send_udp_payload_size);
         config.set_congestion_control_algorithm(option.congestion_control_algor);
+        config.set_initial_congestion_window(option.initial_congestion_window);
+        config.set_min_congestion_window(option.min_congestion_window);
         config.set_multipath(option.enable_multipath);
         config.set_multipath_algor(option.multipath_algor);
         let tls_config =

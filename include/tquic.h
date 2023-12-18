@@ -342,6 +342,18 @@ void quic_config_set_congestion_control_algorithm(struct quic_config_t *config,
                                                   enum quic_congestion_control_algorithm v);
 
 /**
+ * Set the initial congestion window in packets.
+ * The default value is 10.
+ */
+void quic_config_set_initial_congestion_window(struct quic_config_t *config, uint64_t v);
+
+/**
+ * Set the minimal congestion window in packets.
+ * The default value is 2.
+ */
+void quic_config_set_min_congestion_window(struct quic_config_t *config, uint64_t v);
+
+/**
  * Set the initial RTT in milliseconds. The default value is 333ms.
  * The configuration should be changed with caution. Setting a value less than the default
  * will cause retransmission of handshake packets to be more aggressive.

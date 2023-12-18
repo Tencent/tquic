@@ -3935,6 +3935,7 @@ pub(crate) mod tests {
     use crate::tls::TlsConfig;
     use crate::tls::TlsConfigSelector;
     use crate::token::ResetToken;
+    use crate::CongestionControlAlgorithm;
     use crate::ConnectionIdGenerator;
     use crate::RandomConnectionIdGenerator;
     use bytes::BytesMut;
@@ -4212,6 +4213,9 @@ pub(crate) mod tests {
             conf.set_active_connection_id_limit(2);
             conf.set_ack_delay_exponent(3);
             conf.set_max_ack_delay(25);
+            conf.set_congestion_control_algorithm(CongestionControlAlgorithm::Cubic);
+            conf.set_initial_congestion_window(10);
+            conf.set_min_congestion_window(2);
             conf.set_reset_token_key([1u8; 64]);
             conf.set_address_token_lifetime(3600);
             conf.set_send_batch_size(2);
@@ -5048,8 +5052,8 @@ pub(crate) mod tests {
     fn path_new_by_client() -> Result<()> {
         let mut test_pair = TestPair::new_with_test_config()?;
         test_pair.handshake()?;
-        assert_eq!(test_pair.client.paths_iter().count(), 1);
-        assert_eq!(test_pair.server.paths_iter().count(), 1);
+        assert_eq!(test_pair.client.paths_iter().len(), 1);
+        assert_eq!(test_pair.server.paths_iter().len(), 1);
 
         let client_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 9444);
         let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 443);
@@ -5063,8 +5067,8 @@ pub(crate) mod tests {
 
         // Client try to add path again
         test_pair.client.add_path(client_addr, server_addr)?;
-        assert_eq!(test_pair.client.paths_iter().count(), 2);
-        assert_eq!(test_pair.server.paths_iter().count(), 1);
+        assert_eq!(test_pair.client.paths_iter().len(), 2);
+        assert_eq!(test_pair.server.paths_iter().len(), 1);
         assert_eq!(
             test_pair.client.get_path(client_addr, server_addr)?.state(),
             PathState::Unknown
@@ -5080,7 +5084,7 @@ pub(crate) mod tests {
 
         // Server send PATH_RESPONSE/PATH_CHALLENGE
         let packets = TestPair::conn_packets_out(&mut test_pair.server)?;
-        assert_eq!(test_pair.server.paths_iter().count(), 2);
+        assert_eq!(test_pair.server.paths_iter().len(), 2);
         assert_eq!(
             test_pair.server.get_path(server_addr, client_addr)?.state(),
             PathState::Validating
