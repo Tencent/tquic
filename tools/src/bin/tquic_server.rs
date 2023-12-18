@@ -96,7 +96,7 @@ pub struct ServerOpt {
     pub disable_stateless_reset: bool,
 
     /// Congestion control algorithm.
-    #[clap(long, default_value = "CUBIC")]
+    #[clap(long, default_value = "BBR")]
     pub congestion_control_algor: CongestionControlAlgorithm,
 
     /// Initial congestion window in packets.

@@ -41,7 +41,6 @@ pub enum CongestionControlAlgorithm {
     /// CUBIC uses a cubic function instead of a linear window increase function
     /// of the current TCP standards to improve scalability and stability under
     /// fast and long-distance networks..
-    #[default]
     Cubic,
 
     /// BBR uses recent measurements of a transport connection's delivery rate,
@@ -49,6 +48,7 @@ pub enum CongestionControlAlgorithm {
     /// network path. The model is then used to control data transmission speed
     /// and the maximum volume of data allowed in flight in the network at any
     /// time.
+    #[default]
     Bbr,
 
     /// BBRv3 is the latest version of BBR, including various fixes and
