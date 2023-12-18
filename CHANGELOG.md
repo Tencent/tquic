@@ -11,6 +11,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [v0.4.0] - 2023-12-18
+
+### Added
+- Add config API for initial_congestion_window/min_congestion_window
+- Add congestion_control_algor option for tquic_client/tquic_server
+- Add initial_congestion_window/min_congestion_window option for tquic_client/tquic_server
+- Add more unittest cases for delivery_rate/minmax
+- Simplify ffi feature in tls module
+- Add typos.toml and fix all typos
+- Add a workflow for goodput measurements
+
+### Changed
+- Rename tquic_apps to tquic_tools
+- Move examples to `tquic-group/tquic-examples-*` repos
+
+### Fixed
+- Keep cc unchanged for non-data packets (e.g., Initial and Handshake)
+- Update the LICENSE file
+
+
 ## [v0.3.0] - 2023-12-01
 
 ### Added
@@ -57,6 +77,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Provide example clients and servers.
 
 
+[v0.4.0]: https://github.com/tencent/tquic/compare/v0.3.0...v0.4.0
 [v0.3.0]: https://github.com/tencent/tquic/compare/v0.2.0...v0.3.0
 [v0.2.0]: https://github.com/tencent/tquic/compare/v0.1.0...v0.2.0
 [v0.1.0]: https://github.com/tencent/tquic/releases/tag/v0.1.0
