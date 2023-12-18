@@ -469,7 +469,7 @@ impl Config {
     }
 
     /// Set congestion control algorithm that the connection would use.
-    /// The default value is Cubic.
+    /// The default value is Bbr.
     pub fn set_congestion_control_algorithm(&mut self, cca: CongestionControlAlgorithm) {
         self.recovery.congestion_control_algorithm = cca;
     }
@@ -652,7 +652,7 @@ impl Default for RecoveryConfig {
         RecoveryConfig {
             max_datagram_size: 1200,
             max_ack_delay: time::Duration::from_millis(0),
-            congestion_control_algorithm: CongestionControlAlgorithm::Cubic,
+            congestion_control_algorithm: CongestionControlAlgorithm::Bbr,
             min_congestion_window: 2_u64,
             initial_congestion_window: 10_u64,
             initial_rtt: INITIAL_RTT,

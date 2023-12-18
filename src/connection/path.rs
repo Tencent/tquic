@@ -536,9 +536,9 @@ mod tests {
         RecoveryConfig {
             max_datagram_size: 1200,
             max_ack_delay: time::Duration::from_millis(0),
-            congestion_control_algorithm: CongestionControlAlgorithm::Cubic,
+            congestion_control_algorithm: CongestionControlAlgorithm::Bbr,
             min_congestion_window: 2_u64,
-            initial_congestion_window: 8_u64,
+            initial_congestion_window: 10_u64,
             initial_rtt: crate::INITIAL_RTT,
         }
     }
