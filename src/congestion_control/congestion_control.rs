@@ -14,13 +14,16 @@
 
 #![allow(unused_variables)]
 
+use core::str::FromStr;
 use std::any::Any;
 use std::fmt;
 use std::time::Instant;
 
 use crate::connection::rtt::RttEstimator;
 use crate::connection::space::SentPacket;
+use crate::Error;
 use crate::RecoveryConfig;
+use crate::Result;
 pub use bbr::Bbr;
 pub use bbr::BbrConfig;
 pub use bbr3::Bbr3;
@@ -60,6 +63,24 @@ pub enum CongestionControlAlgorithm {
     Copa,
 }
 
+impl FromStr for CongestionControlAlgorithm {
+    type Err = Error;
+
+    fn from_str(algor: &str) -> Result<CongestionControlAlgorithm> {
+        if algor.eq_ignore_ascii_case("cubic") {
+            Ok(CongestionControlAlgorithm::Cubic)
+        } else if algor.eq_ignore_ascii_case("bbr") {
+            Ok(CongestionControlAlgorithm::Bbr)
+        } else if algor.eq_ignore_ascii_case("bbr3") {
+            Ok(CongestionControlAlgorithm::Bbr3)
+        } else if algor.eq_ignore_ascii_case("copa") {
+            Ok(CongestionControlAlgorithm::Copa)
+        } else {
+            Err(Error::InvalidConfig("unknown".into()))
+        }
+    }
+}
+
 /// Congestion control statistics.
 #[derive(Debug, Default, Clone)]
 pub struct CongestionStats {
@@ -94,7 +115,7 @@ pub trait CongestionController {
     fn on_sent(&mut self, now: Instant, packet: &mut SentPacket, bytes_in_flight: u64);
 
     /// Callback for ack packets preprocessing.
-    fn begin_ack(&mut self, now: Instant, bytes_in_flight: u64) {}
+    fn begin_ack(&mut self, now: Instant, bytes_in_flight: u64);
 
     /// Callback for processing each ack packet.
     fn on_ack(
@@ -104,11 +125,10 @@ pub trait CongestionController {
         app_limited: bool,
         rtt: &RttEstimator,
         bytes_in_flight: u64,
-    ) {
-    }
+    );
 
     /// Callback for Updating states after all ack packets are processed.
-    fn end_ack(&mut self) {}
+    fn end_ack(&mut self);
 
     /// Congestion event.
     fn on_congestion_event(
@@ -118,12 +138,11 @@ pub trait CongestionController {
         is_persistent_congestion: bool,
         lost_bytes: u64,
         bytes_in_flight: u64,
-    ) {
-    }
+    );
 
     /// Check if in slow start.
     fn in_slow_start(&self) -> bool {
-        false
+        true
     }
 
     /// Check if in recovery mode.
@@ -192,15 +211,80 @@ pub fn build_congestion_controller(conf: &RecoveryConfig) -> Box<dyn CongestionC
     }
 }
 
-#[path = "copa/copa.rs"]
-mod copa;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Config;
+    use crate::Result;
+    use std::time;
 
-#[path = "bbr/bbr.rs"]
+    #[test]
+    fn congestion_control_name() {
+        use super::*;
+
+        let cases = [
+            ("cubic", Ok(CongestionControlAlgorithm::Cubic)),
+            ("Cubic", Ok(CongestionControlAlgorithm::Cubic)),
+            ("CUBIC", Ok(CongestionControlAlgorithm::Cubic)),
+            ("bbr", Ok(CongestionControlAlgorithm::Bbr)),
+            ("Bbr", Ok(CongestionControlAlgorithm::Bbr)),
+            ("BBR", Ok(CongestionControlAlgorithm::Bbr)),
+            ("bbr3", Ok(CongestionControlAlgorithm::Bbr3)),
+            ("Bbr3", Ok(CongestionControlAlgorithm::Bbr3)),
+            ("BBR3", Ok(CongestionControlAlgorithm::Bbr3)),
+            ("copa", Ok(CongestionControlAlgorithm::Copa)),
+            ("Copa", Ok(CongestionControlAlgorithm::Copa)),
+            ("COPA", Ok(CongestionControlAlgorithm::Copa)),
+            ("cubci", Err(Error::InvalidConfig("unknown".into()))),
+        ];
+
+        for (name, algor) in cases {
+            assert_eq!(CongestionControlAlgorithm::from_str(name), algor);
+        }
+    }
+
+    #[test]
+    fn congestion_control_build_congestion_controller() -> Result<()> {
+        let mut config = Config::new()?;
+
+        let cc = build_congestion_controller(&config.recovery);
+        assert_eq!(cc.name(), "CUBIC");
+        assert_eq!(cc.in_slow_start(), true);
+        assert_eq!(cc.in_recovery(Instant::now()), false);
+        assert_eq!(
+            cc.initial_window(),
+            config.recovery.initial_congestion_window * config.recovery.max_datagram_size as u64
+        );
+        assert_eq!(
+            cc.minimal_window(),
+            config.recovery.min_congestion_window * config.recovery.max_datagram_size as u64
+        );
+        assert_eq!(
+            cc.congestion_window(),
+            cc.minimal_window().max(cc.initial_window())
+        );
+        assert!(cc.pacing_rate().is_some());
+        assert_eq!(format!("{:?}", cc), "congestion controller.");
+
+        config.set_congestion_control_algorithm(CongestionControlAlgorithm::Bbr);
+        let cc = build_congestion_controller(&config.recovery);
+        assert_eq!(cc.name(), "BBR");
+
+        config.set_congestion_control_algorithm(CongestionControlAlgorithm::Bbr3);
+        let cc = build_congestion_controller(&config.recovery);
+        assert_eq!(cc.name(), "BBRv3");
+
+        config.set_congestion_control_algorithm(CongestionControlAlgorithm::Copa);
+        let cc = build_congestion_controller(&config.recovery);
+        assert_eq!(cc.name(), "COPA");
+
+        Ok(())
+    }
+}
+
 mod bbr;
-
-#[path = "bbr3/bbr3.rs"]
 mod bbr3;
-
+mod copa;
 mod cubic;
 mod delivery_rate;
 mod hystart_plus_plus;

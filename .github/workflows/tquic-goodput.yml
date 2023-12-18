@@ -1,0 +1,60 @@
+name: Goodput
+
+on:
+  schedule:
+    - cron: '30 1 * * *'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        impl: [tquic,lsquic,quiche]
+        case: [goodput100k,goodput1m,goodput10m]
+        cc: [cubic, bbr]
+
+    steps:
+    - name: Install quic-interop-runner
+      run: |
+        git clone https://github.com/tquic-group/quic-interop-runner.git
+        cd quic-interop-runner
+        pip3 install -r requirements.txt
+
+    - name: Install dependences
+      run: |
+        sudo modprobe ip6table_filter
+        sudo add-apt-repository -y ppa:wireshark-dev/stable
+        sudo apt install -y tshark
+
+    - name: Run the interop tests 
+      run: |
+        cd quic-interop-runner   
+        python3 run.py -s ${{ matrix.impl }} -c ${{ matrix.impl }} -t ${{ matrix.case }} -a ${{ matrix.cc }} -d -n "drop-rate --delay=15ms --bandwidth=10Mbps --queue=25 --rate_to_server=0 --rate_to_client=0" -j ${{ matrix.case }}-0-${{ matrix.cc }}-${{ matrix.impl }}.json
+        python3 run.py -s ${{ matrix.impl }} -c ${{ matrix.impl }} -t ${{ matrix.case }} -a ${{ matrix.cc }} -d -n "drop-rate --delay=15ms --bandwidth=10Mbps --queue=25 --rate_to_server=1 --rate_to_client=1" -j ${{ matrix.case }}-1-${{ matrix.cc }}-${{ matrix.impl }}.json
+        python3 run.py -s ${{ matrix.impl }} -c ${{ matrix.impl }} -t ${{ matrix.case }} -a ${{ matrix.cc }} -d -n "drop-rate --delay=15ms --bandwidth=10Mbps --queue=25 --rate_to_server=3 --rate_to_client=3" -j ${{ matrix.case }}-3-${{ matrix.cc }}-${{ matrix.impl }}.json
+        python3 run.py -s ${{ matrix.impl }} -c ${{ matrix.impl }} -t ${{ matrix.case }} -a ${{ matrix.cc }} -d -n "drop-rate --delay=15ms --bandwidth=10Mbps --queue=25 --rate_to_server=5 --rate_to_client=5" -j ${{ matrix.case }}-5-${{ matrix.cc }}-${{ matrix.impl }}.json
+
+    - name: Store measurement results
+      uses: actions/upload-artifact@v3
+      with:
+        name: ${{ matrix.case }}-${{ matrix.impl }}
+        path: quic-interop-runner/goodput*.json 
+    
+  result:
+    runs-on: ubuntu-latest
+    needs: measure
+    steps:
+    - name: Download all workflow run artifacts
+      uses: actions/download-artifact@v3
+    - name: Display structure of downloaded files
+      run: ls -R
+    - name: Store all measurement results
+      uses: actions/upload-artifact@v3
+      with:
+        name: goodput-all-result
+        path: goodput*

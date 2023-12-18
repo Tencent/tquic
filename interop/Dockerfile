@@ -23,7 +23,7 @@ COPY . ./
 
 RUN apt-get update && apt-get install -y cmake && rm -rf /var/lib/apt/lists/*
 
-RUN cargo build --release --manifest-path apps/Cargo.toml
+RUN cargo build --release --manifest-path tools/Cargo.toml
 
 
 FROM martenseemann/quic-network-simulator-endpoint:latest as tquic-interop

@@ -117,7 +117,7 @@ lazy_static::lazy_static! {
     };
 }
 
-static QUICHE_STREAM_METHOD: SslQuicMethod = SslQuicMethod {
+static SSL_QUIC_METHOD: SslQuicMethod = SslQuicMethod {
     set_read_secret,
     set_write_secret,
     add_handshake_data,
@@ -127,16 +127,29 @@ static QUICHE_STREAM_METHOD: SslQuicMethod = SslQuicMethod {
 
 /// Rust wrapper of SSL_CTX which holds various configuration and data relevant
 /// to SSL/TLS session establishment.
-#[repr(transparent)]
-pub struct Context(*mut SslCtx);
+pub struct Context {
+    ctx_raw: *mut SslCtx,
+    owned: bool,
+}
 
-#[cfg(not(feature = "ffi"))]
+impl Drop for Context {
+    fn drop(&mut self) {
+        if self.owned {
+            unsafe { SSL_CTX_free(self.as_mut_ptr()) }
+        }
+    }
+}
+
 impl Context {
+    /// Create a new TLS context.
     pub fn new() -> Result<Context> {
         unsafe {
             let ctx_raw = SSL_CTX_new(TLS_method());
 
-            let mut ctx = Context(ctx_raw);
+            let mut ctx = Context {
+                ctx_raw,
+                owned: true,
+            };
 
             ctx.set_session_callback();
             ctx.set_default_verify_paths()?;
@@ -144,39 +157,26 @@ impl Context {
         }
     }
 
+    /// Create a new TLS context with SSL_CTX.
+    /// The caller is responsible for the memory of SSL_CTX when use this function.
+    pub fn new_with_ssl_ctx(ssl_ctx: *mut SslCtx) -> Context {
+        Self {
+            ctx_raw: ssl_ctx,
+            owned: false,
+        }
+    }
+
     /// Return the mutable pointer of the inner SSL_CTX.
     fn as_mut_ptr(&mut self) -> *mut SslCtx {
-        self.0
+        self.ctx_raw
     }
 
     /// Return the const pointer of the inner SSL_CTX.
     fn as_ptr(&self) -> *const SslCtx {
-        self.0
-    }
-}
-
-// The caller is responsible for the memory of SSL_CTX when using ffi.
-#[cfg(not(feature = "ffi"))]
-impl Drop for Context {
-    fn drop(&mut self) {
-        unsafe { SSL_CTX_free(self.as_mut_ptr()) }
-    }
-}
-
-#[cfg(feature = "ffi")]
-impl Context {
-    /// Return the mutable pointer of the inner SSL_CTX.
-    fn as_mut_ptr(&mut self) -> *mut SslCtx {
-        self as *mut Context as *mut SslCtx
+        self.ctx_raw
     }
 
-    /// Return the const pointer of the inner SSL_CTX.
-    fn as_ptr(&self) -> *const SslCtx {
-        self as *const Context as *const SslCtx
-    }
-}
-
-impl Context {
+    /// Create a new TLS session.
     pub fn new_session(&self) -> Result<Session> {
         unsafe {
             let ssl = SSL_new(self.as_ptr());
@@ -406,7 +406,7 @@ impl Session {
 
     /// Configure the QUIC callback functions.
     pub fn set_quic_method(&mut self) -> Result<()> {
-        match unsafe { SSL_set_quic_method(self.as_mut_ptr(), &QUICHE_STREAM_METHOD) } {
+        match unsafe { SSL_set_quic_method(self.as_mut_ptr(), &SSL_QUIC_METHOD) } {
             1 => Ok(()),
             _ => Err(Error::TlsFail("SSL set quic method failed".to_string())),
         }

@@ -184,7 +184,7 @@ const config = {
             ],
           },
         ],
-        copyright: `Copyright © ${new Date().getFullYear()} The TQUIC Authors | Documentation Distributed under CC-BY-4.0 <br> Copyright © ${new Date().getFullYear()} Tencent. All Rights Reserved | <a href=https://beian.miit.gov.cn style="color:#FFFFFF;">Yue B2-20090059-1892</a>`,
+        copyright: `Copyright © ${new Date().getFullYear()} The TQUIC Authors | Documentation Distributed under CC-BY-4.0 <br> Copyright © ${new Date().getFullYear()} Tencent. All Rights Reserved. <a href=https://beian.miit.gov.cn style="color:#FFFFFF;">GD B2-20090059-1892</a>`,
       },
       prism: {
         theme: lightCodeTheme,

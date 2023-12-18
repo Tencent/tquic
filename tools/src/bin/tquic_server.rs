@@ -34,6 +34,7 @@ use tquic::h3::Header;
 use tquic::h3::Http3Config;
 use tquic::h3::NameValue;
 use tquic::Config;
+use tquic::CongestionControlAlgorithm;
 use tquic::Connection;
 use tquic::Endpoint;
 use tquic::Error;
@@ -42,10 +43,10 @@ use tquic::PacketInfo;
 use tquic::TlsConfig;
 use tquic::TransportHandler;
 use tquic::TIMER_GRANULARITY;
-use tquic_apps::alpns;
-use tquic_apps::AppProto;
-use tquic_apps::QuicSocket;
-use tquic_apps::Result;
+use tquic_tools::alpns;
+use tquic_tools::AppProto;
+use tquic_tools::QuicSocket;
+use tquic_tools::Result;
 
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
@@ -93,6 +94,18 @@ pub struct ServerOpt {
     /// Disable stateless reset.
     #[clap(long)]
     pub disable_stateless_reset: bool,
+
+    /// Congestion control algorithm.
+    #[clap(long, default_value = "CUBIC")]
+    pub congestion_control_algor: CongestionControlAlgorithm,
+
+    /// Initial congestion window in packets.
+    #[clap(long, default_value = "32", value_name = "NUM")]
+    pub initial_congestion_window: u64,
+
+    /// Minimum congestion window in packets.
+    #[clap(long, default_value = "4", value_name = "NUM")]
+    pub min_congestion_window: u64,
 
     /// Enable multipath transport.
     #[clap(long)]
@@ -163,6 +176,9 @@ impl Server {
         config.set_max_handshake_timeout(option.handshake_timeout);
         config.set_max_idle_timeout(option.idle_timeout);
         config.set_initial_rtt(option.initial_rtt);
+        config.set_congestion_control_algorithm(option.congestion_control_algor);
+        config.set_initial_congestion_window(option.initial_congestion_window);
+        config.set_min_congestion_window(option.min_congestion_window);
         config.set_send_batch_size(option.send_batch_size);
         config.set_multipath(option.enable_multipath);
         config.set_multipath_algor(option.multipath_algor);

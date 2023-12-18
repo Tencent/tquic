@@ -26,9 +26,9 @@ Given QUIC's broad scope, long-term vision, and innovative nature, we have decid
 
 The advantages of TQUIC are as follows.	
 
-**High Throughput**: TQUIC provides the most comprehensive collection of congestion control algorithms in the industry, consistently meeting RFC standards and outperforming similar open-source projects by 2%-30% in certain scenarios such as poor networks.
+**High Throughput**: TQUIC provides the most comprehensive collection of congestion control algorithms in the industry, consistently meeting RFC standards and outperforming [similar open-source projects](https://tquic.net/docs/further_readings/comparison/) by 2%-30% in certain scenarios such as poor networks.
 
-**High performance**: The performance of TQUIC surpasses that of similar open-source projects by 5% and 20% in most and certain scenarios respectively.
+**High performance**: The performance of TQUIC surpasses that of [similar open-source projects](https://tquic.net/docs/further_readings/benchmark) by 5% and 20% in most and certain scenarios respectively.
 
 **High Quality**: The QUIC protocol stack comprises over 10 core RFC standards or drafts, covering the transport layer, security layer, and application layer. It is considerably more complex compared to TCP. TQUIC has achieved an impressive unit test coverage of over 95% and has successfully passed interoperability tests with four leading QUIC implementations in the industry. Additionally, a rigorous test method based on formal specifications (SIGCOMM2019 paper) is employed to ensure strict protocol conformance.
 

@@ -193,6 +193,20 @@ pub extern "C" fn quic_config_set_congestion_control_algorithm(
     config.set_congestion_control_algorithm(v);
 }
 
+/// Set the initial congestion window in packets.
+/// The default value is 10.
+#[no_mangle]
+pub extern "C" fn quic_config_set_initial_congestion_window(config: &mut Config, v: u64) {
+    config.set_initial_congestion_window(v);
+}
+
+/// Set the minimal congestion window in packets.
+/// The default value is 2.
+#[no_mangle]
+pub extern "C" fn quic_config_set_min_congestion_window(config: &mut Config, v: u64) {
+    config.set_min_congestion_window(v);
+}
+
 /// Set the initial RTT in milliseconds. The default value is 333ms.
 /// The configuration should be changed with caution. Setting a value less than the default
 /// will cause retransmission of handshake packets to be more aggressive.
@@ -236,7 +250,7 @@ pub extern "C" fn quic_config_set_reset_token_key(
     const RTK_LEN: usize = 64;
     if token_key_len < RTK_LEN {
         let e = Error::InvalidConfig("reset token key".into());
-        return e.to_c() as c_int;
+        return e.to_errno() as c_int;
     };
 
     let token_key = unsafe { slice::from_raw_parts(token_key, RTK_LEN) };
@@ -269,7 +283,7 @@ pub extern "C" fn quic_config_set_address_token_key(
     const ATK_LEN: usize = 16;
     if token_keys_len < ATK_LEN || token_keys_len % ATK_LEN != 0 {
         let e = Error::InvalidConfig("address token key".into());
-        return e.to_c() as c_int;
+        return e.to_errno() as c_int;
     }
 
     let mut token_keys = unsafe { slice::from_raw_parts(token_keys, token_keys_len) };
@@ -283,7 +297,7 @@ pub extern "C" fn quic_config_set_address_token_key(
 
     match config.set_address_token_key(keys) {
         Ok(_) => 0,
-        Err(e) => e.to_c() as c_int,
+        Err(e) => e.to_errno() as c_int,
     }
 }
 
@@ -314,6 +328,17 @@ pub extern "C" fn quic_config_set_tls_selector(
 ) {
     let selector = TlsConfigSelector { methods, context };
     config.set_tls_config_selector(Arc::new(selector));
+}
+
+/// Set TLS config.
+/// The caller is responsible for the memory of SSL_CTX when use this function.
+#[no_mangle]
+pub extern "C" fn quic_config_set_tls_config(
+    config: &mut Config,
+    ssl_ctx: *mut crate::tls::SslCtx,
+) {
+    let tls_config = crate::tls::TlsConfig::new_with_ssl_ctx(ssl_ctx);
+    config.set_tls_config(tls_config);
 }
 
 /// Create a QUIC endpoint.
@@ -404,7 +429,7 @@ pub extern "C" fn quic_endpoint_connect(
             }
             0
         }
-        Err(e) => e.to_c() as i32,
+        Err(e) => e.to_errno() as i32,
     }
 }
 
@@ -421,7 +446,7 @@ pub extern "C" fn quic_endpoint_recv(
     let info: crate::PacketInfo = info.into();
     match endpoint.recv(buf, &info) {
         Ok(_) => 0,
-        Err(e) => e.to_c() as i32,
+        Err(e) => e.to_errno() as i32,
     }
 }
 
@@ -446,7 +471,7 @@ pub extern "C" fn quic_endpoint_on_timeout(endpoint: &mut Endpoint) {
 pub extern "C" fn quic_endpoint_process_connections(endpoint: &mut Endpoint) -> c_int {
     match endpoint.process_connections() {
         Ok(_) => 0,
-        Err(e) => e.to_c() as i32,
+        Err(e) => e.to_errno() as i32,
     }
 }
 
@@ -585,7 +610,7 @@ pub extern "C" fn quic_conn_add_path(
             }
             0
         }
-        Err(e) => e.to_c() as i32,
+        Err(e) => e.to_errno() as i32,
     }
 }
 
@@ -603,7 +628,7 @@ pub extern "C" fn quic_conn_abandon_path(
 
     match conn.abandon_path(local, remote) {
         Ok(_) => 0,
-        Err(e) => e.to_c() as i32,
+        Err(e) => e.to_errno() as i32,
     }
 }
 
@@ -621,7 +646,7 @@ pub extern "C" fn quic_conn_migrate_path(
 
     match conn.migrate_path(local, remote) {
         Ok(_) => 0,
-        Err(e) => e.to_c() as i32,
+        Err(e) => e.to_errno() as i32,
     }
 }
 
@@ -798,7 +823,7 @@ pub extern "C" fn quic_conn_close(
     let reason = unsafe { slice::from_raw_parts(reason, reason_len) };
     match conn.close(app, err, reason) {
         Ok(_) => 0,
-        Err(e) => e.to_c() as c_int,
+        Err(e) => e.to_errno() as c_int,
     }
 }
 
@@ -811,7 +836,7 @@ pub extern "C" fn quic_stream_wantwrite(
 ) -> c_int {
     match conn.stream_want_write(stream_id, want) {
         Ok(_) | Err(Error::Done) => 0,
-        Err(e) => e.to_c() as c_int,
+        Err(e) => e.to_errno() as c_int,
     }
 }
 
@@ -820,7 +845,7 @@ pub extern "C" fn quic_stream_wantwrite(
 pub extern "C" fn quic_stream_wantread(conn: &mut Connection, stream_id: u64, want: bool) -> c_int {
     match conn.stream_want_read(stream_id, want) {
         Ok(_) | Err(Error::Done) => 0,
-        Err(e) => e.to_c() as c_int,
+        Err(e) => e.to_errno() as c_int,
     }
 }
 
@@ -855,7 +880,7 @@ pub extern "C" fn quic_stream_write(
     let buf = Bytes::copy_from_slice(buf);
     match conn.stream_write(stream_id, buf, fin) {
         Ok(v) => v as ssize_t,
-        Err(e) => e.to_c() as ssize_t,
+        Err(e) => e.to_errno() as ssize_t,
     }
 }
 
@@ -869,7 +894,7 @@ pub extern "C" fn quic_stream_new(
 ) -> c_int {
     match conn.stream_new(stream_id, urgency, incremental) {
         Ok(_) => 0,
-        Err(e) => e.to_c() as c_int,
+        Err(e) => e.to_errno() as c_int,
     }
 }
 
@@ -883,7 +908,7 @@ pub extern "C" fn quic_stream_shutdown(
 ) -> c_int {
     match conn.stream_shutdown(stream_id, direction, err) {
         Ok(_) => 0,
-        Err(e) => e.to_c() as c_int,
+        Err(e) => e.to_errno() as c_int,
     }
 }
 
@@ -897,7 +922,7 @@ pub extern "C" fn quic_stream_set_priority(
 ) -> c_int {
     match conn.stream_set_priority(stream_id, urgency, incremental) {
         Ok(_) => 0,
-        Err(e) => e.to_c() as c_int,
+        Err(e) => e.to_errno() as c_int,
     }
 }
 
@@ -906,7 +931,7 @@ pub extern "C" fn quic_stream_set_priority(
 pub extern "C" fn quic_stream_capacity(conn: &mut Connection, stream_id: u64) -> ssize_t {
     match conn.stream_capacity(stream_id) {
         Ok(v) => v as ssize_t,
-        Err(e) => e.to_c() as ssize_t,
+        Err(e) => e.to_errno() as ssize_t,
     }
 }
 
@@ -931,7 +956,7 @@ pub extern "C" fn quic_stream_set_context(
 ) -> c_int {
     match conn.stream_set_context(stream_id, Context(data)) {
         Ok(_) => 0,
-        Err(e) => e.to_c() as c_int,
+        Err(e) => e.to_errno() as c_int,
     }
 }
 
@@ -949,12 +974,12 @@ pub struct TlsConfigSelectorContext(*mut c_void);
 
 #[repr(C)]
 pub struct TlsConfigSelectMethods {
-    pub get_default: fn(ctx: *mut c_void) -> *const crate::tls::SslCtx,
+    pub get_default: fn(ctx: *mut c_void) -> *mut crate::tls::SslCtx,
     pub select: fn(
         ctx: *mut c_void,
         server_name: *const u8,
         server_name_len: size_t,
-    ) -> *const crate::tls::SslCtx,
+    ) -> *mut crate::tls::SslCtx,
 }
 
 #[repr(C)]
@@ -967,17 +992,17 @@ unsafe impl Send for TlsConfigSelector {}
 unsafe impl Sync for TlsConfigSelector {}
 
 impl crate::tls::TlsConfigSelector for TlsConfigSelector {
-    fn get_default(&self) -> Option<&crate::tls::TlsConfig> {
+    fn get_default(&self) -> Option<Arc<crate::tls::TlsConfig>> {
         let ssl_ctx = unsafe { ((*self.methods).get_default)(self.context.0) };
         if ssl_ctx.is_null() {
             return None;
         }
 
-        let tls_config = unsafe { &(*(ssl_ctx as *const crate::tls::TlsConfig)) };
+        let tls_config = Arc::new(crate::tls::TlsConfig::new_with_ssl_ctx(ssl_ctx));
         Some(tls_config)
     }
 
-    fn select(&self, server_name: &str) -> Option<&crate::tls::TlsConfig> {
+    fn select(&self, server_name: &str) -> Option<Arc<crate::tls::TlsConfig>> {
         let ssl_ctx = unsafe {
             ((*self.methods).select)(
                 self.context.0,
@@ -989,7 +1014,7 @@ impl crate::tls::TlsConfigSelector for TlsConfigSelector {
             return None;
         }
 
-        let tls_config = unsafe { &(*(ssl_ctx as *const crate::tls::TlsConfig)) };
+        let tls_config = Arc::new(crate::tls::TlsConfig::new_with_ssl_ctx(ssl_ctx));
         Some(tls_config)
     }
 }
@@ -1343,7 +1368,7 @@ pub extern "C" fn http3_send_goaway(
 ) -> i64 {
     match conn.send_goaway(quic_conn, id) {
         Ok(()) => 0,
-        Err(e) => e.to_c() as i64,
+        Err(e) => e.to_errno() as i64,
     }
 }
 
@@ -1389,7 +1414,7 @@ pub extern "C" fn http3_conn_process_streams(
 ) -> c_int {
     match conn.process_streams(quic_conn) {
         Ok(_) => 0,
-        Err(e) => e.to_c() as i32,
+        Err(e) => e.to_errno() as i32,
     }
 }
 
@@ -1434,7 +1459,7 @@ pub extern "C" fn http3_stream_read_finished(conn: &mut Connection, stream_id: u
 pub extern "C" fn http3_stream_new(conn: &mut Http3Connection, quic_conn: &mut Connection) -> i64 {
     match conn.stream_new_with_priority(quic_conn, &Http3Priority::default()) {
         Ok(v) => v as i64,
-        Err(e) => e.to_c() as i64,
+        Err(e) => e.to_errno() as i64,
     }
 }
 
@@ -1448,7 +1473,7 @@ pub extern "C" fn http3_stream_new_with_priority(
 ) -> i64 {
     match conn.stream_new_with_priority(quic_conn, priority) {
         Ok(v) => v as i64,
-        Err(e) => e.to_c() as i64,
+        Err(e) => e.to_errno() as i64,
     }
 }
 
@@ -1461,7 +1486,7 @@ pub extern "C" fn http3_stream_close(
 ) -> c_int {
     match conn.stream_close(quic_conn, stream_id) {
         Ok(_) => 0,
-        Err(e) => e.to_c() as c_int,
+        Err(e) => e.to_errno() as c_int,
     }
 }
 
@@ -1475,7 +1500,7 @@ pub extern "C" fn http3_stream_set_priority(
 ) -> c_int {
     match conn.stream_set_priority(quic_conn, stream_id, priority) {
         Ok(_) => 0,
-        Err(e) => e.to_c() as c_int,
+        Err(e) => e.to_errno() as c_int,
     }
 }
 
@@ -1501,7 +1526,7 @@ pub extern "C" fn http3_send_headers(
 
     match conn.send_headers(quic_conn, stream_id, &h3_headers, fin) {
         Ok(_) => 0,
-        Err(e) => e.to_c() as c_int,
+        Err(e) => e.to_errno() as c_int,
     }
 }
 
@@ -1522,7 +1547,7 @@ pub extern "C" fn http3_send_body(
     let body = unsafe { slice::from_raw_parts(body, body_len) };
     match conn.send_body(quic_conn, stream_id, Bytes::copy_from_slice(body), fin) {
         Ok(v) => v as ssize_t,
-        Err(e) => e.to_c(),
+        Err(e) => e.to_errno(),
     }
 }
 
@@ -1542,7 +1567,7 @@ pub extern "C" fn http3_recv_body(
     let out = unsafe { slice::from_raw_parts_mut(out, out_len) };
     match conn.recv_body(quic_conn, stream_id, out) {
         Ok(v) => v as ssize_t,
-        Err(e) => e.to_c(),
+        Err(e) => e.to_errno(),
     }
 }
 
@@ -1562,7 +1587,7 @@ pub extern "C" fn http3_parse_extensible_priority(
             parsed.incremental = v.incremental;
             0
         }
-        Err(e) => e.to_c() as c_int,
+        Err(e) => e.to_errno() as c_int,
     }
 }
 
@@ -1577,7 +1602,7 @@ pub extern "C" fn http3_send_priority_update_for_request(
 ) -> c_int {
     match conn.send_priority_update_for_request(quic_conn, stream_id, priority) {
         Ok(()) => 0,
-        Err(e) => e.to_c() as c_int,
+        Err(e) => e.to_errno() as c_int,
     }
 }
 
@@ -1602,7 +1627,7 @@ pub extern "C" fn http3_take_priority_update(
             0
         }
 
-        Err(e) => e.to_c() as c_int,
+        Err(e) => e.to_errno() as c_int,
     }
 }
 

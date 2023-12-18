@@ -36,7 +36,7 @@ sidebar_position: 2
 各服务端程序编译时使用发布模式，并配置为采用单线程模式运行，具体配置参数参见[附录](benchmark.md#appendix)。
 
 
-**客户端**：我们使用TQUIC[客户端](https://github.com/tencent/tquic/apps/src/bin/client.rs)作为压测客户端，它具有非常灵活的参数，并支持使用多个线程来增加请求压力。
+**客户端**：我们使用TQUIC[客户端](https://github.com/tencent/tquic/tools/src/bin/tquic_client.rs)作为压测客户端，它具有非常灵活的参数，并支持使用多个线程来增加请求压力。
 
 
 ### 测试场景

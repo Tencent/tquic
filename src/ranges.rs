@@ -948,7 +948,7 @@ mod tests {
         // Insert range [0, 1), only one elem.
         r.insert(0..1);
         assert_eq!(r.len(), 1);
-        // Tranverse the range from both directions.
+        // Traverse the range from both directions.
         assert_eq!(&r.flatten().collect::<Vec<u64>>(), &[0]);
         assert_eq!(&r.flatten().rev().collect::<Vec<u64>>(), &[0]);
 

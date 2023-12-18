@@ -39,6 +39,7 @@ exclude = ["MAX_CID_LEN", "MIN_CLIENT_INITIAL_LEN"]
 "PacketSendContext" = "quic_packet_send_context_t"
 "TlsConfigSelectMethods" = "quic_tls_config_select_methods_t"
 "TlsConfigSelectorContext" = "quic_tls_config_select_context_t"
+"CongestionControlAlgorithm" = "quic_congestion_control_algorithm"
 "Http3Connection" = "http3_conn_t"
 "Http3Config" = "http3_config_t"
 "Http3Context" = "http3_context_t"
@@ -50,7 +51,6 @@ exclude = ["MAX_CID_LEN", "MIN_CLIENT_INITIAL_LEN"]
 "iovec" = "struct iovec"
 "sockaddr" = "struct sockaddr"
 "sockaddr_storage" = "struct sockaddr_storage"
-"CongestionControlAlgorithm" = "quic_congestion_control_algorithm"
 
 [enum]
 rename_variants = "QualifiedScreamingSnakeCase"

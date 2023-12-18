@@ -38,7 +38,7 @@
 //! ## Get started
 //!
 //! See the [documents](https://tquic.net/docs/category/getting-started) and
-//! [examples](https://github.com/tencent/tquic/tree/master/apps/) to get
+//! [examples](https://github.com/tencent/tquic/tree/master/tools/) to get
 //! started with TQUIC.
 //!
 //! ## Feature flags
@@ -144,7 +144,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct ConnectionId {
     /// length of cid
     len: u8,
-    /// octects of cid
+    /// octets of cid
     data: [u8; MAX_CID_LEN],
 }
 
@@ -370,19 +370,6 @@ impl Config {
             ..TransportParams::default()
         };
 
-        let recovery = RecoveryConfig {
-            max_datagram_size: 1200,
-            max_ack_delay: time::Duration::from_millis(0),
-            congestion_control_algorithm: CongestionControlAlgorithm::Cubic,
-            min_congestion_window: 2_u64,
-            initial_congestion_window: 8_u64,
-            initial_rtt: INITIAL_RTT,
-        };
-
-        let multipath = MultipathConfig {
-            multipath_algor: MultipathAlgorithm::MinRtt,
-        };
-
         let reset_token_key = hmac::Key::new(hmac::HMAC_SHA256, &[]);
 
         Ok(Self {
@@ -398,8 +385,8 @@ impl Config {
             reset_token_key,
             cid_len: 8,
             send_batch_size: 64,
-            recovery,
-            multipath,
+            recovery: RecoveryConfig::default(),
+            multipath: MultipathConfig::default(),
             tls_config_selector: None,
         })
     }
@@ -485,6 +472,18 @@ impl Config {
     /// The default value is Cubic.
     pub fn set_congestion_control_algorithm(&mut self, cca: CongestionControlAlgorithm) {
         self.recovery.congestion_control_algorithm = cca;
+    }
+
+    /// Set the initial congestion window in packets.
+    /// The default value is 10.
+    pub fn set_initial_congestion_window(&mut self, packets: u64) {
+        self.recovery.initial_congestion_window = packets;
+    }
+
+    /// Set the minimal congestion window in packets.
+    /// The default value is 2.
+    pub fn set_min_congestion_window(&mut self, packets: u64) {
+        self.recovery.min_congestion_window = packets
     }
 
     /// Set the initial RTT in milliseconds. The default value is 333ms.
@@ -584,7 +583,9 @@ impl Config {
 
     /// Set TLS config.
     pub fn set_tls_config(&mut self, tls_config: tls::TlsConfig) {
-        self.set_tls_config_selector(Arc::new(tls_config));
+        self.set_tls_config_selector(Arc::new(tls::DefaultTlsConfigSelector {
+            tls_config: Arc::new(tls_config),
+        }));
     }
 
     /// Set TLS config selector. Used for selecting TLS config according to SNI.
@@ -631,13 +632,32 @@ pub struct RecoveryConfig {
     pub congestion_control_algorithm: CongestionControlAlgorithm,
 
     /// The minimal congestion window in packets.
+    /// The RECOMMENDED value is 2 * max_datagram_size.
+    /// See RFC 9002 Section 7.2
     pub min_congestion_window: u64,
 
     /// The initial congestion window in packets.
+    /// Endpoints SHOULD use an initial congestion window of ten times the
+    /// maximum datagram size (max_datagram_size), while limiting the window to
+    /// the larger of 14,720 bytes or twice the maximum datagram size.
+    /// See RFC 9002 Section 7.2
     pub initial_congestion_window: u64,
 
     /// The initial rtt, used before real rtt is estimated.
     pub initial_rtt: Duration,
+}
+
+impl Default for RecoveryConfig {
+    fn default() -> RecoveryConfig {
+        RecoveryConfig {
+            max_datagram_size: 1200,
+            max_ack_delay: time::Duration::from_millis(0),
+            congestion_control_algorithm: CongestionControlAlgorithm::Cubic,
+            min_congestion_window: 2_u64,
+            initial_congestion_window: 10_u64,
+            initial_rtt: INITIAL_RTT,
+        }
+    }
 }
 
 /// Configurations about multipath transport.
@@ -646,6 +666,14 @@ pub struct RecoveryConfig {
 pub struct MultipathConfig {
     /// Multipath scheduling algorithm.
     multipath_algor: MultipathAlgorithm,
+}
+
+impl Default for MultipathConfig {
+    fn default() -> MultipathConfig {
+        MultipathConfig {
+            multipath_algor: MultipathAlgorithm::MinRtt,
+        }
+    }
 }
 
 /// Events sent from a Connection to an Endpoint.

@@ -129,17 +129,19 @@ impl Recovery {
         };
         if in_flight {
             // notify congestion controller of the sent event
-            self.congestion
-                .on_sent(now, &mut pkt, self.bytes_in_flight as u64);
-            trace!(
-                "now={:?} {} {} ON_SENT {:?} inflight={} cwnd={}",
-                now,
-                self.trace_id,
-                self.congestion.name(),
-                pkt,
-                self.bytes_in_flight,
-                self.congestion.congestion_window()
-            );
+            if space_id != SpaceId::Initial && space_id != SpaceId::Handshake {
+                self.congestion
+                    .on_sent(now, &mut pkt, self.bytes_in_flight as u64);
+                trace!(
+                    "now={:?} {} {} ON_SENT {:?} inflight={} cwnd={}",
+                    now,
+                    self.trace_id,
+                    self.congestion.name(),
+                    pkt,
+                    self.bytes_in_flight,
+                    self.congestion.congestion_window()
+                );
+            }
         }
         space.sent.push_back(pkt);
 
@@ -188,7 +190,9 @@ impl Recovery {
             space.largest_acked_pkt = cmp::max(space.largest_acked_pkt, largest_acked_pkt);
         }
 
-        self.congestion.begin_ack(now, self.bytes_in_flight as u64);
+        if space_id != SpaceId::Initial && space_id != SpaceId::Handshake {
+            self.congestion.begin_ack(now, self.bytes_in_flight as u64);
+        }
         trace!(
             "now={:?} {} {} BEGIN_ACK inflight={} cwnd={}",
             now,
@@ -230,7 +234,9 @@ impl Recovery {
         self.drain_sent_packets(space, now, self.rtt.smoothed_rtt());
 
         // Notify the congestion controller of acked event
-        self.congestion.end_ack();
+        if space_id != SpaceId::Initial && space_id != SpaceId::Handshake {
+            self.congestion.end_ack();
+        }
 
         self.pto_count = 0; // TODO: REVISIT
         self.set_loss_detection_timer(space_id, spaces, handshake_status, now);
@@ -285,13 +291,15 @@ impl Recovery {
 
                 // Process each acked packet in congestion controller and update delivery
                 // rate sample.
-                self.congestion.on_ack(
-                    sent_pkt,
-                    now,
-                    false,
-                    &self.rtt,
-                    self.bytes_in_flight as u64,
-                );
+                if space.id != SpaceId::Initial && space.id != SpaceId::Handshake {
+                    self.congestion.on_ack(
+                        sent_pkt,
+                        now,
+                        false,
+                        &self.rtt,
+                        self.bytes_in_flight as u64,
+                    );
+                }
 
                 trace!(
                     "now={:?} {} {} ON_ACK {:?} inflight={} cwnd={}",
@@ -403,22 +411,24 @@ impl Recovery {
 
         // Notify congestion controller of the lost event
         if let Some(lost_packet) = latest_lost_packet {
-            self.congestion.on_congestion_event(
-                now,
-                &lost_packet,
-                self.in_persistent_congestion(),
-                lost_bytes as u64,
-                self.bytes_in_flight as u64,
-            );
-            trace!(
-                "now={:?} {} {} ON_CONGESTION_EVENT lost_size={} inflight={} cwnd={}",
-                now,
-                self.trace_id,
-                self.congestion.name(),
-                lost_bytes,
-                self.bytes_in_flight,
-                self.congestion.congestion_window()
-            );
+            if space.id != SpaceId::Initial && space.id != SpaceId::Handshake {
+                self.congestion.on_congestion_event(
+                    now,
+                    &lost_packet,
+                    self.in_persistent_congestion(),
+                    lost_bytes as u64,
+                    self.bytes_in_flight as u64,
+                );
+                trace!(
+                    "now={:?} {} {} ON_CONGESTION_EVENT lost_size={} inflight={} cwnd={}",
+                    now,
+                    self.trace_id,
+                    self.congestion.name(),
+                    lost_bytes,
+                    self.bytes_in_flight,
+                    self.congestion.congestion_window()
+                );
+            }
         }
 
         (lost_packets, lost_bytes)
@@ -799,7 +809,7 @@ mod tests {
     }
 
     #[test]
-    fn loss_on_reording() -> Result<()> {
+    fn loss_on_reordering() -> Result<()> {
         let conf = new_test_recovery_config();
         let mut recovery = Recovery::new(&conf);
         let mut spaces = PacketNumSpaceMap::new();
@@ -1105,6 +1115,41 @@ mod tests {
             &spaces.get(SpaceId::Data).unwrap().sent,
             vec![100..200, 300..400, 500..1000],
         ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn check_cwnd_for_non_app_data_ack() -> Result<()> {
+        let conf = new_test_recovery_config();
+        let mut recovery = Recovery::new(&conf);
+        let mut spaces = PacketNumSpaceMap::new();
+        let space_id = SpaceId::Handshake;
+        let status = HandshakeStatus {
+            derived_handshake_keys: true,
+            peer_verified_address: true,
+            completed: false,
+        };
+        let mut now = Instant::now();
+        let cwnd_before_ack = recovery.congestion.congestion_window();
+
+        // Fake sending of packet 0
+        let sent_pkt0 = new_test_sent_packet(0, 1000, now);
+        recovery.on_packet_sent(sent_pkt0, space_id, &mut spaces, status, now);
+
+        // Fake sending of packet 1
+        let sent_pkt1 = new_test_sent_packet(1, 2000, now);
+        recovery.on_packet_sent(sent_pkt1, space_id, &mut spaces, status, now);
+
+        // Advance ticks and fake receiving of ack
+        now += Duration::from_millis(100);
+        let mut acked = RangeSet::default();
+        acked.insert(0..2);
+
+        // Detect packet loss base on reordering threshold
+        let (lost_pkts, lost_bytes) =
+            recovery.on_ack_received(&acked, 0, SpaceId::Handshake, &mut spaces, status, now)?;
+        assert_eq!(cwnd_before_ack, recovery.congestion.congestion_window());
 
         Ok(())
     }

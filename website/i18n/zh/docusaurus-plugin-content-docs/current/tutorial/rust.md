@@ -8,9 +8,9 @@ sidebar_position: 2
 本文介绍应用程序如何使用RUST语言的TQUIC接口。
 
 :::tip
-本文的完整示例代码可在GitHub TQUIC代码库`apps/src/bin/`目录找到：
-* [simple_client.rs](https://github.com/Tencent/tquic/blob/develop/apps/src/bin/simple_client.rs)
-* [simple_server.rs](https://github.com/Tencent/tquic/blob/develop/apps/src/bin/simple_server.rs)
+本文的完整示例代码可在GitHub [TQUIC RUST示例](https://github.com/tquic-group/tquic-example-rust)代码库找到：
+* [simple_client.rs](https://github.com/tquic-group/tquic-example-rust/blob/main/src/bin/simple_client.rs)
+* [simple_server.rs](https://github.com/tquic-group/tquic-example-rust/blob/main/src/bin/simple_server.rs)
 :::
 
 

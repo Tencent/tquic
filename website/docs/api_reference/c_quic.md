@@ -152,6 +152,22 @@ void quic_config_set_congestion_control_algorithm(struct quic_config_t *config,
 * The default value is `QUIC_CONGESTION_CONTROL_ALGORITHM_CUBIC`.
 
 
+#### quic_config_set_initial_congestion_window
+```c
+void quic_config_set_initial_congestion_window(struct quic_config_t *config, uint64_t v);
+```
+* Set the initial congestion window in packets.
+* The default value is 10.
+
+
+#### quic_config_set_min_congestion_window
+```c
+void quic_config_set_min_congestion_window(struct quic_config_t *config, uint64_t v);
+```
+* Set the minimal congestion window in packets.
+* The default value is 2.
+
+
 #### quic_config_set_initial_rtt
 ```c
 void quic_config_set_initial_rtt(struct quic_config_t *config, uint64_t v);

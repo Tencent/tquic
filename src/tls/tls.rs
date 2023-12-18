@@ -68,13 +68,11 @@ where
     }
 }
 
-#[repr(transparent)]
 pub struct TlsConfig {
     /// Boringssl SSL context.
     tls_ctx: boringssl::tls::Context,
 }
 
-#[cfg(not(feature = "ffi"))]
 impl TlsConfig {
     /// Create a new TlsConfig.
     pub fn new() -> Result<TlsConfig> {
@@ -82,6 +80,14 @@ impl TlsConfig {
         tls_ctx.enable_keylog();
 
         Ok(TlsConfig { tls_ctx })
+    }
+
+    /// Create a new TlsConfig with SSL_CTX.
+    /// The caller is responsible for the memory of SSL_CTX when use this function.
+    pub fn new_with_ssl_ctx(ssl_ctx: *mut boringssl::tls::SslCtx) -> TlsConfig {
+        Self {
+            tls_ctx: boringssl::tls::Context::new_with_ssl_ctx(ssl_ctx),
+        }
     }
 
     /// Create a new client side TlsConfig.
@@ -188,25 +194,29 @@ impl TlsConfig {
     }
 }
 
-impl TlsConfigSelector for TlsConfig {
+pub(crate) struct DefaultTlsConfigSelector {
+    pub tls_config: Arc<TlsConfig>,
+}
+
+impl TlsConfigSelector for DefaultTlsConfigSelector {
     // TODO: support local and peer address.
     /// Get default TLS config.
-    fn get_default(&self) -> Option<&TlsConfig> {
-        Some(self)
+    fn get_default(&self) -> Option<Arc<TlsConfig>> {
+        Some(self.tls_config.clone())
     }
 
     /// Find TLS config according to server name.
-    fn select(&self, _server_name: &str) -> Option<&TlsConfig> {
-        Some(self)
+    fn select(&self, _server_name: &str) -> Option<Arc<TlsConfig>> {
+        Some(self.tls_config.clone())
     }
 }
 
 pub trait TlsConfigSelector: Send + Sync {
     /// Get default TLS config.
-    fn get_default(&self) -> Option<&TlsConfig>;
+    fn get_default(&self) -> Option<Arc<TlsConfig>>;
 
     /// Find TLS config according to server name.
-    fn select(&self, server_name: &str) -> Option<&TlsConfig>;
+    fn select(&self, server_name: &str) -> Option<Arc<TlsConfig>>;
 }
 
 #[derive(Default)]
@@ -965,7 +975,7 @@ pub(crate) mod tests {
     }
 
     pub struct ServerConfigSelector {
-        hash_map: HashMap<String, TlsConfig>,
+        hash_map: HashMap<String, Arc<TlsConfig>>,
     }
 
     impl ServerConfigSelector {
@@ -985,7 +995,9 @@ pub(crate) mod tests {
                     cert,
                     keys[index],
                 )?;
-                cert_manager.hash_map.insert(index.to_string(), tls_config);
+                cert_manager
+                    .hash_map
+                    .insert(index.to_string(), tls_config.into());
             }
 
             Ok(cert_manager)
@@ -997,12 +1009,12 @@ pub(crate) mod tests {
     }
 
     impl TlsConfigSelector for ServerConfigSelector {
-        fn get_default(&self) -> Option<&TlsConfig> {
-            self.hash_map.get("0")
+        fn get_default(&self) -> Option<Arc<TlsConfig>> {
+            self.select("0")
         }
 
-        fn select(&self, server_name: &str) -> Option<&TlsConfig> {
-            self.hash_map.get(server_name)
+        fn select(&self, server_name: &str) -> Option<Arc<TlsConfig>> {
+            self.hash_map.get(server_name).cloned()
         }
     }
 
