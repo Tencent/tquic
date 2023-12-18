@@ -248,7 +248,7 @@ mod tests {
         let mut config = Config::new()?;
 
         let cc = build_congestion_controller(&config.recovery);
-        assert_eq!(cc.name(), "CUBIC");
+        assert_eq!(cc.name(), "BBR");
         assert_eq!(cc.in_slow_start(), true);
         assert_eq!(cc.in_recovery(Instant::now()), false);
         assert_eq!(
