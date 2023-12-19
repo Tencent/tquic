@@ -4820,8 +4820,6 @@ pub(crate) mod tests {
         server_config.set_tls_config_selector(conf_selector.clone());
 
         for i in 0..conf_selector.len() {
-            assert_eq!(Arc::strong_count(&conf_selector), 2);
-
             let mut test_pair = TestPair::new_with_server_name(
                 &mut client_config,
                 &mut server_config,
@@ -4831,7 +4829,6 @@ pub(crate) mod tests {
             assert!(test_pair.handshake().is_ok());
             assert!(test_pair.client.is_established());
             assert!(test_pair.server.is_established());
-            assert_eq!(Arc::strong_count(&conf_selector), 3);
         }
 
         Ok(())

@@ -236,7 +236,6 @@ pub struct TlsSessionData {
     error: Option<TlsError>,
     trace_id: String,
     write_method: Option<WriteMethod>,
-    // TODO: drop conf_selector after TlsConfigSelector::find() is called.
     conf_selector: Option<Arc<dyn TlsConfigSelector>>,
     early_data_rejected: bool,
 }
@@ -325,7 +324,12 @@ impl TlsSession {
             return self.session.process_post_handshake(&mut self.data);
         }
 
-        self.session.do_handshake(&mut self.data)
+        self.session.do_handshake(&mut self.data)?;
+        if self.session.is_completed() {
+            self.data.conf_selector = None;
+        }
+
+        Ok(())
     }
 
     /// Reset tls session state.
@@ -1039,6 +1043,8 @@ pub(crate) mod tests {
         let conf_selector = Arc::new(ServerConfigSelector::new()?);
 
         for i in 0..conf_selector.len() {
+            assert_eq!(Arc::strong_count(&conf_selector), 1);
+
             let server_name = i.to_string();
             let tls_session_pair =
                 handshake_with_multi_cert(conf_selector.clone(), Some(&server_name))?;
@@ -1049,6 +1055,7 @@ pub(crate) mod tests {
                 i + 1
             );
             assert!(tls_session_pair.server.is_completed());
+            assert_eq!(Arc::strong_count(&conf_selector), 1);
         }
 
         Ok(())
