@@ -8,7 +8,7 @@ sidebar_position: 2
 
 ## Whether TQUIC supports mobile platforms?
 
-TQUIC is implemented in the Rust language, enabling it to be run on any platform supported by Rust. TQUIC currently supports Linux, iOS, and Android.
+TQUIC is implemented in the Rust language, enabling it to be run on any platform supported by Rust. TQUIC currently supports Linux, MacOS, iOS, and Android.
 
 
 ## Which versions of the QUIC protocol are supported?
