@@ -181,6 +181,11 @@ impl PacketNumSpace {
         // See RFC 9002 Section 6.2.4
         self.loss_probes > 0
     }
+
+    /// Return whether the space should send a reinjection packet.
+    pub fn need_send_reinjected_frames(&self) -> bool {
+        !self.reinject.frames.is_empty()
+    }
 }
 
 /// All packet number spaces on a QUIC connection
@@ -252,7 +257,7 @@ impl PacketNumSpaceMap {
     /// Return whether the connection should send a reinjection packet.
     pub fn need_send_reinjected_frames(&self) -> bool {
         for space in self.spaces.values() {
-            if !space.reinject.frames.is_empty() {
+            if space.need_send_reinjected_frames() {
                 return true;
             }
         }
