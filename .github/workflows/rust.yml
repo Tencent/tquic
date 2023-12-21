@@ -19,10 +19,20 @@ jobs:
         submodules: 'recursive'
     - name: Update rust
       run: rustup update
-    - name: Build TQUIC library
-      run: cargo build -F ffi --verbose
-    - name: Build TQUIC tools
-      run: cargo build --all --verbose
+    - name: Build TQUIC library and tools
+      run: cargo build --all -F ffi --verbose
+
+  build_macos:
+    name: Build for MacOS
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: 'recursive'
+    - name: Update rust
+      run: rustup update
+    - name: Build TQUIC library and tools
+      run: cargo build --all -F ffi --verbose
 
   build_ios:
     name: Build for iOS
@@ -41,7 +51,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --target=${{ env.TARGET }} --verbose
+          args: --target=${{ env.TARGET }} --verbose --features ffi
 
   build_android:
     name: Build for Android
