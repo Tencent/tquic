@@ -912,15 +912,43 @@ int http3_take_priority_update(struct http3_conn_t *conn,
                                void *argp);
 
 /**
+ * An enum representing the available verbosity level filters of the logger.
+ */
+typedef enum quic_log_level {
+  /**
+   * A level lower than all log levels.
+   */
+  QUIC_LOG_LEVEL_OFF,
+  /**
+   * Corresponds to the `Error` log level.
+   */
+  QUIC_LOG_LEVEL_ERROR,
+  /**
+   * Corresponds to the `Warn` log level.
+   */
+  QUIC_LOG_LEVEL_WARN,
+  /**
+   * Corresponds to the `Info` log level.
+   */
+  QUIC_LOG_LEVEL_INFO,
+  /**
+   * Corresponds to the `Debug` log level.
+   */
+  QUIC_LOG_LEVEL_DEBUG,
+  /**
+   * Corresponds to the `Trace` log level.
+   */
+  QUIC_LOG_LEVEL_TRACE,
+} quic_log_level;
+
+/**
  * Set logger.
  * `cb` is a callback function that will be called for each log message.
  * `line` is a null-terminated log message and `argp` is user-defined data that will be passed to
  * the callback.
- * `level` is the log level filter, valid values are "OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE".
+ * `level` represents the log level.
  */
-int quic_set_logger(void (*cb)(const uint8_t *line, void *argp),
-                    void *argp,
-                    const char *level);
+void quic_set_logger(void (*cb)(const uint8_t *line, void *argp), void *argp, quic_log_level level);
 
 typedef enum http3_error {
     HTTP3_NO_ERROR = 0,

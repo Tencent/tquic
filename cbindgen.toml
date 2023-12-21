@@ -40,6 +40,7 @@ exclude = ["MAX_CID_LEN", "MIN_CLIENT_INITIAL_LEN"]
 "TlsConfigSelectMethods" = "quic_tls_config_select_methods_t"
 "TlsConfigSelectorContext" = "quic_tls_config_select_context_t"
 "CongestionControlAlgorithm" = "quic_congestion_control_algorithm"
+"LevelFilter" = "quic_log_level"
 "Http3Connection" = "http3_conn_t"
 "Http3Config" = "http3_config_t"
 "Http3Context" = "http3_context_t"
