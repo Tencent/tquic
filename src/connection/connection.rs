@@ -4220,7 +4220,7 @@ pub(crate) mod tests {
             conf.set_address_token_lifetime(3600);
             conf.set_send_batch_size(2);
             conf.set_max_handshake_timeout(0);
-            conf.set_multipath(false);
+            conf.enable_multipath(false);
 
             let application_protos = vec![b"h3".to_vec()];
             let tls_config = if !is_server {
@@ -4870,10 +4870,10 @@ pub(crate) mod tests {
         ];
         for case in cases {
             let mut client_config = TestPair::new_test_config(false)?;
-            client_config.set_multipath(case.0);
+            client_config.enable_multipath(case.0);
             client_config.set_cid_len(case.1);
             let mut server_config = TestPair::new_test_config(true)?;
-            server_config.set_multipath(case.2);
+            server_config.enable_multipath(case.2);
             server_config.set_cid_len(case.3);
 
             let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
@@ -6201,11 +6201,11 @@ pub(crate) mod tests {
     fn conn_multipath_transfer() -> Result<()> {
         let mut client_config = TestPair::new_test_config(false)?;
         client_config.set_cid_len(crate::MAX_CID_LEN);
-        client_config.set_multipath(true);
+        client_config.enable_multipath(true);
         client_config.set_multipath_algor(MultipathAlgorithm::Redundant);
         let mut server_config = TestPair::new_test_config(true)?;
         server_config.set_cid_len(crate::MAX_CID_LEN);
-        server_config.set_multipath(true);
+        server_config.enable_multipath(true);
         server_config.set_multipath_algor(MultipathAlgorithm::MinRtt);
 
         // Handshake with multipath enabled

@@ -180,7 +180,7 @@ impl Server {
         config.set_initial_congestion_window(option.initial_congestion_window);
         config.set_min_congestion_window(option.min_congestion_window);
         config.set_send_batch_size(option.send_batch_size);
-        config.set_multipath(option.enable_multipath);
+        config.enable_multipath(option.enable_multipath);
         config.set_multipath_algor(option.multipath_algor);
 
         if let Some(address_token_key) = &option.address_token_key {
