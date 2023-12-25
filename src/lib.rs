@@ -504,7 +504,7 @@ impl Config {
 
     /// Set the `enable_multipath` transport parameter.
     /// The default value is false. (Experimental)
-    pub fn set_multipath(&mut self, v: bool) {
+    pub fn enable_multipath(&mut self, v: bool) {
         self.local_transport_params.enable_multipath = v;
     }
 

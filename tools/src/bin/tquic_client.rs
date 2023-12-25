@@ -401,7 +401,7 @@ impl Worker {
         config.set_congestion_control_algorithm(option.congestion_control_algor);
         config.set_initial_congestion_window(option.initial_congestion_window);
         config.set_min_congestion_window(option.min_congestion_window);
-        config.set_multipath(option.enable_multipath);
+        config.enable_multipath(option.enable_multipath);
         config.set_multipath_algor(option.multipath_algor);
         let tls_config =
             TlsConfig::new_client_config(option.alpn.clone(), option.enable_early_data)?;
