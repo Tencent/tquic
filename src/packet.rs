@@ -739,23 +739,39 @@ pub fn verify_retry_integrity_tag(buf: &mut [u8], odcid: &[u8], version: u32) ->
 }
 
 /// Encode a Stateless Reset packet to the given buffer
-pub fn stateless_reset(padding_len: usize, token: &[u8], mut out: &mut [u8]) -> Result<usize> {
-    let len = 1 + padding_len + token.len();
-    if out.len() < len {
+///
+/// The `pkt_len` is the length of Stateless Reset packet.
+/// The `token` is the Stateless Reset token.
+pub fn stateless_reset(pkt_len: usize, token: &[u8], mut out: &mut [u8]) -> Result<usize> {
+    if pkt_len > out.len() {
         return Err(Error::BufferTooShort);
+    }
+    if pkt_len < crate::MIN_RESET_PACKET_LEN {
+        return Err(Error::InternalError);
     }
     if token.len() != crate::RESET_TOKEN_LEN {
         return Err(Error::InternalError);
     }
 
-    let first = 0b0100_0000;
-    out.write_u8(first)?;
+    // The layout of Stateless Reset packet:
+    //
+    // Stateless Reset {
+    //   Fixed Bits (2) = 1,
+    //   Unpredictable Bits (38..),
+    //   Stateless Reset Token (128),
+    // }
 
-    rand::thread_rng().fill_bytes(&mut out[..padding_len]);
-    out = &mut out[padding_len..];
+    // Write the Unpredictable Bits
+    let unpredict_len = pkt_len - crate::RESET_TOKEN_LEN;
+    rand::thread_rng().fill_bytes(&mut out[..unpredict_len]);
 
+    // Set the 2 fixed bits
+    out[0] = (out[0] & 0b0011_1111) | HEADER_FIXED_BIT;
+
+    // Write the Stateless Reset Token
+    out = &mut out[unpredict_len..];
     out.write(token)?;
-    Ok(len)
+    Ok(pkt_len)
 }
 
 #[cfg(test)]
@@ -1010,13 +1026,17 @@ mod tests {
             Err(Error::BufferTooShort)
         );
         assert_eq!(
+            stateless_reset(16, &token, &mut buf),
+            Err(Error::InternalError)
+        );
+        assert_eq!(
             stateless_reset(64, &token[..10], &mut buf),
             Err(Error::InternalError)
         );
 
         let len = stateless_reset(64, &token, &mut buf)?;
         let buf = &buf[..len];
-        assert_eq!(buf[0], 0b0100_0000);
+        assert_eq!(buf[0] & 0b1100_0000, 0b0100_0000); // The 2 fixed bytes is 01
         assert_eq!(ResetToken::from_bytes(buf)?.0, token);
 
         Ok(())

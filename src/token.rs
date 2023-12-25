@@ -324,6 +324,16 @@ impl ResetToken {
         token.0.copy_from_slice(&buf[buf.len() - RESET_TOKEN_LEN..]);
         Ok(token)
     }
+
+    /// Encode a Reset Token to a 128 bit integer
+    pub(crate) fn to_u128(self) -> u128 {
+        u128::from_be_bytes(self.0)
+    }
+
+    /// Decode a Reset Token from a 128 bit integer
+    pub(crate) fn from_u128(v: u128) -> ResetToken {
+        ResetToken(v.to_be_bytes())
+    }
 }
 
 impl std::ops::Deref for ResetToken {
@@ -530,6 +540,10 @@ mod tests {
         let buf = [1; crate::RESET_TOKEN_LEN - 1];
         assert_eq!(ResetToken::new(&buf), Err(Error::BufferTooShort));
         assert_eq!(ResetToken::from_bytes(&buf), Err(Error::BufferTooShort));
+
+        let token = ResetToken::generate(&key, &c1);
+        assert_eq!(ResetToken::from_u128(token.to_u128()), token);
+        assert_eq!(token.to_u128().to_be_bytes(), token.0);
 
         Ok(())
     }

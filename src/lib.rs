@@ -43,7 +43,7 @@
 //!
 //! ## Feature flags
 //!
-//! TQUIC defines several [feature flags] to reduce the amount of compiled code
+//! TQUIC defines several feature flags to reduce the amount of compiled code
 //! and dependencies:
 //!
 //! * `ffi`: Build and expose the FFI API.
@@ -90,8 +90,15 @@ const MAX_CID_LIMIT: u64 = 8;
 /// The Stateless Reset Token is a 16-byte value.
 const RESET_TOKEN_LEN: usize = 16;
 
-/// The minimum length of a Stateless Reset Packet.
+/// For the Stateless Reset to appear as a valid QUIC packet, the Unpredictable
+/// Bits field needs to include at least 38 bits of data. The minimum length of
+/// a Statless Reset Packet is 21 bytes.
 const MIN_RESET_PACKET_LEN: usize = 21;
+
+/// Assuming the maximum possible connection ID and packet number size, the 1RTT
+/// packet size is:
+/// 1 (header) + 20 (cid) + 4 (pkt num) + 1 (payload) + 16 (AEAD tag) = 42 bytes
+const MAX_RESET_PACKET_LEN: usize = 42;
 
 /// The encoded size of length field in long header.
 const LENGTH_FIELD_LEN: usize = 2;
@@ -206,8 +213,7 @@ pub trait ConnectionIdGenerator {
     fn generate_cid_and_token(&mut self, reset_token_key: &hmac::Key) -> (ConnectionId, u128) {
         let scid = self.generate();
         let reset_token = ResetToken::generate(reset_token_key, &scid);
-        let reset_token = u128::from_be_bytes(reset_token.0);
-        (scid, reset_token)
+        (scid, reset_token.to_u128())
     }
 }
 
@@ -532,15 +538,20 @@ impl Config {
         self.max_concurrent_conns = v;
     }
 
+    /// Set whether stateless reset is allowed.
+    pub fn enable_stateless_reset(&mut self, enable_stateless_reset: bool) {
+        self.stateless_reset = enable_stateless_reset;
+    }
+
     /// Set the key for reset token generation
     pub fn set_reset_token_key(&mut self, v: [u8; 64]) {
         // HMAC-SHA256 use a 512-bit block length
         self.reset_token_key = hmac::Key::new(hmac::HMAC_SHA256, &v);
     }
 
-    /// Set the lifetime of address token
-    pub fn set_address_token_lifetime(&mut self, seconds: u64) {
-        self.address_token_lifetime = Duration::from_secs(seconds);
+    /// Set whether stateless retry is allowed. Default is not allowed.
+    pub fn enable_retry(&mut self, enable_retry: bool) {
+        self.retry = enable_retry;
     }
 
     /// Set the key for address token generation.
@@ -561,14 +572,9 @@ impl Config {
         Ok(())
     }
 
-    /// Set whether stateless retry is allowed. Default is not allowed.
-    pub fn enable_retry(&mut self, enable_retry: bool) {
-        self.retry = enable_retry;
-    }
-
-    /// Set whether stateless reset is allowed.
-    pub fn enable_stateless_reset(&mut self, enable_stateless_reset: bool) {
-        self.stateless_reset = enable_stateless_reset;
+    /// Set the lifetime of address token
+    pub fn set_address_token_lifetime(&mut self, seconds: u64) {
+        self.address_token_lifetime = Duration::from_secs(seconds);
     }
 
     /// Set the length of source cid.
@@ -695,6 +701,10 @@ enum Event {
 
     /// The connection has send a RETIRE_CONNECTION_ID frame.
     DcidRetired(ResetToken),
+
+    /// The client connection has received a stateless reset token from transport
+    /// parameters extension.
+    ResetTokenAdvertised(ResetToken),
 
     /// The stream is created.
     StreamCreated(u64),

@@ -202,7 +202,6 @@ impl Connection {
         let trace_id = format!("{}-{}", if is_server { "SERVER" } else { "CLIENT" }, scid);
 
         let mut path = path::Path::new(local, remote, true, &conf.recovery, &trace_id);
-
         if is_server {
             // The server connection is created upon receiving a Initial packet
             // with a valid token sent by the client.
@@ -216,8 +215,11 @@ impl Connection {
         let paths = path::PathMap::new(path, cid_limit, is_server);
 
         let active_pid = paths.get_active_path_id()?;
-        let reset_token = if is_server {
-            conf.local_transport_params.stateless_reset_token
+        let reset_token = if is_server && conf.stateless_reset {
+            // Note that clients cannot use the stateless_reset_token transport
+            // parameter because their transport parameters do not have
+            // confidentiality protection
+            Some(ResetToken::generate(&conf.reset_token_key, scid).to_u128())
         } else {
             None
         };
@@ -284,6 +286,7 @@ impl Connection {
             conn.local_transport_params.retry_source_connection_id = addr_token.rscid;
             conn.flags.insert(DidRetry);
         }
+        conn.local_transport_params.stateless_reset_token = reset_token;
         conn.set_transport_params()?;
 
         // Derive initial secrets for the client.
@@ -1148,6 +1151,13 @@ impl Connection {
             if peer_params.retry_source_connection_id != self.rscid {
                 return Err(Error::TransportParameterError);
             }
+        }
+
+        // The remote server can issue a stateless_reset_token transport parameter
+        // that applies to the connection ID that it selected during the handshake.
+        if let Some(reset_token) = peer_params.stateless_reset_token {
+            let reset_token = ResetToken::from_u128(reset_token);
+            self.events.add(Event::ResetTokenAdvertised(reset_token));
         }
 
         self.set_peer_trans_params(peer_params)?;
@@ -3000,6 +3010,11 @@ impl Connection {
         self.flags.contains(HandshakeTimeout)
     }
 
+    /// Check whether the connection was closed due to stateless reset.
+    pub fn is_reset(&self) -> bool {
+        self.flags.contains(GotReset)
+    }
+
     /// Close the connection.
     pub fn close(&mut self, app: bool, err: u64, reason: &[u8]) -> Result<()> {
         if self.is_closed() || self.is_draining() {
@@ -3018,6 +3033,22 @@ impl Connection {
         });
         self.mark_tickable(true);
         Ok(())
+    }
+
+    /// Mark the connection as stateless reset by the peer.
+    pub(crate) fn reset(&mut self) {
+        if self.is_closed() || self.is_draining() {
+            return;
+        }
+
+        // The connection is reset by the peer and it MUST enter the draining
+        // period and not send any further packets on this connection.
+        self.flags.insert(GotReset);
+        if let Ok(p) = self.paths.get_active_mut() {
+            let pto = p.recovery.rtt.pto_base();
+            let now = time::Instant::now();
+            self.timers.set(Timer::Draining, now + pto * 3);
+        }
     }
 
     /// Returns the error from the peer, if any.
@@ -3831,30 +3862,33 @@ enum ConnectionFlags {
     /// The connection was closed due to handshake timeout.
     HandshakeTimeout = 1 << 11,
 
+    /// The connection was closed due to stateless reset.
+    GotReset = 1 << 12,
+
     /// An ack-eliciting packet should be sent.
-    NeedSendAckEliciting = 1 << 12,
+    NeedSendAckEliciting = 1 << 13,
 
     /// A NewToken frame should be sent.
-    NeedSendNewToken = 1 << 13,
+    NeedSendNewToken = 1 << 14,
 
     /// A HandshakeDone frame should be sent.
-    NeedSendHandshakeDone = 1 << 14,
+    NeedSendHandshakeDone = 1 << 15,
 
     /// The client has acknowledged the server's HandshakeDone.
-    HandshakeDoneAcked = 1 << 15,
+    HandshakeDoneAcked = 1 << 16,
 
     /// The connection has sent an ack-eliciting packet since receiving a packet.
     /// It is used for resetting Idle timer.
-    SentAckElicitingSinceRecvPkt = 1 << 16,
+    SentAckElicitingSinceRecvPkt = 1 << 17,
 
     /// The connection is in the tickable queue of the endpoint.
-    Tickable = 1 << 17,
+    Tickable = 1 << 18,
 
     /// The connection is in the sendable queue of the endpoint.
-    Sendable = 1 << 18,
+    Sendable = 1 << 19,
 
     /// The multipath extension is successfully negotiated.
-    EnableMultipath = 1 << 19,
+    EnableMultipath = 1 << 20,
 }
 
 /// Statistics about a QUIC connection.
