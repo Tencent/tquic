@@ -13,6 +13,8 @@
 // limitations under the License.
 
 //! Concrete qlog event definitions for QUIC, HTTP/3 and QPACK
+//! - draft-ietf-quic-qlog-quic-events-06
+//! - draft-ietf-quic-qlog-h3-events-05
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -31,6 +33,10 @@ pub struct Event {
     #[serde(flatten)]
     pub data: EventData,
 
+    /// The employed format is indicated in the "time_format" field, which
+    /// allows one of three values: "absolute", "delta" or "relative"
+    pub time_format: Option<TimeFormat>,
+
     /// The "protocol_type" array field indicates to which protocols this event
     /// belongs. This allows a single qlog file to aggregate traces of different
     /// protocols
@@ -43,10 +49,6 @@ pub struct Event {
     /// identifier" to each event that indicates to which conceptual "group"
     /// each event belongs.
     pub group_id: Option<String>,
-
-    /// The employed format is indicated in the "time_format" field, which
-    /// allows one of three values: "absolute", "delta" or "relative"
-    pub time_format: Option<TimeFormat>,
 }
 
 impl Event {
@@ -54,9 +56,9 @@ impl Event {
         Event {
             time,
             data,
+            time_format: Default::default(),
             protocol_type: Default::default(),
             group_id: Default::default(),
-            time_format: Default::default(),
         }
     }
 
@@ -117,7 +119,7 @@ pub enum EventData {
     /// difficult to reflect using the other options.
     #[serde(rename = "connectivity:connection_closed")]
     ConnectivityConnectionClosed {
-        owner: Option<TransportOwner>, // which side closed the connection
+        owner: Option<Owner>, // which side closed the connection
         connection_code: Option<ConnectionErrorCode>,
         application_code: Option<ApplicationErrorCode>,
         internal_code: Option<u32>,
@@ -132,7 +134,7 @@ pub enum EventData {
     /// "packet_received" events.
     #[serde(rename = "connectivity:connection_id_updated")]
     ConnectivityConnectionIdUpdated {
-        owner: Option<TransportOwner>,
+        owner: Option<Owner>,
         old: Option<String>,
         new: Option<String>,
     },
@@ -155,6 +157,15 @@ pub enum EventData {
         new: ConnectionState,
     },
 
+    /// This event indicates that the estimated Path MTU was updated. This happens
+    /// as part of the Path MTU discovery process.
+    #[serde(rename = "connectivity:mtu_updated")]
+    ConnectivityMtuUpdated {
+        old: Option<u16>,
+        new: u16,
+        done: Option<bool>,
+    },
+
     /// QUIC endpoints each have their own list of of QUIC versions they support.
     /// The client uses the most likely version in their first initial. If the
     /// server does support that version, it replies with a version_negotiation
@@ -162,8 +173,8 @@ pub enum EventData {
     /// version. This event aggregates all this information in a single event type.
     /// It also allows logging of supported versions at an endpoint without actual
     /// version negotiation needing to happen.
-    #[serde(rename = "transport:version_information")]
-    TransportVersionInformation {
+    #[serde(rename = "quic:version_information")]
+    QuicVersionInformation {
         server_versions: Option<Vec<String>>,
         client_versions: Option<Vec<String>>,
         chosen_version: Option<String>,
@@ -175,8 +186,8 @@ pub enum EventData {
     /// Layer Protocol Negotiation (alpn) extension. If there are common option(s),
     /// the server chooses the most optimal one and communicates this back to the
     /// client. If not, the connection is closed.
-    #[serde(rename = "transport:alpn_information")]
-    TransportAlpnInformation {
+    #[serde(rename = "quic:alpn_information")]
+    QuicAlpnInformation {
         server_alpns: Option<Vec<String>>,
         client_alpns: Option<Vec<String>>,
         chosen_alpn: Option<String>,
@@ -186,13 +197,12 @@ pub enum EventData {
     /// parameters, TLS ciphers, etc.) into a single event. This is done to
     /// minimize the amount of events and to decouple conceptual setting
     /// impacts from their underlying mechanism for easier high-level reasoning.
-    #[serde(rename = "transport:parameters_set")]
-    TransportParametersSet {
-        owner: Option<TransportOwner>,
+    #[serde(rename = "quic:parameters_set")]
+    QuicParametersSet {
+        owner: Option<Owner>,
         resumption_allowed: Option<bool>,
         early_data_enabled: Option<bool>,
         tls_cipher: Option<String>,
-        aead_tag_length: Option<u8>,
         original_destination_connection_id: Option<String>,
         initial_source_connection_id: Option<String>,
         retry_source_connection_id: Option<String>,
@@ -210,6 +220,8 @@ pub enum EventData {
         initial_max_streams_bidi: Option<u64>,
         initial_max_streams_uni: Option<u64>,
         preferred_address: Option<PreferredAddress>,
+        max_datagram_frame_size: Option<u64>,
+        grease_quic_bit: Option<bool>,
     },
 
     /// When using QUIC 0-RTT, clients are expected to remember and restore the
@@ -218,8 +230,8 @@ pub enum EventData {
     /// utilizing 0-RTT. Note that not all transport parameters should be restored
     /// (many are even prohibited from being re-utilized). The ones listed here are
     /// the ones expected to be useful for correct 0-RTT usage.
-    #[serde(rename = "transport:parameters_restored")]
-    TransportParametersRestored {
+    #[serde(rename = "quic:parameters_restored")]
+    QuicParametersRestored {
         disable_active_migration: Option<bool>,
         max_idle_timeout: Option<u64>,
         max_udp_payload_size: Option<u32>,
@@ -232,34 +244,23 @@ pub enum EventData {
         initial_max_streams_uni: Option<u64>,
     },
 
-    /// When one or more UDP-level datagrams are received from the socket. This is
-    /// useful for determining how datagrams are passed to the user space stack
-    /// from the OS.
-    #[serde(rename = "transport:datagrams_received")]
-    TransportDatagramsReceived {
-        count: Option<u16>,
-        raw: Option<Vec<RawInfo>>,
-        datagram_ids: Option<Vec<u32>>,
+    /// This event indicates a QUIC-level packet was sent.
+    #[serde(rename = "quic:packet_sent")]
+    QuicPacketSent {
+        header: PacketHeader,
+        is_coalesced: Option<bool>,
+        retry_token: Option<Token>,
+        stateless_reset_token: Option<String>,
+        supported_versions: Option<Vec<String>>,
+        raw: Option<RawInfo>,
+        datagram_id: Option<u32>,
+        is_mtu_probe_packet: Option<bool>,
+        trigger: Option<PacketSentTrigger>,
     },
-
-    /// When one or more UDP-level datagrams are passed to the socket. This is
-    /// useful for determining how QUIC packet buffers are drained to the OS.
-    #[serde(rename = "transport:datagrams_sent")]
-    TransportDatagramsSent {
-        count: Option<u16>,        // To support passing multiple at once
-        raw: Option<Vec<RawInfo>>, // Include only the UDP payload
-        datagram_ids: Option<Vec<u32>>,
-    },
-
-    /// When a UDP-level datagram is dropped. This is typically done if it does not
-    /// contain a valid QUIC packet. If it does, but the QUIC packet is dropped for
-    /// other reasons, packet_dropped (Section 5.7) should be used instead.
-    #[serde(rename = "transport:datagram_dropped")]
-    TransportDatagramDropped { raw: Option<RawInfo> },
 
     /// This event indicates a QUIC-level packet was received.
-    #[serde(rename = "transport:packet_received")]
-    TransportPacketReceived {
+    #[serde(rename = "quic:packet_received")]
+    QuicPacketReceived {
         header: PacketHeader,
         is_coalesced: Option<bool>,
         retry_token: Option<Token>,
@@ -268,27 +269,11 @@ pub enum EventData {
         raw: Option<RawInfo>,
         datagram_id: Option<u32>,
         trigger: Option<PacketReceivedTrigger>,
-        frames: Option<Vec<QuicFrame>>,
-    },
-
-    /// This event indicates a QUIC-level packet was sent.
-    #[serde(rename = "transport:packet_sent")]
-    TransportPacketSent {
-        header: PacketHeader,
-        is_coalesced: Option<bool>,
-        retry_token: Option<Token>,
-        stateless_reset_token: Option<String>,
-        supported_versions: Option<Vec<String>>,
-        raw: Option<RawInfo>,
-        datagram_id: Option<u32>,
-        trigger: Option<PacketSentTrigger>,
-        send_at_time: Option<f32>,
-        frames: Option<SmallVec<[QuicFrame; 1]>>,
     },
 
     /// This event indicates a QUIC-level packet was dropped.
-    #[serde(rename = "transport:packet_dropped")]
-    TransportPacketDropped {
+    #[serde(rename = "quic:packet_dropped")]
+    QuicPacketDropped {
         header: Option<PacketHeader>,
         raw: Option<RawInfo>,
         datagram_id: Option<u32>,
@@ -300,8 +285,8 @@ pub enum EventData {
     /// yet. Typically, this is because the packet cannot be parsed yet, and thus only
     /// the full packet contents can be logged when it was parsed in a packet_received
     /// event.
-    #[serde(rename = "transport:packet_buffered")]
-    TransportPacketBuffered {
+    #[serde(rename = "quic:packet_buffered")]
+    QuicPacketBuffered {
         header: Option<PacketHeader>,
         raw: Option<RawInfo>,
         datagram_id: Option<u32>,
@@ -315,18 +300,44 @@ pub enum EventData {
     /// first time, as QUIC uses ACK ranges which can include repeated ACKs.
     /// Additionally, this event can be used by implementations that do not log
     /// frame contents.
-    #[serde(rename = "transport:version_information")]
-    TransportPacketsAcked {
+    #[serde(rename = "quic:version_information")]
+    QuicPacketsAcked {
         packet_number_space: Option<PacketNumberSpace>,
         packet_numbers: Option<Vec<u64>>,
     },
+
+    /// When one or more UDP-level datagrams are passed to the socket. This is
+    /// useful for determining how QUIC packet buffers are drained to the OS.
+    #[serde(rename = "quic:datagrams_sent")]
+    QuicDatagramsSent {
+        count: Option<u16>,        // To support passing multiple at once
+        raw: Option<Vec<RawInfo>>, // Include only the UDP payload
+        datagram_ids: Option<Vec<u32>>,
+    },
+
+    /// When one or more UDP-level datagrams are received from the socket. This is
+    /// useful for determining how datagrams are passed to the user space stack
+    /// from the OS.
+    #[serde(rename = "quic:datagrams_received")]
+    QuicDatagramsReceived {
+        count: Option<u16>,
+        raw: Option<Vec<RawInfo>>,
+        ecn: Option<Vec<Ecn>>,
+        datagram_ids: Option<Vec<u32>>,
+    },
+
+    /// When a UDP-level datagram is dropped. This is typically done if it does not
+    /// contain a valid QUIC packet. If it does, but the QUIC packet is dropped for
+    /// other reasons, packet_dropped (Section 5.7) should be used instead.
+    #[serde(rename = "quic:datagram_dropped")]
+    QuicDatagramDropped { raw: Option<RawInfo> },
 
     /// This event is emitted whenever the internal state of a QUIC stream is updated,
     /// as described in QUIC transport draft-23 section 3. Most of this can be
     /// inferred from several types of frames going over the wire, but it's much
     /// easier to have explicit signals for these state changes.
-    #[serde(rename = "transport:stream_state_updated")]
-    TransportStreamStateUpdated {
+    #[serde(rename = "quic:stream_state_updated")]
+    QuicStreamStateUpdated {
         stream_id: u64,
         stream_type: Option<StreamType>,
         old: Option<StreamState>,
@@ -342,8 +353,8 @@ pub enum EventData {
     /// of applying a frame to the internal state of an implementation can be
     /// inferred from that frame's contents, these events are aggregated into this
     /// single "frames_processed" event.
-    #[serde(rename = "transport:frames_processed")]
-    TransportFramesProcessed {
+    #[serde(rename = "quic:frames_processed")]
+    QuicFramesProcessed {
         frames: Vec<QuicFrame>,
         packet_number: Option<u64>,
     },
@@ -354,10 +365,25 @@ pub enum EventData {
     /// actual user application on top (for example a browser engine). This helps
     /// make clear the flow of data, how long data remains in various buffers and
     /// the overheads introduced by individual layers.
-    #[serde(rename = "transport:data_moved")]
-    TransportDataMoved {
+    #[serde(rename = "quic:stream_data_moved")]
+    QuicStreamDataMoved {
         stream_id: Option<u64>,
         offset: Option<u64>,
+        length: Option<u64>,
+        from: Option<DataRecipient>,
+        to: Option<DataRecipient>,
+        raw: Option<RawInfo>,
+    },
+
+    /// Used to indicate when QUIC Datagram Frame data (see [RFC9221]) moves
+    /// between the different layers (for example passing from the application
+    /// protocol (e.g., WebTransport) to QUIC Datagram Frame buffers and vice
+    /// versa) or between the application protocol and the actual user
+    /// application on top (for example a gaming engine or media playback
+    /// software). This helps make clear the flow of data, how long data remains
+    /// in various buffers and the overheads introduced by individual layers.
+    #[serde(rename = "quic:datagram_data_moved")]
+    QuicDatagramDataMoved {
         length: Option<u64>,
         from: Option<DataRecipient>,
         to: Option<DataRecipient>,
@@ -447,6 +473,7 @@ pub enum EventData {
     RecoveryPacketLost {
         header: Option<PacketHeader>,
         frames: Option<Vec<QuicFrame>>,
+        is_mtu_probe_packet: Option<bool>,
         trigger: Option<PacketLostTrigger>,
     },
 
@@ -458,19 +485,25 @@ pub enum EventData {
     #[serde(rename = "recovery:marked_for_retransmit")]
     RecoveryMarkedForRetransmit { frames: Vec<QuicFrame> },
 
+    #[serde(rename = "recovery:ecn_state_updated")]
+    RecoveryEcnStateUpdated {
+        old: Option<EcnState>,
+        new: EcnState,
+    },
+
     /// This event contains HTTP/3 and QPACK-level settings, mostly those received
     /// from the HTTP/3 SETTINGS frame. All these parameters are typically set once
     /// and never change. However, they are typically set at different times during
     /// the connection, so there can be several instances of this event with
     /// different fields set.
-    #[serde(rename = "http:parameters_set")]
-    HttpParametersSet {
-        owner: Option<Http3Owner>,
+    #[serde(rename = "h3:parameters_set")]
+    H3ParametersSet {
+        owner: Option<Owner>,
         #[serde(alias = "max_header_list_size")]
         max_field_section_size: Option<u64>,
         max_table_capacity: Option<u64>,
         blocked_streams_count: Option<u64>,
-        enable_connect_protocol: Option<u64>,
+        enable_connect: Option<u64>,
         h3_datagram: Option<u64>,
         /// indicates whether this implementation waits for a SETTINGS frame before
         /// processing requests
@@ -481,8 +514,8 @@ pub enum EventData {
     /// server's SETTINGs from the previous connection. This event is used to
     /// indicate which HTTP/3 settings were restored and to which values when
     /// utilizing 0-RTT.
-    #[serde(rename = "http:parameters_restored")]
-    HttpParametersRestored {
+    #[serde(rename = "h3:parameters_restored")]
+    H3ParametersRestored {
         #[serde(alias = "max_header_list_size")]
         max_field_section_size: Option<u64>,
         max_table_capacity: Option<u64>,
@@ -493,19 +526,29 @@ pub enum EventData {
 
     /// Emitted when a stream's type becomes known. This is typically when a stream
     /// is opened and the stream's type indicator is sent or received.
-    #[serde(rename = "http:stream_type_set")]
-    HttpStreamTypeSet {
-        owner: Option<Http3Owner>,
+    #[serde(rename = "h3:stream_type_set")]
+    H3StreamTypeSet {
+        owner: Option<Owner>,
         stream_id: u64,
         stream_type: Http3StreamType,
+        stream_type_value: Option<u64>,
         associated_push_id: Option<u64>,
+    },
+
+    /// Emitted when the priority of a request stream or push stream is initialized
+    /// or updated through mechanisms defined in [RFC9218].
+    H3PriorityUpdated {
+        stream_id: Option<u64>,
+        push_id: Option<u64>,
+        old: Option<String>,
+        new: String,
     },
 
     /// This event is emitted when the HTTP/3 framing actually happens. This does
     /// not necessarily coincide with HTTP/3 data getting passed to the QUIC layer.
     /// For that, see the "data_moved" event in [QLOG-QUIC].
-    #[serde(rename = "http:frame_created")]
-    HttpFrameCreated {
+    #[serde(rename = "h3:frame_created")]
+    H3FrameCreated {
         stream_id: u64,
         length: Option<u64>,
         frame: Http3Frame,
@@ -515,8 +558,8 @@ pub enum EventData {
     /// This event is emitted when the HTTP/3 frame is parsed. Note: this is not
     /// necessarily the same as when the HTTP/3 data is actually received on the
     /// QUIC layer. For that, see the "data_moved" event in [QLOG-QUIC].
-    #[serde(rename = "http:frame_parsed")]
-    HttpFrameParsed {
+    #[serde(rename = "h3:frame_parsed")]
+    H3FrameParsed {
         stream_id: u64,
         length: Option<u64>,
         frame: Http3Frame,
@@ -527,11 +570,11 @@ pub enum EventData {
     /// or, conversely, abandoned (rejected) by the application on top of HTTP/3
     /// (e.g., the web browser). This event is added to help debug problems with
     /// unexpected PUSH behaviour, which is commonplace with HTTP/2.
-    #[serde(rename = "http:push_resolved")]
-    HttpPushResolved {
+    #[serde(rename = "h3:push_resolved")]
+    H3PushResolved {
         push_id: Option<u64>,
         stream_id: Option<u64>,
-        decision: Option<Http3PushDecision>,
+        decision: Http3PushDecision,
     },
 
     /// This event is emitted when one or more of the internal QPACK variables
@@ -542,7 +585,7 @@ pub enum EventData {
     /// separate event instances.
     #[serde(rename = "qpack:state_updated")]
     QpackStateUpdated {
-        owner: Option<QpackOwner>,
+        owner: Option<Owner>,
         dynamic_table_capacity: Option<u64>,
         dynamic_table_size: Option<u64>,
         known_received_count: Option<u64>,
@@ -561,6 +604,7 @@ pub enum EventData {
     /// QPACK's dynamic table.
     #[serde(rename = "qpack:dynamic_table_updated")]
     QpackDynamicTableUpdated {
+        owner: Owner,
         update_type: QpackUpdateType,
         entries: Vec<QpackDynamicTableEntry>,
     },
@@ -652,18 +696,19 @@ impl EventData {
             ConnectivityConnectionIdUpdated { .. } => EventImportance::Base,
             ConnectivitySpinBitUpdated { .. } => EventImportance::Base,
             ConnectivityConnectionStateUpdated { .. } => EventImportance::Base,
+            ConnectivityMtuUpdated { .. } => EventImportance::Extra,
 
-            TransportParametersSet { .. } => EventImportance::Core,
-            TransportDatagramsReceived { .. } => EventImportance::Extra,
-            TransportDatagramsSent { .. } => EventImportance::Extra,
-            TransportDatagramDropped { .. } => EventImportance::Extra,
-            TransportPacketReceived { .. } => EventImportance::Core,
-            TransportPacketSent { .. } => EventImportance::Core,
-            TransportPacketDropped { .. } => EventImportance::Base,
-            TransportPacketBuffered { .. } => EventImportance::Base,
-            TransportStreamStateUpdated { .. } => EventImportance::Base,
-            TransportFramesProcessed { .. } => EventImportance::Extra,
-            TransportDataMoved { .. } => EventImportance::Base,
+            QuicParametersSet { .. } => EventImportance::Core,
+            QuicDatagramsReceived { .. } => EventImportance::Extra,
+            QuicDatagramsSent { .. } => EventImportance::Extra,
+            QuicDatagramDropped { .. } => EventImportance::Extra,
+            QuicPacketReceived { .. } => EventImportance::Core,
+            QuicPacketSent { .. } => EventImportance::Core,
+            QuicPacketDropped { .. } => EventImportance::Base,
+            QuicPacketBuffered { .. } => EventImportance::Base,
+            QuicStreamStateUpdated { .. } => EventImportance::Base,
+            QuicFramesProcessed { .. } => EventImportance::Extra,
+            QuicStreamDataMoved { .. } => EventImportance::Base,
 
             SecurityKeyUpdated { .. } => EventImportance::Base,
             SecurityKeyDiscarded { .. } => EventImportance::Base,
@@ -675,11 +720,11 @@ impl EventData {
             RecoveryPacketLost { .. } => EventImportance::Core,
             RecoveryMarkedForRetransmit { .. } => EventImportance::Extra,
 
-            HttpParametersSet { .. } => EventImportance::Base,
-            HttpStreamTypeSet { .. } => EventImportance::Base,
-            HttpFrameCreated { .. } => EventImportance::Core,
-            HttpFrameParsed { .. } => EventImportance::Core,
-            HttpPushResolved { .. } => EventImportance::Extra,
+            H3ParametersSet { .. } => EventImportance::Base,
+            H3StreamTypeSet { .. } => EventImportance::Base,
+            H3FrameCreated { .. } => EventImportance::Core,
+            H3FrameParsed { .. } => EventImportance::Core,
+            H3PushResolved { .. } => EventImportance::Extra,
 
             QpackStateUpdated { .. } => EventImportance::Base,
             QpackStreamStateUpdated { .. } => EventImportance::Base,
@@ -778,7 +823,7 @@ pub enum CryptoError {
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
-pub enum TransportOwner {
+pub enum Owner {
     Local,
     Remote,
 }
@@ -829,22 +874,6 @@ pub enum PacketNumberSpace {
     Initial,
     Handshake,
     ApplicationData,
-}
-
-#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
-#[serde(rename_all = "snake_case")]
-pub enum TokenType {
-    Retry,
-    Resumption,
-}
-
-#[serde_with::skip_serializing_none]
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Debug)]
-pub struct Token {
-    #[serde(rename(serialize = "type"))]
-    pub token_type: Option<TokenType>,
-    pub details: Option<String>,
-    pub raw: Option<RawInfo>,
 }
 
 #[serde_with::skip_serializing_none]
@@ -915,6 +944,53 @@ impl PacketHeader {
             _ => PacketHeader::new(ty, packet_number, None, None, None, version, scid, dcid),
         }
     }
+}
+
+#[serde_with::skip_serializing_none]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Debug)]
+pub struct Token {
+    #[serde(rename(serialize = "type"))]
+    pub token_type: Option<TokenType>,
+    pub details: Option<String>,
+    pub raw: Option<RawInfo>,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenType {
+    Retry,
+    Resumption,
+}
+
+#[allow(clippy::enum_variant_names)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyType {
+    ServerInitialSecret,
+    ClientInitialSecret,
+    ServerHandshakeSecret,
+    ClientHandshakeSecret,
+    #[serde(rename = "server_0rtt_secret")]
+    Server0RttSecret,
+    #[serde(rename = "client_0rtt_secret")]
+    Client0RttSecret,
+    #[serde(rename = "server_1rtt_secret")]
+    Server1RttSecret,
+    #[serde(rename = "client_1rtt_secret")]
+    Client1RttSecret,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum Ecn {
+    #[serde(rename = "Not-ECT")]
+    NotEct,
+    #[serde(rename = "ECT(1)")]
+    Ect1,
+    #[serde(rename = "ECT(0)")]
+    Ect0,
+    #[serde(rename = "CE")]
+    Ce,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
@@ -1148,7 +1224,7 @@ pub enum QuicFrame {
 
 #[serde_with::skip_serializing_none]
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
-pub struct TransportAlpnInformation {
+pub struct QuicAlpnInformation {
     pub server_alpns: Option<Vec<String>>,
     pub client_alpns: Option<Vec<String>>,
     pub chosen_alpn: Option<String>,
@@ -1166,7 +1242,7 @@ pub struct PreferredAddress {
 
 #[serde_with::skip_serializing_none]
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
-pub struct TransportPacketSent {
+pub struct QuicPacketSent {
     pub header: PacketHeader,
     pub is_coalesced: Option<bool>,
     pub retry_token: Option<Token>,
@@ -1238,24 +1314,6 @@ pub enum PacketLostTrigger {
     PtoExpired,
 }
 
-#[allow(clippy::enum_variant_names)]
-#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
-#[serde(rename_all = "snake_case")]
-pub enum KeyType {
-    ServerInitialSecret,
-    ClientInitialSecret,
-    ServerHandshakeSecret,
-    ClientHandshakeSecret,
-    #[serde(rename = "server_0rtt_secret")]
-    Server0RttSecret,
-    #[serde(rename = "client_0rtt_secret")]
-    Client0RttSecret,
-    #[serde(rename = "server_1rtt_secret")]
-    Server1RttSecret,
-    #[serde(rename = "client_1rtt_secret")]
-    Client1RttSecret,
-}
-
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyUpdateOrRetiredTrigger {
@@ -1266,9 +1324,11 @@ pub enum KeyUpdateOrRetiredTrigger {
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
-pub enum Http3Owner {
-    Local,
-    Remote,
+pub enum EcnState {
+    Testing,
+    Unknown,
+    Failed,
+    Capable,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
@@ -1478,18 +1538,18 @@ pub enum QPackInstruction {
         table_type: QpackTableType,
         name_index: u64,
         huffman_encoded_value: bool,
-        value_length: u64,
-        value: String,
+        value_length: Option<u64>,
+        value: Option<String>,
     },
 
     InsertWithoutNameReferenceInstruction {
         instruction_type: QpackInstructionTypeName,
         huffman_encoded_name: bool,
-        name_length: u64,
-        name: String,
+        name_length: Option<u64>,
+        name: Option<String>,
         huffman_encoded_value: bool,
-        value_length: u64,
-        value: String,
+        value_length: Option<u64>,
+        value: Option<String>,
     },
 
     DuplicateInstruction {
@@ -1536,31 +1596,21 @@ pub enum QpackHeaderBlockRepresentation {
         table_type: QpackTableType,
         name_index: u64,
         huffman_encoded_value: bool,
-        value_length: u64,
-        value: String,
+        value_length: Option<u64>,
+        value: Option<String>,
         is_post_base: Option<bool>,
     },
 
     LiteralHeaderFieldWithoutName {
         header_field_type: QpackHeaderBlockRepresentationTypeName,
         preserve_literal: bool,
-        table_type: QpackTableType,
-        name_index: u64,
         huffman_encoded_name: bool,
-        name_length: u64,
-        name: String,
+        name_length: Option<u64>,
+        name: Option<String>,
         huffman_encoded_value: bool,
-        value_length: u64,
-        value: String,
-        is_post_base: Option<bool>,
+        value_length: Option<u64>,
+        value: Option<String>,
     },
-}
-
-#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
-#[serde(rename_all = "snake_case")]
-pub enum QpackOwner {
-    Local,
-    Remote,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
@@ -1605,11 +1655,10 @@ pub mod tests {
     }
 
     #[test]
-    fn serialize_transport_packet_sent_event_without_frames() {
+    fn serialize_quic_packet_sent_event() {
         let pkt_hdr = new_test_pkt_hdr(PacketType::Initial);
-        let event_data = EventData::TransportPacketSent {
+        let event_data = EventData::QuicPacketSent {
             header: pkt_hdr,
-            frames: None,
             is_coalesced: None,
             retry_token: None,
             stateless_reset_token: None,
@@ -1620,7 +1669,7 @@ pub mod tests {
                 data: None,
             }),
             datagram_id: None,
-            send_at_time: None,
+            is_mtu_probe_packet: None,
             trigger: None,
         };
 
@@ -1629,7 +1678,7 @@ pub mod tests {
             serde_json::to_string_pretty(&event).unwrap(),
             r#"{
   "time": 1234567000.0,
-  "name": "transport:packet_sent",
+  "name": "quic:packet_sent",
   "data": {
     "header": {
       "packet_type": "initial",
@@ -1644,78 +1693,6 @@ pub mod tests {
       "length": 1200,
       "payload_length": 1173
     }
-  }
-}"#
-        );
-    }
-
-    #[test]
-    fn serialize_transport_packet_sent_event_with_frames() {
-        let event_data = EventData::TransportPacketSent {
-            header: new_test_pkt_hdr(PacketType::Initial),
-            frames: Some(
-                vec![
-                    QuicFrame::Padding,
-                    QuicFrame::Ping,
-                    QuicFrame::Stream {
-                        stream_id: 0,
-                        offset: 0,
-                        length: 100,
-                        fin: Some(true),
-                        raw: None,
-                    },
-                ]
-                .into(),
-            ),
-            is_coalesced: None,
-            retry_token: None,
-            stateless_reset_token: None,
-            supported_versions: None,
-            raw: Some(RawInfo {
-                length: Some(1200),
-                payload_length: Some(1173),
-                data: None,
-            }),
-            datagram_id: None,
-            send_at_time: None,
-            trigger: None,
-        };
-
-        let event = Event::new(0.0, event_data);
-        assert_eq!(
-            serde_json::to_string_pretty(&event).unwrap(),
-            r#"{
-  "time": 0.0,
-  "name": "transport:packet_sent",
-  "data": {
-    "header": {
-      "packet_type": "initial",
-      "packet_number": 0,
-      "version": "1",
-      "scil": 8,
-      "dcil": 8,
-      "scid": "0102030405060708",
-      "dcid": "0807060504030201"
-    },
-    "raw": {
-      "length": 1200,
-      "payload_length": 1173
-    },
-    "frames": [
-      {
-        "frame_type": "padding"
-      },
-      {
-        "frame_type": "ping"
-      },
-      {
-        "frame_type": "stream",
-        "stream_id": 0,
-        "offset": 0,
-        "length": 100,
-        "fin": true
-      }
-    ]
   }
 }"#
         );
