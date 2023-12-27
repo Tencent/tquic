@@ -2177,7 +2177,7 @@ impl Connection {
         let out = &mut out[st.written..];
         if (pkt_type != PacketType::OneRTT && pkt_type != PacketType::ZeroRTT)
             || self.is_closing()
-            || out.len() <= frame::MIN_STREAM_OVERHEAD
+            || out.len() <= frame::MAX_STREAM_OVERHEAD
             || !self.paths.get(path_id)?.active()
         {
             return Ok(());
@@ -2207,11 +2207,6 @@ impl Connection {
             // 2. Read the data from the stream's SendBuf.
             // 3. encode the frame header with the updated frame header segments.
             let frame_hdr_len = frame::stream_header_wire_len(stream_id, stream_off);
-
-            // If the buffer is too short, we won't attempt to write any more stream frames into it.
-            if cap.checked_sub(frame_hdr_len).is_none() {
-                break;
-            }
 
             // Read stream data and write into the packet buffer directly.
             let (frame_data_len, fin) = stream.send.read(&mut out[len + frame_hdr_len..])?;
@@ -2253,6 +2248,11 @@ impl Connection {
             // If the stream is no longer sendable, remove it from the queue
             if !stream.is_sendable() {
                 self.streams.remove_sendable();
+            }
+
+            // If the buffer is too short, we won't attempt to write any more stream frames into it.
+            if cap <= frame::MAX_STREAM_OVERHEAD {
+                break;
             }
         }
 
@@ -6030,6 +6030,54 @@ pub(crate) mod tests {
         );
         let ConnectionError { error_code, .. } = test_pair.server.local_error().unwrap();
         assert_eq!(*error_code, Error::FlowControlError.to_wire());
+
+        Ok(())
+    }
+
+    #[test]
+    fn conn_multi_incremental_streams_send_round_robin() -> Result<()> {
+        let server_transport_params = TransportParams {
+            initial_max_data: 2000,
+            initial_max_stream_data_bidi_remote: 2000,
+            initial_max_streams_bidi: 4,
+            ..TransportParams::default()
+        };
+
+        let mut client_config = TestPair::new_test_config(false)?;
+        let mut server_config = TestPair::new_test_config(true)?;
+        server_config.local_transport_params = server_transport_params.clone();
+
+        let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
+        assert_eq!(test_pair.handshake(), Ok(()));
+
+        // 1. Client create four bidi streams [0, 4, 8, 12], and write data on them
+        let data = TestPair::new_test_data(500);
+        for i in 0..4 {
+            assert_eq!(
+                test_pair.client.stream_write(i * 4, data.clone(), true)?,
+                data.len()
+            );
+        }
+
+        // 2. Try to send stream data in round-robin order
+        let mut packets = Vec::new();
+        for i in 0..4 {
+            let mut out = vec![0u8; 100];
+            let info = match test_pair.client.send(&mut out) {
+                Ok((written, info)) => {
+                    out.truncate(written);
+                    info
+                }
+                Err(e) => return Err(e),
+            };
+            packets.push((out, info));
+        }
+
+        // 3. Server recv stream data, all streams must be readable
+        TestPair::conn_packets_in(&mut test_pair.server, packets)?;
+        for i in 0..4 {
+            assert!(test_pair.server.stream_readable(i * 4));
+        }
 
         Ok(())
     }
