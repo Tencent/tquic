@@ -190,6 +190,14 @@ pub struct ClientOpt {
     #[clap(long, default_value = "333", value_name = "TIME")]
     pub initial_rtt: u64,
 
+    /// Linear factor for calculating the probe timeout.
+    #[clap(long, default_value = "3", value_name = "NUM")]
+    pub pto_linear_factor: u64,
+
+    /// Upper limit of probe timeout in microseconds.
+    #[clap(long, default_value = "10000", value_name = "TIME")]
+    pub max_pto: u64,
+
     /// Save TLS key log into the given file.
     #[clap(short, long, value_name = "FILE")]
     pub keylog_file: Option<String>,
@@ -393,6 +401,8 @@ impl Worker {
         config.set_max_handshake_timeout(option.handshake_timeout);
         config.set_max_idle_timeout(option.idle_timeout);
         config.set_initial_rtt(option.initial_rtt);
+        config.set_pto_linear_factor(option.pto_linear_factor);
+        config.set_max_pto(option.max_pto);
         config.set_max_concurrent_conns(option.max_concurrent_conns);
         config.set_initial_max_streams_bidi(option.max_concurrent_requests);
         config.set_send_batch_size(option.send_batch_size);

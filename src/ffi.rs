@@ -215,6 +215,25 @@ pub extern "C" fn quic_config_set_initial_rtt(config: &mut Config, v: u64) {
     config.set_initial_rtt(v);
 }
 
+/// Set the linear factor for calculating the probe timeout.
+/// The endpoint do not backoff the first `v` consecutive probe timeouts.
+/// The default value is `0`.
+/// The configuration should be changed with caution. Setting a value greater than the default
+/// will cause retransmission to be more aggressive.
+#[no_mangle]
+pub extern "C" fn quic_config_set_pto_linear_factor(config: &mut Config, v: u64) {
+    config.set_pto_linear_factor(v);
+}
+
+/// Set the upper limit of probe timeout in milliseconds.
+/// A Probe Timeout (PTO) triggers the sending of one or two probe datagrams and enables a
+/// connection to recover from loss of tail packets or acknowledgments.
+/// See RFC 9002 Section 6.2.
+#[no_mangle]
+pub extern "C" fn quic_config_set_max_pto(config: &mut Config, v: u64) {
+    config.set_max_pto(v);
+}
+
 /// Set the `active_connection_id_limit` transport parameter.
 #[no_mangle]
 pub extern "C" fn quic_config_set_active_connection_id_limit(config: &mut Config, v: u64) {
@@ -724,6 +743,12 @@ pub extern "C" fn quic_conn_is_closed(conn: &mut Connection) -> bool {
 #[no_mangle]
 pub extern "C" fn quic_conn_is_idle_timeout(conn: &mut Connection) -> bool {
     conn.is_idle_timeout()
+}
+
+/// Check whether the connection was closed due to stateless reset.
+#[no_mangle]
+pub extern "C" fn quic_conn_is_reset(conn: &mut Connection) -> bool {
+    conn.is_reset()
 }
 
 /// Returns the error from the peer, if any.
