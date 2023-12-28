@@ -540,6 +540,8 @@ mod tests {
             min_congestion_window: 2_u64,
             initial_congestion_window: 10_u64,
             initial_rtt: crate::INITIAL_RTT,
+            pto_linear_factor: crate::DEFAULT_PTO_LINEAR_FACTOR,
+            max_pto: crate::MAX_PTO,
         }
     }
 

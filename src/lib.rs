@@ -142,6 +142,12 @@ const INITIAL_RTT: Duration = Duration::from_millis(333);
 /// Default handshake timeout is 30 seconds.
 const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
+///  Default linear factor for calculating the probe timeout.
+const DEFAULT_PTO_LINEAR_FACTOR: u64 = 0;
+
+/// Default upper limit of probe timeout.
+const MAX_PTO: Duration = Duration::MAX;
+
 /// Result type for quic operations.
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -496,8 +502,25 @@ impl Config {
     ///
     /// The configuration should be changed with caution. Setting a value less than the default
     /// will cause retransmission of handshake packets to be more aggressive.
-    pub fn set_initial_rtt(&mut self, millisecs: u64) {
-        self.recovery.initial_rtt = cmp::max(Duration::from_millis(millisecs), TIMER_GRANULARITY);
+    pub fn set_initial_rtt(&mut self, millis: u64) {
+        self.recovery.initial_rtt = cmp::max(Duration::from_millis(millis), TIMER_GRANULARITY);
+    }
+
+    /// Set the linear factor for calculating the probe timeout.
+    /// The endpoint do not backoff the first `v` consecutive probe timeouts.
+    /// The default value is `0`.
+    /// The configuration should be changed with caution. Setting a value greater than the default
+    /// will cause retransmission to be more aggressive.
+    pub fn set_pto_linear_factor(&mut self, v: u64) {
+        self.recovery.pto_linear_factor = v;
+    }
+
+    /// Set the upper limit of probe timeout in milliseconds.
+    /// A Probe Timeout (PTO) triggers the sending of one or two probe datagrams and enables a
+    /// connection to recover from loss of tail packets or acknowledgments.
+    /// See RFC 9002 Section 6.2.
+    pub fn set_max_pto(&mut self, millis: u64) {
+        self.recovery.max_pto = cmp::max(Duration::from_millis(millis), TIMER_GRANULARITY);
     }
 
     /// Set the `active_connection_id_limit` transport parameter.
@@ -651,6 +674,12 @@ pub struct RecoveryConfig {
 
     /// The initial rtt, used before real rtt is estimated.
     pub initial_rtt: Duration,
+
+    /// Linear factor for calculating the probe timeout.
+    pub pto_linear_factor: u64,
+
+    // Upper limit of probe timeout.
+    pub max_pto: Duration,
 }
 
 impl Default for RecoveryConfig {
@@ -662,6 +691,8 @@ impl Default for RecoveryConfig {
             min_congestion_window: 2_u64,
             initial_congestion_window: 10_u64,
             initial_rtt: INITIAL_RTT,
+            pto_linear_factor: DEFAULT_PTO_LINEAR_FACTOR,
+            max_pto: MAX_PTO,
         }
     }
 }
@@ -871,6 +902,34 @@ mod tests {
 
         config.set_initial_rtt(100);
         assert_eq!(config.recovery.initial_rtt, Duration::from_millis(100));
+
+        Ok(())
+    }
+
+    #[test]
+    fn pto_linear_factor() -> Result<()> {
+        let mut config = Config::new()?;
+        assert_eq!(config.recovery.pto_linear_factor, DEFAULT_PTO_LINEAR_FACTOR);
+
+        config.set_pto_linear_factor(0);
+        assert_eq!(config.recovery.pto_linear_factor, 0);
+
+        config.set_pto_linear_factor(100);
+        assert_eq!(config.recovery.pto_linear_factor, 100);
+
+        Ok(())
+    }
+
+    #[test]
+    fn max_pto() -> Result<()> {
+        let mut config = Config::new()?;
+        assert_eq!(config.recovery.max_pto, MAX_PTO);
+
+        config.set_max_pto(0);
+        assert_eq!(config.recovery.max_pto, TIMER_GRANULARITY);
+
+        config.set_max_pto(300000);
+        assert_eq!(config.recovery.max_pto, Duration::from_millis(300000));
 
         Ok(())
     }

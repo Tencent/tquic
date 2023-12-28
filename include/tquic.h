@@ -361,6 +361,23 @@ void quic_config_set_min_congestion_window(struct quic_config_t *config, uint64_
 void quic_config_set_initial_rtt(struct quic_config_t *config, uint64_t v);
 
 /**
+ * Set the linear factor for calculating the probe timeout.
+ * The endpoint do not backoff the first `v` consecutive probe timeouts.
+ * The default value is `0`.
+ * The configuration should be changed with caution. Setting a value greater than the default
+ * will cause retransmission to be more aggressive.
+ */
+void quic_config_set_pto_linear_factor(struct quic_config_t *config, uint64_t v);
+
+/**
+ * Set the upper limit of probe timeout in milliseconds.
+ * A Probe Timeout (PTO) triggers the sending of one or two probe datagrams and enables a
+ * connection to recover from loss of tail packets or acknowledgments.
+ * See RFC 9002 Section 6.2.
+ */
+void quic_config_set_max_pto(struct quic_config_t *config, uint64_t v);
+
+/**
  * Set the `active_connection_id_limit` transport parameter.
  */
 void quic_config_set_active_connection_id_limit(struct quic_config_t *config, uint64_t v);
@@ -629,6 +646,11 @@ bool quic_conn_is_closed(struct quic_conn_t *conn);
  * Check whether the connection was closed due to idle timeout.
  */
 bool quic_conn_is_idle_timeout(struct quic_conn_t *conn);
+
+/**
+ * Check whether the connection was closed due to stateless reset.
+ */
+bool quic_conn_is_reset(struct quic_conn_t *conn);
 
 /**
  * Returns the error from the peer, if any.
