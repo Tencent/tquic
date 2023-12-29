@@ -18,6 +18,8 @@ use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
 use std::net::SocketAddr;
 
+use clap::builder::PossibleValue;
+use clap::ValueEnum;
 use log::debug;
 use mio::net::UdpSocket;
 use mio::Interest;
@@ -31,17 +33,53 @@ use tquic::PacketSendHandler;
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-/// Supported ALPNs.
-pub mod alpns {
-    pub const HTTP_09: [&[u8]; 2] = [b"hq-interop", b"http/0.9"];
-    pub const HTTP_3: [&[u8]; 1] = [b"h3"];
-}
+/// Supported application protocols.
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+pub enum ApplicationProto {
+    /// Proto for QUIC interop, see https://github.com/quic-interop/quic-interop-runner
+    Interop,
 
-#[derive(Default, PartialEq)]
-pub enum AppProto {
+    /// HTTP/0.9, see https://http.dev/0.9
     Http09,
+
+    /// HTTP/3, see https://www.rfc-editor.org/rfc/rfc9114.html
     #[default]
     H3,
+}
+
+impl ApplicationProto {
+    /// Create a new ApplicationProto from byte slice.
+    pub fn from_slice(proto: &[u8]) -> Self {
+        match proto {
+            b"hq-interop" => Self::Interop,
+            b"http/0.9" => Self::Http09,
+            b"h3" => Self::H3,
+            _ => unreachable!(),
+        }
+    }
+
+    /// Convert an ApplicationProto into a byte slice.
+    pub fn to_slice(&self) -> &[u8] {
+        match self {
+            Self::Interop => b"hq-interop",
+            Self::Http09 => b"http/0.9",
+            Self::H3 => b"h3",
+        }
+    }
+}
+
+impl ValueEnum for ApplicationProto {
+    fn to_possible_value(&self) -> Option<PossibleValue> {
+        Some(match self {
+            Self::Interop => PossibleValue::new("hq-interop"),
+            Self::Http09 => PossibleValue::new("http/0.9"),
+            Self::H3 => PossibleValue::new("h3"),
+        })
+    }
+
+    fn value_variants<'a>() -> &'a [Self] {
+        &[Self::Interop, Self::Http09, Self::H3]
+    }
 }
 
 /// UDP socket wrapper for QUIC
