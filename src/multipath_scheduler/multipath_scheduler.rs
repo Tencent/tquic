@@ -55,7 +55,8 @@ pub(crate) trait MultipathScheduler {
     }
 }
 
-/// Available multipath scheduling algorithm
+/// Available multipath scheduling algorithms.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MultipathAlgorithm {
     /// The scheduler sends packets over the path with the lowest smoothed RTT
@@ -98,7 +99,7 @@ impl FromStr for MultipathAlgorithm {
 
 /// Build a multipath scheduler
 pub(crate) fn build_multipath_scheduler(conf: &MultipathConfig) -> Box<dyn MultipathScheduler> {
-    match conf.multipath_algor {
+    match conf.multipath_algorithm {
         MultipathAlgorithm::MinRtt => Box::new(MinRttScheduler::new(conf)),
         MultipathAlgorithm::Redundant => Box::new(RedundantScheduler::new(conf)),
         MultipathAlgorithm::RoundRobin => Box::new(RoundRobinScheduler::new(conf)),

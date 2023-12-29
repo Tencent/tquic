@@ -240,6 +240,20 @@ pub extern "C" fn quic_config_set_active_connection_id_limit(config: &mut Config
     config.set_active_connection_id_limit(v);
 }
 
+/// Set the `enable_multipath` transport parameter.
+/// The default value is false. (Experimental)
+#[no_mangle]
+pub extern "C" fn quic_config_enable_multipath(config: &mut Config, enabled: bool) {
+    config.enable_multipath(enabled);
+}
+
+/// Set the multipath scheduling algorithm
+/// The default value is MultipathAlgorithm::MinRtt
+#[no_mangle]
+pub extern "C" fn quic_config_set_multipath_algorithm(config: &mut Config, v: MultipathAlgorithm) {
+    config.set_multipath_algorithm(v);
+}
+
 /// Set the maximum size of the connection flow control window.
 #[no_mangle]
 pub extern "C" fn quic_config_set_max_connection_window(config: &mut Config, v: u64) {

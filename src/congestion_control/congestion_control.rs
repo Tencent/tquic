@@ -34,7 +34,7 @@ pub use cubic::Cubic;
 pub use cubic::CubicConfig;
 pub use hystart_plus_plus::HystartPlusPlus;
 
-/// Available congestion control algorithm
+/// Available congestion control algorithms.
 #[repr(C)]
 #[derive(Eq, PartialEq, Debug, Clone, Copy, Default)]
 pub enum CongestionControlAlgorithm {

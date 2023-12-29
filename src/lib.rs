@@ -539,8 +539,8 @@ impl Config {
 
     /// Set the multipath scheduling algorithm
     /// The default value is MultipathAlgorithm::MinRtt
-    pub fn set_multipath_algor(&mut self, v: MultipathAlgorithm) {
-        self.multipath.multipath_algor = v;
+    pub fn set_multipath_algorithm(&mut self, v: MultipathAlgorithm) {
+        self.multipath.multipath_algorithm = v;
     }
 
     /// Set the maximum size of the connection flow control window.
@@ -702,13 +702,13 @@ impl Default for RecoveryConfig {
 #[derive(Debug, Clone)]
 pub struct MultipathConfig {
     /// Multipath scheduling algorithm.
-    multipath_algor: MultipathAlgorithm,
+    multipath_algorithm: MultipathAlgorithm,
 }
 
 impl Default for MultipathConfig {
     fn default() -> MultipathConfig {
         MultipathConfig {
-            multipath_algor: MultipathAlgorithm::MinRtt,
+            multipath_algorithm: MultipathAlgorithm::MinRtt,
         }
     }
 }

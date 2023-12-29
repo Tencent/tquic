@@ -2213,7 +2213,7 @@ impl Connection {
 
             // Retain stream data for reinjection if needed.
             let data = if self.flags.contains(EnableMultipath)
-                && reinjection_required(self.multipath_conf.multipath_algor)
+                && reinjection_required(self.multipath_conf.multipath_algorithm)
             {
                 let start = len + frame_hdr_len;
                 Bytes::copy_from_slice(&out[start..start + frame_data_len])
@@ -6337,12 +6337,12 @@ pub(crate) mod tests {
         let mut client_config = TestPair::new_test_config(false)?;
         client_config.set_cid_len(crate::MAX_CID_LEN);
         client_config.enable_multipath(true);
-        client_config.set_multipath_algor(MultipathAlgorithm::MinRtt);
+        client_config.set_multipath_algorithm(MultipathAlgorithm::MinRtt);
 
         let mut server_config = TestPair::new_test_config(true)?;
         server_config.set_cid_len(crate::MAX_CID_LEN);
         server_config.enable_multipath(true);
-        server_config.set_multipath_algor(MultipathAlgorithm::MinRtt);
+        server_config.set_multipath_algorithm(MultipathAlgorithm::MinRtt);
 
         let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
         let mut blocks = vec![];
@@ -6360,13 +6360,13 @@ pub(crate) mod tests {
         let mut client_config = TestPair::new_test_config(false)?;
         client_config.set_cid_len(crate::MAX_CID_LEN);
         client_config.enable_multipath(true);
-        client_config.set_multipath_algor(MultipathAlgorithm::Redundant);
+        client_config.set_multipath_algorithm(MultipathAlgorithm::Redundant);
         let mut server_config = TestPair::new_test_config(true)?;
         server_config.set_cid_len(crate::MAX_CID_LEN);
 
         // Handshake with multipath enabled
         server_config.enable_multipath(true);
-        server_config.set_multipath_algor(MultipathAlgorithm::Redundant);
+        server_config.set_multipath_algorithm(MultipathAlgorithm::Redundant);
         let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
 
         let blocks = vec![
@@ -6390,12 +6390,12 @@ pub(crate) mod tests {
         let mut client_config = TestPair::new_test_config(false)?;
         client_config.set_cid_len(crate::MAX_CID_LEN);
         client_config.enable_multipath(true);
-        client_config.set_multipath_algor(MultipathAlgorithm::RoundRobin);
+        client_config.set_multipath_algorithm(MultipathAlgorithm::RoundRobin);
 
         let mut server_config = TestPair::new_test_config(true)?;
         server_config.set_cid_len(crate::MAX_CID_LEN);
         server_config.enable_multipath(true);
-        server_config.set_multipath_algor(MultipathAlgorithm::RoundRobin);
+        server_config.set_multipath_algorithm(MultipathAlgorithm::RoundRobin);
 
         let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
         let mut blocks = vec![];

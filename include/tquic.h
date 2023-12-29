@@ -54,6 +54,36 @@ typedef enum quic_congestion_control_algorithm {
 } quic_congestion_control_algorithm;
 
 /**
+ * Available multipath scheduling algorithms.
+ */
+typedef enum quic_multipath_algorithm {
+  /**
+   * The scheduler sends packets over the path with the lowest smoothed RTT
+   * among all available paths. It aims to optimize throughput and achieve
+   * load balancing, making it particularly advantageous for bulk transfer
+   * applications in heterogeneous networks.
+   */
+  MULTIPATH_ALGORITHM_MIN_RTT,
+  /**
+   * The scheduler sends all packets redundantly on all available paths. It
+   * utilizes additional bandwidth to minimize latency, thereby reducing the
+   * overall flow completion time for applications with bounded bandwidth
+   * requirements that can be met by a single path.
+   * In scenarios where two paths with varying available bandwidths are
+   * present, it ensures a goodput at least equivalent to the best single
+   * path.
+   */
+  MULTIPATH_ALGORITHM_REDUNDANT,
+  /**
+   * The scheduler sends packets over available paths in a round robin
+   * manner. It aims to fully utilize the capacity of each path as the
+   * distribution across all path is equal. It is only used for testing
+   * purposes.
+   */
+  MULTIPATH_ALGORITHM_ROUND_ROBIN,
+} quic_multipath_algorithm;
+
+/**
  * The stream's side to shutdown.
  */
 typedef enum quic_shutdown {
@@ -381,6 +411,19 @@ void quic_config_set_max_pto(struct quic_config_t *config, uint64_t v);
  * Set the `active_connection_id_limit` transport parameter.
  */
 void quic_config_set_active_connection_id_limit(struct quic_config_t *config, uint64_t v);
+
+/**
+ * Set the `enable_multipath` transport parameter.
+ * The default value is false. (Experimental)
+ */
+void quic_config_enable_multipath(struct quic_config_t *config, bool enabled);
+
+/**
+ * Set the multipath scheduling algorithm
+ * The default value is MultipathAlgorithm::MinRtt
+ */
+void quic_config_set_multipath_algorithm(struct quic_config_t *config,
+                                         enum quic_multipath_algorithm v);
 
 /**
  * Set the maximum size of the connection flow control window.
