@@ -7,7 +7,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  QUIC_IMAGES: lsquic=tquicgroup/qirls
+  QUIC_IMAGES: lsquic=tquicgroup/qirls,picoquic=tquicgroup/qirpq,quiche=tquicgroup/qircq
 
 jobs:
   measure:
@@ -15,7 +15,7 @@ jobs:
 
     strategy:
       matrix:
-        impl: [tquic,lsquic,quiche]
+        impl: [tquic,lsquic,picoquic,quiche]
         case: [goodput100k,goodput1m,goodput10m]
         cc: [cubic, bbr]
 
