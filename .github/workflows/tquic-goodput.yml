@@ -7,7 +7,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  QUIC_IMAGES: lsquic=tquicgroup/qirls,picoquic=tquicgroup/qirpq 
+  QUIC_IMAGES: lsquic=tquicgroup/qirls,picoquic=tquicgroup/qirpq,quiche=tquicgroup/qircq
 
 jobs:
   measure:
