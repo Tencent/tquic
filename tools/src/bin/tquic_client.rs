@@ -62,8 +62,7 @@ use tquic::PacketInfo;
 use tquic::TlsConfig;
 use tquic::TransportHandler;
 use tquic::TIMER_GRANULARITY;
-use tquic_tools::alpns;
-use tquic_tools::AppProto;
+use tquic_tools::ApplicationProto;
 use tquic_tools::QuicSocket;
 use tquic_tools::Result;
 
@@ -118,7 +117,7 @@ pub struct ClientOpt {
     #[clap(short, long, value_name = "ADDR")]
     pub connect_to: Option<SocketAddr>,
 
-    /// ALPN, support "http/0.9", "hq-interop" and "h3", separated by ",".
+    /// ALPN, separated by ",".
     #[clap(
         short,
         long,
@@ -126,7 +125,7 @@ pub struct ClientOpt {
         default_value = "h3,http/0.9,hq-interop",
         value_name = "STR"
     )]
-    pub alpn: Vec<Vec<u8>>,
+    pub alpn: Vec<ApplicationProto>,
 
     /// Dump response body into the given directory.
     /// If the specified directory does not exist, a new directory will be created.
@@ -389,6 +388,10 @@ struct Worker {
     end_time: Option<Instant>,
 }
 
+fn convert_alpn(alpns: &[ApplicationProto]) -> Vec<Vec<u8>> {
+    alpns.iter().map(|alpn| alpn.to_slice().to_vec()).collect()
+}
+
 impl Worker {
     /// Create a new single thread client.
     pub fn new(
@@ -414,7 +417,7 @@ impl Worker {
         config.enable_multipath(option.enable_multipath);
         config.set_multipath_algor(option.multipath_algor);
         let tls_config =
-            TlsConfig::new_client_config(option.alpn.clone(), option.enable_early_data)?;
+            TlsConfig::new_client_config(convert_alpn(&option.alpn), option.enable_early_data)?;
         config.set_tls_config(tls_config);
 
         let poll = mio::Poll::new()?;
@@ -765,7 +768,7 @@ struct RequestSender {
     worker_ctx: Rc<RefCell<WorkerContext>>,
 
     /// Application protocol, http/0.9 or h3.
-    app_proto: AppProto,
+    app_proto: ApplicationProto,
 
     /// Next available stream id, used in http/0.9 mode.
     next_stream_id: u64,
@@ -790,21 +793,15 @@ impl RequestSender {
             buf: vec![0; MAX_BUF_SIZE],
             streams: FxHashMap::default(),
             worker_ctx,
-            app_proto: AppProto::H3,
+            app_proto: ApplicationProto::from_slice(conn.application_proto()),
             next_stream_id: 0,
             h3_conn: None,
         };
 
-        let application_proto = conn.application_proto();
-        if alpns::HTTP_09.contains(&application_proto) {
-            sender.app_proto = AppProto::Http09;
-        } else if alpns::HTTP_3.contains(&application_proto) {
-            sender.app_proto = AppProto::H3;
+        if sender.app_proto == ApplicationProto::H3 {
             sender.h3_conn = Some(
                 Http3Connection::new_with_quic_conn(conn, &Http3Config::new().unwrap()).unwrap(),
             );
-        } else {
-            unreachable!();
         }
 
         sender
@@ -841,12 +838,11 @@ impl RequestSender {
 
         _ = conn.stream_want_read(stream_id, true);
 
-        if self.app_proto == AppProto::H3 {
-            self.recv_h3_responses(conn, stream_id)
-        } else if self.app_proto == AppProto::Http09 {
-            self.recv_http09_responses(conn, stream_id)
-        } else {
-            unreachable!();
+        match self.app_proto {
+            ApplicationProto::Interop | ApplicationProto::Http09 => {
+                self.recv_http09_responses(conn, stream_id)
+            }
+            ApplicationProto::H3 => self.recv_h3_responses(conn, stream_id),
         }
     }
 
@@ -860,12 +856,11 @@ impl RequestSender {
             self.current_url_idx
         );
 
-        let s = if self.app_proto == AppProto::H3 {
-            self.send_h3_request(conn, &request)?
-        } else if self.app_proto == AppProto::Http09 {
-            self.send_http09_request(conn, &request)?
-        } else {
-            unreachable!()
+        let s = match self.app_proto {
+            ApplicationProto::Interop | ApplicationProto::Http09 => {
+                self.send_http09_request(conn, &request)?
+            }
+            ApplicationProto::H3 => self.send_h3_request(conn, &request)?,
         };
 
         request.start_time = Some(Instant::now());
