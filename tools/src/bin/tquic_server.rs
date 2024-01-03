@@ -190,7 +190,7 @@ impl Server {
         config.set_initial_congestion_window(option.initial_congestion_window);
         config.set_min_congestion_window(option.min_congestion_window);
         config.enable_multipath(option.enable_multipath);
-        config.set_multipath_algor(option.multipath_algor);
+        config.set_multipath_algorithm(option.multipath_algor);
 
         if let Some(address_token_key) = &option.address_token_key {
             let address_token_key = convert_address_token_key(address_token_key);
