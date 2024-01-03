@@ -43,8 +43,7 @@ use tquic::PacketInfo;
 use tquic::TlsConfig;
 use tquic::TransportHandler;
 use tquic::TIMER_GRANULARITY;
-use tquic_tools::alpns;
-use tquic_tools::AppProto;
+use tquic_tools::ApplicationProto;
 use tquic_tools::QuicSocket;
 use tquic_tools::Result;
 
@@ -96,7 +95,7 @@ pub struct ServerOpt {
     pub disable_stateless_reset: bool,
 
     /// Congestion control algorithm.
-    #[clap(long, default_value = "CUBIC")]
+    #[clap(long, default_value = "BBR")]
     pub congestion_control_algor: CongestionControlAlgorithm,
 
     /// Initial congestion window in packets.
@@ -134,6 +133,14 @@ pub struct ServerOpt {
     /// Initial RTT in milliseconds.
     #[clap(long, default_value = "333", value_name = "TIME")]
     pub initial_rtt: u64,
+
+    /// Linear factor for calculating the probe timeout.
+    #[clap(long, default_value = "3", value_name = "NUM")]
+    pub pto_linear_factor: u64,
+
+    /// Upper limit of probe timeout in microseconds.
+    #[clap(long, default_value = "10000", value_name = "TIME")]
+    pub max_pto: u64,
 
     /// Save TLS key log into the given file.
     #[clap(long, value_name = "FILE")]
@@ -176,12 +183,14 @@ impl Server {
         config.set_max_handshake_timeout(option.handshake_timeout);
         config.set_max_idle_timeout(option.idle_timeout);
         config.set_initial_rtt(option.initial_rtt);
+        config.set_pto_linear_factor(option.pto_linear_factor);
+        config.set_max_pto(option.max_pto);
+        config.set_send_batch_size(option.send_batch_size);
         config.set_congestion_control_algorithm(option.congestion_control_algor);
         config.set_initial_congestion_window(option.initial_congestion_window);
         config.set_min_congestion_window(option.min_congestion_window);
-        config.set_send_batch_size(option.send_batch_size);
-        config.set_multipath(option.enable_multipath);
-        config.set_multipath_algor(option.multipath_algor);
+        config.enable_multipath(option.enable_multipath);
+        config.set_multipath_algorithm(option.multipath_algor);
 
         if let Some(address_token_key) = &option.address_token_key {
             let address_token_key = convert_address_token_key(address_token_key);
@@ -270,7 +279,7 @@ struct Response {
 #[derive(Default)]
 struct ConnectionHandler {
     /// Application protocol.
-    app_proto: AppProto,
+    app_proto: ApplicationProto,
 
     /// File root directory.
     root: String,
@@ -522,13 +531,12 @@ impl ConnectionHandler {
     }
 
     fn recv_request(&mut self, buf: &mut [u8], conn: &mut Connection, stream_id: u64) {
-        if self.app_proto == AppProto::H3 {
-            self.recv_h3_request(conn);
-        } else if self.app_proto == AppProto::Http09 {
-            self.recv_http09_request(buf, conn, stream_id);
-        } else {
-            unreachable!()
-        };
+        match self.app_proto {
+            ApplicationProto::Interop | ApplicationProto::Http09 => {
+                self.recv_http09_request(buf, conn, stream_id)
+            }
+            ApplicationProto::H3 => self.recv_h3_request(conn),
+        }
     }
 
     fn send_http09_response(&mut self, conn: &mut Connection, stream_id: u64) {
@@ -597,13 +605,12 @@ impl ConnectionHandler {
 
         _ = conn.stream_want_write(stream_id, true);
 
-        if self.app_proto == AppProto::H3 {
-            self.send_h3_response(conn, stream_id);
-        } else if self.app_proto == AppProto::Http09 {
-            self.send_http09_response(conn, stream_id);
-        } else {
-            unreachable!()
-        };
+        match self.app_proto {
+            ApplicationProto::Interop | ApplicationProto::Http09 => {
+                self.send_http09_response(conn, stream_id)
+            }
+            ApplicationProto::H3 => self.send_h3_response(conn, stream_id),
+        }
     }
 }
 
@@ -663,21 +670,17 @@ impl ServerHandler {
 
         debug!("{} new connection handler", conn.trace_id());
         let mut conn_handler = ConnectionHandler {
+            app_proto: ApplicationProto::from_slice(conn.application_proto()),
             root: self.root.clone(),
             ..Default::default()
         };
-        let app_proto = conn.application_proto();
-        if alpns::HTTP_09.contains(&app_proto) {
-            conn_handler.app_proto = AppProto::Http09;
-        } else if alpns::HTTP_3.contains(&app_proto) {
-            conn_handler.app_proto = AppProto::H3;
+
+        if conn_handler.app_proto == ApplicationProto::H3 {
             conn_handler.h3_conn = Some(
                 Http3Connection::new_with_quic_conn(conn, &Http3Config::new().unwrap()).unwrap(),
             );
-        } else {
-            error!("{} alpn unknown {:?}", conn.trace_id(), app_proto);
-            unreachable!();
         }
+
         self.conns.insert(index, conn_handler);
     }
 }
@@ -722,7 +725,9 @@ impl TransportHandler for ServerHandler {
 
         let index = conn.index().unwrap();
         let conn_handler = self.conns.get_mut(&index).unwrap();
-        if conn_handler.app_proto == AppProto::Http09 {
+        if conn_handler.app_proto == ApplicationProto::Interop
+            || conn_handler.app_proto == ApplicationProto::Http09
+        {
             conn_handler.http09_requests.insert(stream_id, b"".to_vec());
         }
     }

@@ -19,6 +19,7 @@ use std::time::Instant;
 
 use self::scheduler_minrtt::*;
 use self::scheduler_redundant::*;
+use self::scheduler_rr::*;
 use crate::connection::path::PathMap;
 use crate::connection::space::PacketNumSpaceMap;
 use crate::connection::space::SentPacket;
@@ -54,7 +55,8 @@ pub(crate) trait MultipathScheduler {
     }
 }
 
-/// Available multipath scheduling algorithm
+/// Available multipath scheduling algorithms.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MultipathAlgorithm {
     /// The scheduler sends packets over the path with the lowest smoothed RTT
@@ -71,6 +73,12 @@ pub enum MultipathAlgorithm {
     /// present, it ensures a goodput at least equivalent to the best single
     /// path.
     Redundant,
+
+    /// The scheduler sends packets over available paths in a round robin
+    /// manner. It aims to fully utilize the capacity of each path as the
+    /// distribution across all path is equal. It is only used for testing
+    /// purposes.
+    RoundRobin,
 }
 
 impl FromStr for MultipathAlgorithm {
@@ -81,6 +89,8 @@ impl FromStr for MultipathAlgorithm {
             Ok(MultipathAlgorithm::MinRtt)
         } else if algor.eq_ignore_ascii_case("redundant") {
             Ok(MultipathAlgorithm::Redundant)
+        } else if algor.eq_ignore_ascii_case("roundrobin") {
+            Ok(MultipathAlgorithm::RoundRobin)
         } else {
             Err(Error::InvalidConfig("unknown".into()))
         }
@@ -89,9 +99,10 @@ impl FromStr for MultipathAlgorithm {
 
 /// Build a multipath scheduler
 pub(crate) fn build_multipath_scheduler(conf: &MultipathConfig) -> Box<dyn MultipathScheduler> {
-    match conf.multipath_algor {
+    match conf.multipath_algorithm {
         MultipathAlgorithm::MinRtt => Box::new(MinRttScheduler::new(conf)),
         MultipathAlgorithm::Redundant => Box::new(RedundantScheduler::new(conf)),
+        MultipathAlgorithm::RoundRobin => Box::new(RoundRobinScheduler::new(conf)),
     }
 }
 
@@ -99,6 +110,7 @@ pub(crate) fn reinjection_required(algor: MultipathAlgorithm) -> bool {
     match algor {
         MultipathAlgorithm::MinRtt => false,
         MultipathAlgorithm::Redundant => true,
+        MultipathAlgorithm::RoundRobin => false,
     }
 }
 
@@ -176,6 +188,10 @@ pub(crate) mod tests {
             ("redundant", Ok(MultipathAlgorithm::Redundant)),
             ("Redundant", Ok(MultipathAlgorithm::Redundant)),
             ("REDUNDANT", Ok(MultipathAlgorithm::Redundant)),
+            ("roundrobin", Ok(MultipathAlgorithm::RoundRobin)),
+            ("Roundrobin", Ok(MultipathAlgorithm::RoundRobin)),
+            ("RoundRobin", Ok(MultipathAlgorithm::RoundRobin)),
+            ("ROUNDROBIN", Ok(MultipathAlgorithm::RoundRobin)),
             ("redun", Err(Error::InvalidConfig("unknown".into()))),
         ];
 
@@ -187,3 +203,4 @@ pub(crate) mod tests {
 
 mod scheduler_minrtt;
 mod scheduler_redundant;
+mod scheduler_rr;

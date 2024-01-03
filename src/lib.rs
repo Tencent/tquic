@@ -43,7 +43,7 @@
 //!
 //! ## Feature flags
 //!
-//! TQUIC defines several [feature flags] to reduce the amount of compiled code
+//! TQUIC defines several feature flags to reduce the amount of compiled code
 //! and dependencies:
 //!
 //! * `ffi`: Build and expose the FFI API.
@@ -90,8 +90,15 @@ const MAX_CID_LIMIT: u64 = 8;
 /// The Stateless Reset Token is a 16-byte value.
 const RESET_TOKEN_LEN: usize = 16;
 
-/// The minimum length of a Stateless Reset Packet.
+/// For the Stateless Reset to appear as a valid QUIC packet, the Unpredictable
+/// Bits field needs to include at least 38 bits of data. The minimum length of
+/// a Statless Reset Packet is 21 bytes.
 const MIN_RESET_PACKET_LEN: usize = 21;
+
+/// Assuming the maximum possible connection ID and packet number size, the 1RTT
+/// packet size is:
+/// 1 (header) + 20 (cid) + 4 (pkt num) + 1 (payload) + 16 (AEAD tag) = 42 bytes
+const MAX_RESET_PACKET_LEN: usize = 42;
 
 /// The encoded size of length field in long header.
 const LENGTH_FIELD_LEN: usize = 2;
@@ -134,6 +141,12 @@ const INITIAL_RTT: Duration = Duration::from_millis(333);
 
 /// Default handshake timeout is 30 seconds.
 const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+
+///  Default linear factor for calculating the probe timeout.
+const DEFAULT_PTO_LINEAR_FACTOR: u64 = 0;
+
+/// Default upper limit of probe timeout.
+const MAX_PTO: Duration = Duration::MAX;
 
 /// Result type for quic operations.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -206,8 +219,7 @@ pub trait ConnectionIdGenerator {
     fn generate_cid_and_token(&mut self, reset_token_key: &hmac::Key) -> (ConnectionId, u128) {
         let scid = self.generate();
         let reset_token = ResetToken::generate(reset_token_key, &scid);
-        let reset_token = u128::from_be_bytes(reset_token.0);
-        (scid, reset_token)
+        (scid, reset_token.to_u128())
     }
 }
 
@@ -469,7 +481,7 @@ impl Config {
     }
 
     /// Set congestion control algorithm that the connection would use.
-    /// The default value is Cubic.
+    /// The default value is Bbr.
     pub fn set_congestion_control_algorithm(&mut self, cca: CongestionControlAlgorithm) {
         self.recovery.congestion_control_algorithm = cca;
     }
@@ -490,8 +502,25 @@ impl Config {
     ///
     /// The configuration should be changed with caution. Setting a value less than the default
     /// will cause retransmission of handshake packets to be more aggressive.
-    pub fn set_initial_rtt(&mut self, millisecs: u64) {
-        self.recovery.initial_rtt = cmp::max(Duration::from_millis(millisecs), TIMER_GRANULARITY);
+    pub fn set_initial_rtt(&mut self, millis: u64) {
+        self.recovery.initial_rtt = cmp::max(Duration::from_millis(millis), TIMER_GRANULARITY);
+    }
+
+    /// Set the linear factor for calculating the probe timeout.
+    /// The endpoint do not backoff the first `v` consecutive probe timeouts.
+    /// The default value is `0`.
+    /// The configuration should be changed with caution. Setting a value greater than the default
+    /// will cause retransmission to be more aggressive.
+    pub fn set_pto_linear_factor(&mut self, v: u64) {
+        self.recovery.pto_linear_factor = v;
+    }
+
+    /// Set the upper limit of probe timeout in milliseconds.
+    /// A Probe Timeout (PTO) triggers the sending of one or two probe datagrams and enables a
+    /// connection to recover from loss of tail packets or acknowledgments.
+    /// See RFC 9002 Section 6.2.
+    pub fn set_max_pto(&mut self, millis: u64) {
+        self.recovery.max_pto = cmp::max(Duration::from_millis(millis), TIMER_GRANULARITY);
     }
 
     /// Set the `active_connection_id_limit` transport parameter.
@@ -504,14 +533,14 @@ impl Config {
 
     /// Set the `enable_multipath` transport parameter.
     /// The default value is false. (Experimental)
-    pub fn set_multipath(&mut self, v: bool) {
+    pub fn enable_multipath(&mut self, v: bool) {
         self.local_transport_params.enable_multipath = v;
     }
 
     /// Set the multipath scheduling algorithm
     /// The default value is MultipathAlgorithm::MinRtt
-    pub fn set_multipath_algor(&mut self, v: MultipathAlgorithm) {
-        self.multipath.multipath_algor = v;
+    pub fn set_multipath_algorithm(&mut self, v: MultipathAlgorithm) {
+        self.multipath.multipath_algorithm = v;
     }
 
     /// Set the maximum size of the connection flow control window.
@@ -532,15 +561,20 @@ impl Config {
         self.max_concurrent_conns = v;
     }
 
+    /// Set whether stateless reset is allowed.
+    pub fn enable_stateless_reset(&mut self, enable_stateless_reset: bool) {
+        self.stateless_reset = enable_stateless_reset;
+    }
+
     /// Set the key for reset token generation
     pub fn set_reset_token_key(&mut self, v: [u8; 64]) {
         // HMAC-SHA256 use a 512-bit block length
         self.reset_token_key = hmac::Key::new(hmac::HMAC_SHA256, &v);
     }
 
-    /// Set the lifetime of address token
-    pub fn set_address_token_lifetime(&mut self, seconds: u64) {
-        self.address_token_lifetime = Duration::from_secs(seconds);
+    /// Set whether stateless retry is allowed. Default is not allowed.
+    pub fn enable_retry(&mut self, enable_retry: bool) {
+        self.retry = enable_retry;
     }
 
     /// Set the key for address token generation.
@@ -561,14 +595,9 @@ impl Config {
         Ok(())
     }
 
-    /// Set whether stateless retry is allowed. Default is not allowed.
-    pub fn enable_retry(&mut self, enable_retry: bool) {
-        self.retry = enable_retry;
-    }
-
-    /// Set whether stateless reset is allowed.
-    pub fn enable_stateless_reset(&mut self, enable_stateless_reset: bool) {
-        self.stateless_reset = enable_stateless_reset;
+    /// Set the lifetime of address token
+    pub fn set_address_token_lifetime(&mut self, seconds: u64) {
+        self.address_token_lifetime = Duration::from_secs(seconds);
     }
 
     /// Set the length of source cid.
@@ -645,6 +674,12 @@ pub struct RecoveryConfig {
 
     /// The initial rtt, used before real rtt is estimated.
     pub initial_rtt: Duration,
+
+    /// Linear factor for calculating the probe timeout.
+    pub pto_linear_factor: u64,
+
+    // Upper limit of probe timeout.
+    pub max_pto: Duration,
 }
 
 impl Default for RecoveryConfig {
@@ -652,10 +687,12 @@ impl Default for RecoveryConfig {
         RecoveryConfig {
             max_datagram_size: 1200,
             max_ack_delay: time::Duration::from_millis(0),
-            congestion_control_algorithm: CongestionControlAlgorithm::Cubic,
+            congestion_control_algorithm: CongestionControlAlgorithm::Bbr,
             min_congestion_window: 2_u64,
             initial_congestion_window: 10_u64,
             initial_rtt: INITIAL_RTT,
+            pto_linear_factor: DEFAULT_PTO_LINEAR_FACTOR,
+            max_pto: MAX_PTO,
         }
     }
 }
@@ -665,13 +702,13 @@ impl Default for RecoveryConfig {
 #[derive(Debug, Clone)]
 pub struct MultipathConfig {
     /// Multipath scheduling algorithm.
-    multipath_algor: MultipathAlgorithm,
+    multipath_algorithm: MultipathAlgorithm,
 }
 
 impl Default for MultipathConfig {
     fn default() -> MultipathConfig {
         MultipathConfig {
-            multipath_algor: MultipathAlgorithm::MinRtt,
+            multipath_algorithm: MultipathAlgorithm::MinRtt,
         }
     }
 }
@@ -695,6 +732,10 @@ enum Event {
 
     /// The connection has send a RETIRE_CONNECTION_ID frame.
     DcidRetired(ResetToken),
+
+    /// The client connection has received a stateless reset token from transport
+    /// parameters extension.
+    ResetTokenAdvertised(ResetToken),
 
     /// The stream is created.
     StreamCreated(u64),
@@ -861,6 +902,34 @@ mod tests {
 
         config.set_initial_rtt(100);
         assert_eq!(config.recovery.initial_rtt, Duration::from_millis(100));
+
+        Ok(())
+    }
+
+    #[test]
+    fn pto_linear_factor() -> Result<()> {
+        let mut config = Config::new()?;
+        assert_eq!(config.recovery.pto_linear_factor, DEFAULT_PTO_LINEAR_FACTOR);
+
+        config.set_pto_linear_factor(0);
+        assert_eq!(config.recovery.pto_linear_factor, 0);
+
+        config.set_pto_linear_factor(100);
+        assert_eq!(config.recovery.pto_linear_factor, 100);
+
+        Ok(())
+    }
+
+    #[test]
+    fn max_pto() -> Result<()> {
+        let mut config = Config::new()?;
+        assert_eq!(config.recovery.max_pto, MAX_PTO);
+
+        config.set_max_pto(0);
+        assert_eq!(config.recovery.max_pto, TIMER_GRANULARITY);
+
+        config.set_max_pto(300000);
+        assert_eq!(config.recovery.max_pto, Duration::from_millis(300000));
 
         Ok(())
     }

@@ -34,14 +34,13 @@ pub use cubic::Cubic;
 pub use cubic::CubicConfig;
 pub use hystart_plus_plus::HystartPlusPlus;
 
-/// Available congestion control algorithm
+/// Available congestion control algorithms.
 #[repr(C)]
 #[derive(Eq, PartialEq, Debug, Clone, Copy, Default)]
 pub enum CongestionControlAlgorithm {
     /// CUBIC uses a cubic function instead of a linear window increase function
     /// of the current TCP standards to improve scalability and stability under
     /// fast and long-distance networks..
-    #[default]
     Cubic,
 
     /// BBR uses recent measurements of a transport connection's delivery rate,
@@ -49,6 +48,7 @@ pub enum CongestionControlAlgorithm {
     /// network path. The model is then used to control data transmission speed
     /// and the maximum volume of data allowed in flight in the network at any
     /// time.
+    #[default]
     Bbr,
 
     /// BBRv3 is the latest version of BBR, including various fixes and
@@ -248,7 +248,7 @@ mod tests {
         let mut config = Config::new()?;
 
         let cc = build_congestion_controller(&config.recovery);
-        assert_eq!(cc.name(), "CUBIC");
+        assert_eq!(cc.name(), "BBR");
         assert_eq!(cc.in_slow_start(), true);
         assert_eq!(cc.in_recovery(Instant::now()), false);
         assert_eq!(

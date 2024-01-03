@@ -28,13 +28,13 @@ pub struct ConnectionIdItem {
     /// The Connection ID.
     pub cid: ConnectionId,
 
-    /// Its associated sequence number.
+    /// The associated sequence number.
     pub seq: u64,
 
-    /// Its associated reset token. Initial CIDs may not have any reset token.
+    /// The associated reset token.
     pub reset_token: Option<u128>,
 
-    /// The path identifier using this CID, if any.
+    /// The path using the Connection ID.
     pub path_id: Option<usize>,
 }
 

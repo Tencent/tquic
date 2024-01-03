@@ -55,6 +55,12 @@ pub struct Recovery {
     /// The maximum size of outgoing UDP payloads.
     pub max_datagram_size: usize,
 
+    /// The endpoint do not backoff the first `pto_linear_factor` consecutive probe timeouts.
+    pto_linear_factor: u64,
+
+    /// Upper limit of probe timeout.
+    max_pto: Duration,
+
     /// The number of times a PTO has been sent without receiving an
     /// acknowledgment. It is used for PTO calculation.
     pto_count: usize,
@@ -91,6 +97,8 @@ impl Recovery {
         Recovery {
             max_ack_delay: conf.max_ack_delay,
             max_datagram_size: conf.max_datagram_size,
+            pto_linear_factor: conf.pto_linear_factor,
+            max_pto: conf.max_pto,
             pto_count: 0,
             loss_detection_timer: None,
             pkt_thresh: INITIAL_PACKET_THRESHOLD,
@@ -600,6 +608,30 @@ impl Recovery {
         (time, sid)
     }
 
+    /// Calculate the probe timeout.
+    fn calculate_pto(&self) -> Duration {
+        let backoff_factor = self
+            .pto_count
+            .saturating_sub(self.pto_linear_factor as usize);
+
+        cmp::min(
+            self.rtt.pto_base() * 2_u32.saturating_pow(backoff_factor as u32),
+            self.max_pto,
+        )
+    }
+
+    /// Calculate the probe timeout include `max_ack_delay`.
+    fn pto_with_ack_delay(&self, duration: Duration) -> Duration {
+        let backoff_factor = self
+            .pto_count
+            .saturating_sub(self.pto_linear_factor as usize);
+
+        cmp::min(
+            duration + self.max_ack_delay * 2_u32.saturating_pow(backoff_factor as u32),
+            self.max_pto,
+        )
+    }
+
     /// Return the min pto time and the corresponding space
     fn get_pto_time_and_space(
         &self,
@@ -608,9 +640,7 @@ impl Recovery {
         handshake_status: HandshakeStatus,
         now: Instant,
     ) -> (Option<Instant>, SpaceId) {
-        // When a PTO timer expires, the PTO backoff MUST be increased,
-        // resulting in the PTO period being set to twice its current value.
-        let mut duration = self.rtt.pto_base() * 2_u32.pow(self.pto_count as u32);
+        let mut duration = self.calculate_pto();
 
         // Arm PTO from now when there are no inflight packets.
         if self.bytes_in_flight == 0 {
@@ -646,7 +676,7 @@ impl Recovery {
                     return (pto_timeout, pto_space);
                 }
                 // Include max_ack_delay and backoff for Application Data.
-                duration += self.max_ack_delay * 2_u32.pow(self.pto_count as u32);
+                duration = self.pto_with_ack_delay(duration);
             }
 
             let new_time = space
@@ -749,10 +779,12 @@ mod tests {
         RecoveryConfig {
             max_datagram_size: 1200,
             max_ack_delay: Duration::from_millis(100),
-            congestion_control_algorithm: CongestionControlAlgorithm::Cubic,
+            congestion_control_algorithm: CongestionControlAlgorithm::Bbr,
             min_congestion_window: 2_u64,
-            initial_congestion_window: 8_u64,
+            initial_congestion_window: 10_u64,
             initial_rtt: crate::INITIAL_RTT,
+            pto_linear_factor: crate::DEFAULT_PTO_LINEAR_FACTOR,
+            max_pto: crate::MAX_PTO,
         }
     }
 
@@ -1150,6 +1182,51 @@ mod tests {
         let (lost_pkts, lost_bytes) =
             recovery.on_ack_received(&acked, 0, SpaceId::Handshake, &mut spaces, status, now)?;
         assert_eq!(cwnd_before_ack, recovery.congestion.congestion_window());
+
+        Ok(())
+    }
+
+    const MAX_PTO_UT: Duration = Duration::from_secs(30);
+
+    fn calculate_pto_with_count(count: usize) -> (Duration, Duration) {
+        let mut conf = new_test_recovery_config();
+        conf.pto_linear_factor = 2;
+        conf.max_pto = MAX_PTO_UT;
+        let mut recovery = Recovery::new(&conf);
+        recovery.pto_count = count;
+
+        let duration = recovery.calculate_pto();
+        (duration, recovery.pto_with_ack_delay(duration))
+    }
+
+    #[test]
+    fn calculate_pto() -> Result<()> {
+        assert_eq!(
+            calculate_pto_with_count(0),
+            (
+                Duration::from_millis(999),  // 999 * 2 ^ ( 2 - 2)
+                Duration::from_millis(1099)  // (999 + 100) * 2 ^ 0, max_ack_delay is 100ms.
+            )
+        );
+
+        assert_eq!(
+            calculate_pto_with_count(2),
+            (
+                Duration::from_millis(999),  // 999 * 2 ^ 0
+                Duration::from_millis(1099)  // (999 + 100) * 2 ^ 0
+            )
+        );
+
+        assert_eq!(
+            calculate_pto_with_count(3),
+            (
+                Duration::from_millis(1998), // 999 * 2 ^ ( 2 - 2)
+                Duration::from_millis(2198)  // (999 + 100) * 2 ^ ( 3 - 2)
+            )
+        );
+
+        // PTO reach the upper limit.
+        assert_eq!(calculate_pto_with_count(100), (MAX_PTO_UT, MAX_PTO_UT));
 
         Ok(())
     }

@@ -202,7 +202,6 @@ impl Connection {
         let trace_id = format!("{}-{}", if is_server { "SERVER" } else { "CLIENT" }, scid);
 
         let mut path = path::Path::new(local, remote, true, &conf.recovery, &trace_id);
-
         if is_server {
             // The server connection is created upon receiving a Initial packet
             // with a valid token sent by the client.
@@ -216,8 +215,11 @@ impl Connection {
         let paths = path::PathMap::new(path, cid_limit, is_server);
 
         let active_pid = paths.get_active_path_id()?;
-        let reset_token = if is_server {
-            conf.local_transport_params.stateless_reset_token
+        let reset_token = if is_server && conf.stateless_reset {
+            // Note that clients cannot use the stateless_reset_token transport
+            // parameter because their transport parameters do not have
+            // confidentiality protection
+            Some(ResetToken::generate(&conf.reset_token_key, scid).to_u128())
         } else {
             None
         };
@@ -284,6 +286,7 @@ impl Connection {
             conn.local_transport_params.retry_source_connection_id = addr_token.rscid;
             conn.flags.insert(DidRetry);
         }
+        conn.local_transport_params.stateless_reset_token = reset_token;
         conn.set_transport_params()?;
 
         // Derive initial secrets for the client.
@@ -1148,6 +1151,13 @@ impl Connection {
             if peer_params.retry_source_connection_id != self.rscid {
                 return Err(Error::TransportParameterError);
             }
+        }
+
+        // The remote server can issue a stateless_reset_token transport parameter
+        // that applies to the connection ID that it selected during the handshake.
+        if let Some(reset_token) = peer_params.stateless_reset_token {
+            let reset_token = ResetToken::from_u128(reset_token);
+            self.events.add(Event::ResetTokenAdvertised(reset_token));
         }
 
         self.set_peer_trans_params(peer_params)?;
@@ -2167,7 +2177,7 @@ impl Connection {
         let out = &mut out[st.written..];
         if (pkt_type != PacketType::OneRTT && pkt_type != PacketType::ZeroRTT)
             || self.is_closing()
-            || out.len() <= frame::MIN_STREAM_OVERHEAD
+            || out.len() <= frame::MAX_STREAM_OVERHEAD
             || !self.paths.get(path_id)?.active()
         {
             return Ok(());
@@ -2198,17 +2208,12 @@ impl Connection {
             // 3. encode the frame header with the updated frame header segments.
             let frame_hdr_len = frame::stream_header_wire_len(stream_id, stream_off);
 
-            // If the buffer is too short, we won't attempt to write any more stream frames into it.
-            if cap.checked_sub(frame_hdr_len).is_none() {
-                break;
-            }
-
             // Read stream data and write into the packet buffer directly.
             let (frame_data_len, fin) = stream.send.read(&mut out[len + frame_hdr_len..])?;
 
             // Retain stream data for reinjection if needed.
             let data = if self.flags.contains(EnableMultipath)
-                && reinjection_required(self.multipath_conf.multipath_algor)
+                && reinjection_required(self.multipath_conf.multipath_algorithm)
             {
                 let start = len + frame_hdr_len;
                 Bytes::copy_from_slice(&out[start..start + frame_data_len])
@@ -2243,6 +2248,11 @@ impl Connection {
             // If the stream is no longer sendable, remove it from the queue
             if !stream.is_sendable() {
                 self.streams.remove_sendable();
+            }
+
+            // If the buffer is too short, we won't attempt to write any more stream frames into it.
+            if cap <= frame::MAX_STREAM_OVERHEAD {
+                break;
             }
         }
 
@@ -2308,7 +2318,8 @@ impl Connection {
             .ok_or(Error::InternalError)?;
         let frames = &mut space.reinject.frames;
         debug!(
-            "try_write_reinjected_frames(): path id {} reinject queue size {}",
+            "{} try to write reinjected frames: path_id={} reinjected_frames={}",
+            self.trace_id,
             path_id,
             frames.len()
         );
@@ -2563,6 +2574,9 @@ impl Connection {
     }
 
     /// Select a available path for sending packet
+    ///
+    /// The selected path should have a packet that can be sent out, unless none
+    /// of the paths are feasible.
     fn select_send_path(&mut self) -> Result<usize> {
         // Select a unvalidated path with path probing packets to send
         if self.is_established() {
@@ -2583,18 +2597,16 @@ impl Connection {
             // Select a validated path with sufficient congestion window by the
             // multipath scheduler.
             if self.need_send_path_unaware_frames() {
-                let scheduler = match self.multipath_scheduler {
+                let s = match self.multipath_scheduler {
                     Some(ref mut scheduler) => scheduler,
                     None => return Err(Error::InternalError),
                 };
-                if let Ok(pid) =
-                    scheduler.on_select(&mut self.paths, &mut self.spaces, &mut self.streams)
-                {
+                if let Ok(pid) = s.on_select(&mut self.paths, &mut self.spaces, &mut self.streams) {
                     return Ok(pid);
                 }
             }
 
-            // Select a validated path with ACK/PTO packets to send.
+            // Select a validated path with ACK/PTO/Reinjected packets to send.
             for (pid, path) in self.paths.iter_mut() {
                 if !path.active() {
                     continue;
@@ -2605,6 +2617,9 @@ impl Connection {
                             return Ok(pid);
                         }
                         if space.loss_probes > 0 {
+                            return Ok(pid);
+                        }
+                        if space.need_send_reinjected_frames() && path.recovery.can_send() {
                             return Ok(pid);
                         }
                         continue;
@@ -3000,6 +3015,11 @@ impl Connection {
         self.flags.contains(HandshakeTimeout)
     }
 
+    /// Check whether the connection was closed due to stateless reset.
+    pub fn is_reset(&self) -> bool {
+        self.flags.contains(GotReset)
+    }
+
     /// Close the connection.
     pub fn close(&mut self, app: bool, err: u64, reason: &[u8]) -> Result<()> {
         if self.is_closed() || self.is_draining() {
@@ -3018,6 +3038,22 @@ impl Connection {
         });
         self.mark_tickable(true);
         Ok(())
+    }
+
+    /// Mark the connection as stateless reset by the peer.
+    pub(crate) fn reset(&mut self) {
+        if self.is_closed() || self.is_draining() {
+            return;
+        }
+
+        // The connection is reset by the peer and it MUST enter the draining
+        // period and not send any further packets on this connection.
+        self.flags.insert(GotReset);
+        if let Ok(p) = self.paths.get_active_mut() {
+            let pto = p.recovery.rtt.pto_base();
+            let now = time::Instant::now();
+            self.timers.set(Timer::Draining, now + pto * 3);
+        }
     }
 
     /// Returns the error from the peer, if any.
@@ -3831,30 +3867,33 @@ enum ConnectionFlags {
     /// The connection was closed due to handshake timeout.
     HandshakeTimeout = 1 << 11,
 
+    /// The connection was closed due to stateless reset.
+    GotReset = 1 << 12,
+
     /// An ack-eliciting packet should be sent.
-    NeedSendAckEliciting = 1 << 12,
+    NeedSendAckEliciting = 1 << 13,
 
     /// A NewToken frame should be sent.
-    NeedSendNewToken = 1 << 13,
+    NeedSendNewToken = 1 << 14,
 
     /// A HandshakeDone frame should be sent.
-    NeedSendHandshakeDone = 1 << 14,
+    NeedSendHandshakeDone = 1 << 15,
 
     /// The client has acknowledged the server's HandshakeDone.
-    HandshakeDoneAcked = 1 << 15,
+    HandshakeDoneAcked = 1 << 16,
 
     /// The connection has sent an ack-eliciting packet since receiving a packet.
     /// It is used for resetting Idle timer.
-    SentAckElicitingSinceRecvPkt = 1 << 16,
+    SentAckElicitingSinceRecvPkt = 1 << 17,
 
     /// The connection is in the tickable queue of the endpoint.
-    Tickable = 1 << 17,
+    Tickable = 1 << 18,
 
     /// The connection is in the sendable queue of the endpoint.
-    Sendable = 1 << 18,
+    Sendable = 1 << 19,
 
     /// The multipath extension is successfully negotiated.
-    EnableMultipath = 1 << 19,
+    EnableMultipath = 1 << 20,
 }
 
 /// Statistics about a QUIC connection.
@@ -4220,7 +4259,7 @@ pub(crate) mod tests {
             conf.set_address_token_lifetime(3600);
             conf.set_send_batch_size(2);
             conf.set_max_handshake_timeout(0);
-            conf.set_multipath(false);
+            conf.enable_multipath(false);
 
             let application_protos = vec![b"h3".to_vec()];
             let tls_config = if !is_server {
@@ -4820,8 +4859,6 @@ pub(crate) mod tests {
         server_config.set_tls_config_selector(conf_selector.clone());
 
         for i in 0..conf_selector.len() {
-            assert_eq!(Arc::strong_count(&conf_selector), 2);
-
             let mut test_pair = TestPair::new_with_server_name(
                 &mut client_config,
                 &mut server_config,
@@ -4831,7 +4868,6 @@ pub(crate) mod tests {
             assert!(test_pair.handshake().is_ok());
             assert!(test_pair.client.is_established());
             assert!(test_pair.server.is_established());
-            assert_eq!(Arc::strong_count(&conf_selector), 3);
         }
 
         Ok(())
@@ -4873,10 +4909,10 @@ pub(crate) mod tests {
         ];
         for case in cases {
             let mut client_config = TestPair::new_test_config(false)?;
-            client_config.set_multipath(case.0);
+            client_config.enable_multipath(case.0);
             client_config.set_cid_len(case.1);
             let mut server_config = TestPair::new_test_config(true)?;
-            server_config.set_multipath(case.2);
+            server_config.enable_multipath(case.2);
             server_config.set_cid_len(case.3);
 
             let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
@@ -5999,6 +6035,54 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn conn_multi_incremental_streams_send_round_robin() -> Result<()> {
+        let server_transport_params = TransportParams {
+            initial_max_data: 2000,
+            initial_max_stream_data_bidi_remote: 2000,
+            initial_max_streams_bidi: 4,
+            ..TransportParams::default()
+        };
+
+        let mut client_config = TestPair::new_test_config(false)?;
+        let mut server_config = TestPair::new_test_config(true)?;
+        server_config.local_transport_params = server_transport_params.clone();
+
+        let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
+        assert_eq!(test_pair.handshake(), Ok(()));
+
+        // 1. Client create four bidi streams [0, 4, 8, 12], and write data on them
+        let data = TestPair::new_test_data(500);
+        for i in 0..4 {
+            assert_eq!(
+                test_pair.client.stream_write(i * 4, data.clone(), true)?,
+                data.len()
+            );
+        }
+
+        // 2. Try to send stream data in round-robin order
+        let mut packets = Vec::new();
+        for i in 0..4 {
+            let mut out = vec![0u8; 100];
+            let info = match test_pair.client.send(&mut out) {
+                Ok((written, info)) => {
+                    out.truncate(written);
+                    info
+                }
+                Err(e) => return Err(e),
+            };
+            packets.push((out, info));
+        }
+
+        // 3. Server recv stream data, all streams must be readable
+        TestPair::conn_packets_in(&mut test_pair.server, packets)?;
+        for i in 0..4 {
+            assert!(test_pair.server.stream_readable(i * 4));
+        }
+
+        Ok(())
+    }
+
+    #[test]
     fn conn_max_streams_bidi() -> Result<()> {
         let mut test_pair = TestPair::new_with_test_config()?;
         assert_eq!(test_pair.handshake(), Ok(()));
@@ -6200,50 +6284,131 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    #[test]
-    fn conn_multipath_transfer() -> Result<()> {
-        let mut client_config = TestPair::new_test_config(false)?;
-        client_config.set_cid_len(crate::MAX_CID_LEN);
-        client_config.set_multipath(true);
-        client_config.set_multipath_algor(MultipathAlgorithm::Redundant);
-        let mut server_config = TestPair::new_test_config(true)?;
-        server_config.set_cid_len(crate::MAX_CID_LEN);
-        server_config.set_multipath(true);
-        server_config.set_multipath_algor(MultipathAlgorithm::MinRtt);
-
+    // Establish a multipath connection between the client and server and then
+    // send data blocks from the client to the server.
+    //
+    // The size of data block in `blocks` should be less than 256.
+    fn conn_multipath_transfer(test_pair: &mut TestPair, blocks: Vec<Bytes>) -> Result<()> {
         // Handshake with multipath enabled
-        let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
         test_pair.handshake()?;
-        assert_eq!(test_pair.client.paths_iter().count(), 1);
-        assert_eq!(test_pair.server.paths_iter().count(), 1);
+        assert!(test_pair.client.is_multipath());
+        assert!(test_pair.server.is_multipath());
 
         // Client and server advertise new cids
         test_pair.advertise_new_cids()?;
 
-        // Client try to add path again
+        // Client try to add a new path
+        assert_eq!(test_pair.client.paths_iter().count(), 1);
+        assert_eq!(test_pair.server.paths_iter().count(), 1);
         let client_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 9444);
         let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 443);
         test_pair.add_and_validate_path(client_addr, server_addr)?;
         assert_eq!(test_pair.client.paths_iter().count(), 2);
         assert_eq!(test_pair.server.paths_iter().count(), 2);
 
-        for (data, fin) in vec![
-            (Bytes::from_static(b"Everything"), false),
-            (Bytes::from_static(b"Over"), false),
-            (Bytes::from_static(b"Multipath QUIC"), true),
-        ] {
+        // Client send bytes over multipath
+        let mut buf = vec![0; 2048];
+        for data in blocks.iter() {
             // Client write and send data on stream 4
             let len = data.len();
-            assert_eq!(test_pair.client.stream_write(4, data.clone(), fin), Ok(len));
+            assert_eq!(
+                test_pair.client.stream_write(4, data.clone(), false),
+                Ok(len)
+            );
             let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
 
             // Server recv and read data on stream 4
             TestPair::conn_packets_in(&mut test_pair.server, packets)?;
-            let mut buf = vec![0; 18];
-            assert_eq!(test_pair.server.stream_read(4, &mut buf)?, (len, fin));
+            assert_eq!(test_pair.server.stream_read(4, &mut buf)?, (len, false));
             assert_eq!(&buf[..len], &data[..]);
+
+            // Server reply ack
+            let packets = TestPair::conn_packets_out(&mut test_pair.server)?;
+            TestPair::conn_packets_in(&mut test_pair.client, packets)?;
         }
 
+        let packets = TestPair::conn_packets_out(&mut test_pair.server)?;
+        TestPair::conn_packets_in(&mut test_pair.client, packets)?;
+        Ok(())
+    }
+
+    #[test]
+    fn conn_multipath_transfer_minrtt() -> Result<()> {
+        let mut client_config = TestPair::new_test_config(false)?;
+        client_config.set_cid_len(crate::MAX_CID_LEN);
+        client_config.enable_multipath(true);
+        client_config.set_multipath_algorithm(MultipathAlgorithm::MinRtt);
+
+        let mut server_config = TestPair::new_test_config(true)?;
+        server_config.set_cid_len(crate::MAX_CID_LEN);
+        server_config.enable_multipath(true);
+        server_config.set_multipath_algorithm(MultipathAlgorithm::MinRtt);
+
+        let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
+        let mut blocks = vec![];
+        for i in 0..1000 {
+            blocks.push(Bytes::from_static(b"Everything over multipath"));
+        }
+        conn_multipath_transfer(&mut test_pair, blocks)?;
+        // Note: The scheduling result is uncertain, so we only verify if the
+        // transmission was successful.
+        Ok(())
+    }
+
+    #[test]
+    fn conn_multipath_transfer_redundant() -> Result<()> {
+        let mut client_config = TestPair::new_test_config(false)?;
+        client_config.set_cid_len(crate::MAX_CID_LEN);
+        client_config.enable_multipath(true);
+        client_config.set_multipath_algorithm(MultipathAlgorithm::Redundant);
+        let mut server_config = TestPair::new_test_config(true)?;
+        server_config.set_cid_len(crate::MAX_CID_LEN);
+
+        // Handshake with multipath enabled
+        server_config.enable_multipath(true);
+        server_config.set_multipath_algorithm(MultipathAlgorithm::Redundant);
+        let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
+
+        let blocks = vec![
+            Bytes::from_static(b"Everything"),
+            Bytes::from_static(b"Over"),
+            Bytes::from_static(b"Multipath QUIC"),
+        ];
+
+        conn_multipath_transfer(&mut test_pair, blocks)?;
+
+        for (i, path) in test_pair.server.paths.iter() {
+            let s = path.stats();
+            assert!(s.sent_count > 3);
+            assert!(s.recv_count > 3);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn conn_multipath_transfer_roundrobin() -> Result<()> {
+        let mut client_config = TestPair::new_test_config(false)?;
+        client_config.set_cid_len(crate::MAX_CID_LEN);
+        client_config.enable_multipath(true);
+        client_config.set_multipath_algorithm(MultipathAlgorithm::RoundRobin);
+
+        let mut server_config = TestPair::new_test_config(true)?;
+        server_config.set_cid_len(crate::MAX_CID_LEN);
+        server_config.enable_multipath(true);
+        server_config.set_multipath_algorithm(MultipathAlgorithm::RoundRobin);
+
+        let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
+        let mut blocks = vec![];
+        for i in 0..100 {
+            blocks.push(Bytes::from_static(b"Everything over multipath"));
+        }
+        conn_multipath_transfer(&mut test_pair, blocks)?;
+
+        for (i, path) in test_pair.server.paths.iter() {
+            let s = path.stats();
+            assert!(s.sent_count > 50);
+            assert!(s.recv_count > 50);
+        }
         Ok(())
     }
 

@@ -195,11 +195,22 @@ impl Endpoint {
         let (mut hdr, _) = PacketHeader::from_bytes(buf, cid_len)?;
         let (local, remote) = (info.dst, info.src);
 
-        // Delivery the datagram to the target connection.
-        // TODO: support stateless reset
-        if let Some(c) = self.routes.find(&hdr.dcid, buf, info) {
+        // Try to delivery the datagram to the target connection.
+        if let (Some(c), reset) = self.routes.find(&hdr.dcid, buf, info) {
             if let Some(conn) = self.conns.get_mut(*c) {
                 conn.mark_tickable(true);
+                // Detected a Stateless Reset packet for an existing connection
+                if reset && self.config.stateless_reset {
+                    trace!(
+                        "{} connection {:?} got stateless reset from {:?}",
+                        &self.trace_id,
+                        conn.trace_id(),
+                        info
+                    );
+                    conn.reset();
+                    return Ok(());
+                }
+
                 conn.recv(buf, info).map(|_| ())?;
                 return Ok(());
             }
@@ -279,11 +290,6 @@ impl Endpoint {
         // Send the Stateless Reset packet for the unknown connection
         if hdr.pkt_type == PacketType::OneRTT && !hdr.dcid.is_empty() && self.config.stateless_reset
         {
-            trace!(
-                "endpoint send stateless retry: remote {:?} local {:?}",
-                remote,
-                local
-            );
             self.send_stateless_reset(buf.len(), &hdr.dcid, local, remote)?;
             return Ok(());
         }
@@ -381,7 +387,7 @@ impl Endpoint {
     }
 
     /// Write an Stateless Reset packet which will be sent later.
-    /// TODO: limit based on address
+    /// TODO: rate limit based on address
     fn send_stateless_reset(
         &mut self,
         pkt_in_len: usize,
@@ -389,20 +395,20 @@ impl Endpoint {
         local: SocketAddr,
         remote: SocketAddr,
     ) -> Result<()> {
-        // Select padding length
-        const MIN_PADDING_LEN: usize = 5;
-        const IDEAL_MIN_PADDING_LEN: usize = MIN_PADDING_LEN + crate::MAX_CID_LEN;
-        let padding_len = {
-            let max_padding_len = match pkt_in_len.checked_sub(crate::RESET_TOKEN_LEN) {
-                Some(v) if v > MIN_PADDING_LEN => v - 1,
-                _ => return Ok(()),
-            };
-            if max_padding_len <= IDEAL_MIN_PADDING_LEN {
-                max_padding_len
-            } else {
-                rand::thread_rng().gen_range(IDEAL_MIN_PADDING_LEN..max_padding_len)
-            }
-        };
+        // Endpoints MUST discard packets that are too small to be valid QUIC packets.
+        // The smallest possible valid 1rtt packet is: 1 byte of header + cid_len +
+        // 1 byte of packet number + 1 byte of payload + 16 bytes of AEAD overhead.
+        if pkt_in_len < self.cid_gen.cid_len() + 19 {
+            return Ok(());
+        }
+
+        // Generate a stateless reset that is as short as possible, but long enough
+        // to be difficult to distinguish from one rtt packets.
+        let pkt_out_len = pkt_in_len - 1;
+        if pkt_out_len < crate::MIN_RESET_PACKET_LEN {
+            return Ok(());
+        }
+        let pkt_out_len = cmp::min(pkt_out_len, crate::MAX_RESET_PACKET_LEN);
 
         // Generate stateless reset token based on the dcid.
         let key = &self.config.reset_token_key;
@@ -410,7 +416,7 @@ impl Endpoint {
 
         // Write a Stateless Reset packet.
         let mut pkt_out = self.packets.get_buffer();
-        let len = packet::stateless_reset(padding_len, &reset_token, &mut pkt_out[..])?;
+        let len = packet::stateless_reset(pkt_out_len, &reset_token, &mut pkt_out[..])?;
         pkt_out.truncate(len);
 
         let pkt_info = PacketInfo {
@@ -419,7 +425,13 @@ impl Endpoint {
             time: Instant::now(),
         };
 
-        trace!("{} send stateless reset {:?}", &self.trace_id, pkt_info);
+        trace!(
+            "{} send Stateless Reset {:?} token={:?} dcid_pkt_in={:?}",
+            &self.trace_id,
+            pkt_info,
+            reset_token,
+            dcid,
+        );
         self.packets.add_packet(pkt_out, pkt_info);
         Ok(())
     }
@@ -528,6 +540,8 @@ impl Endpoint {
                 Event::DcidAdvertised(token) => self.routes.insert_with_token(token, idx),
 
                 Event::DcidRetired(token) => self.routes.remove_with_token(&token),
+
+                Event::ResetTokenAdvertised(token) => self.routes.insert_with_token(token, idx),
 
                 Event::StreamCreated(stream_id) => self.handler.on_stream_created(conn, stream_id),
 
@@ -837,7 +851,8 @@ impl ConnectionRoutes {
     }
 
     /// Find the target connection for the incoming datagram.
-    fn find(&self, dcid: &ConnectionId, buf: &mut [u8], info: &PacketInfo) -> Option<&u64> {
+    fn find(&self, dcid: &ConnectionId, buf: &mut [u8], info: &PacketInfo) -> (Option<&u64>, bool) {
+        let mut reset = false;
         let mut idx = if dcid.len() > 0 {
             // The packet has a non-zero-length Destination Connection ID
             // corresponding to an existing connection.
@@ -858,11 +873,17 @@ impl ConnectionRoutes {
             // The endpoint identifies a received datagram as a Stateless Reset
             // by comparing the last 16 bytes of the datagram with all stateless
             // reset tokens.
-            let token = ResetToken::from_bytes(buf).ok()?;
+            let token = match ResetToken::from_bytes(buf) {
+                Ok(t) => t,
+                Err(_) => return (None, false),
+            };
             idx = self.token_table.get(&token);
+            if idx.is_some() {
+                reset = true;
+            }
         }
 
-        idx
+        (idx, reset)
     }
 
     /// Insert the local cid and the connection.
@@ -1502,6 +1523,17 @@ mod tests {
                 packets: RefCell::new(Vec::new()),
             }
         }
+
+        // Delivery the outgoing packets to the target endpoint
+        fn transfer(&self, e: &mut Endpoint) -> Result<usize> {
+            let count = self.packets.borrow().len();
+            let mut packets = self.packets.borrow_mut();
+            for (pkt, info) in packets.iter_mut() {
+                e.recv(pkt, info)?;
+            }
+            packets.clear();
+            Ok(count)
+        }
     }
 
     impl PacketSendHandler for MockSocket {
@@ -2133,92 +2165,122 @@ mod tests {
         Ok(())
     }
 
-    fn endpoint_process_stateless_reset(
-        sock: Rc<MockSocket>,
-        packet_unknown: &mut [u8],
-        is_server: bool,
-        enable: bool,
-    ) -> Result<()> {
-        let mut conf = TestPair::new_test_config(is_server)?;
-        conf.enable_stateless_reset(enable);
-        let mut e = Endpoint::new(
-            Box::new(conf),
-            is_server,
-            Box::new(ServerHandler::new(
-                CaseConf::default(),
-                Arc::new(AtomicBool::new(false)),
-            )),
-            sock.clone(),
-        );
-        let info = TestTool::new_test_packet_info(is_server);
+    #[test]
+    fn endpoint_stateless_reset_for_restart() -> Result<()> {
+        let new_endpoint = |is_server, conf, sock: Rc<MockSocket>| -> Endpoint {
+            Endpoint::new(
+                Box::new(conf),
+                is_server,
+                Box::new(ClientHandler::new(
+                    CaseConf::default(),
+                    Arc::new(AtomicBool::new(false)),
+                )),
+                sock.clone(),
+            )
+        };
 
-        // Endpoint recv an unknown packet.
-        e.recv(packet_unknown, &info)?;
-        e.process_connections()?;
+        // client endpoint
+        let mut client_conf = TestPair::new_test_config(false)?;
+        client_conf.enable_stateless_reset(true);
+        let client_sock = Rc::new(MockSocket::new());
+        let mut client = new_endpoint(false, client_conf, client_sock.clone());
+
+        // server endpoint
+        let mut server_conf = TestPair::new_test_config(true)?;
+        server_conf.enable_stateless_reset(true);
+        server_conf.set_reset_token_key([1; 64]);
+        let server_sock = Rc::new(MockSocket::new());
+        let mut server = new_endpoint(true, server_conf, server_sock.clone());
+
+        // create a connection
+        let cli_addr: SocketAddr = "127.8.8.8:8888".parse().unwrap();
+        let srv_addr: SocketAddr = "127.8.8.8:8443".parse().unwrap();
+        let host = Some("example.org");
+        let cli_conn = client.connect(cli_addr, srv_addr, host, None, None)?;
+        client.process_connections()?;
+        assert!(client_sock.transfer(&mut server)? > 0);
+        server.process_connections()?;
+        assert!(server_sock.transfer(&mut client)? > 0);
+        assert_eq!(client.conns.len(), 1);
+        assert_eq!(server.conns.len(), 1);
+
+        // Fake restarting server after handshake
+        client.process_connections()?;
+        assert!(client_sock.transfer(&mut server)? > 0);
+        server.process_connections()?;
+        assert!(server_sock.transfer(&mut client)? > 0);
+        server.close(true);
+
+        let mut server_conf = TestPair::new_test_config(true)?;
+        server_conf.enable_stateless_reset(true);
+        server_conf.set_reset_token_key([1; 64]);
+        let server_sock = Rc::new(MockSocket::new());
+        let mut server = new_endpoint(true, server_conf, server_sock.clone());
+        assert_eq!(client.conns.len(), 1);
+        assert_eq!(server.conns.len(), 0);
+
+        // Client send packets to server
+        client.process_connections()?;
+        assert!(client_sock.transfer(&mut server)? > 0);
+
+        // Server send Stateless Reset
+        server.process_connections()?;
+        assert!(server_sock.transfer(&mut client)? > 0);
+
+        // Client detect Stateless Reset
+        client.process_connections()?;
+        let cli_conn = client.conn_get_mut(cli_conn).unwrap();
+        assert!(cli_conn.is_reset());
+
         Ok(())
     }
 
     #[test]
-    fn endpoint_stateless_reset_by_client() -> Result<()> {
-        let mut packet_unknown = TEST_INITIAL.clone();
-        let sock = Rc::new(MockSocket::new());
+    fn endpoint_stateless_reset_for_unknown_packet() -> Result<()> {
+        let cases = vec![
+            // is_server, enable_reset, packet, got_reset
+            (false, true, Vec::from(TEST_INITIAL), true),
+            (false, false, Vec::from(TEST_INITIAL), false),
+            (false, true, Vec::from(TEST_STATELESS_RESET), true),
+            (false, false, Vec::from(TEST_STATELESS_RESET), false),
+            (true, true, Vec::from(TEST_INITIAL), false),
+            (true, false, Vec::from(TEST_INITIAL), false),
+            (true, true, Vec::from(TEST_STATELESS_RESET), true),
+            (true, false, Vec::from(TEST_STATELESS_RESET), false),
+        ];
 
-        // Client recv an Initial with unknown dcid
-        endpoint_process_stateless_reset(sock.clone(), &mut packet_unknown, false, true)?;
+        for (is_server, enable_reset, pkt, got_reset) in cases {
+            let mut conf = TestPair::new_test_config(is_server)?;
+            conf.enable_stateless_reset(enable_reset);
+            let sock = Rc::new(MockSocket::new());
+            let mut e = Endpoint::new(
+                Box::new(conf),
+                is_server,
+                Box::new(ServerHandler::new(
+                    CaseConf::default(),
+                    Arc::new(AtomicBool::new(false)),
+                )),
+                sock.clone(),
+            );
 
-        // Client send stateless reset
-        let packets = sock.packets.borrow();
-        assert!(packets.len() > 0);
-        let (packet, _) = &packets[0];
-        let (hdr, _) = PacketHeader::from_bytes(&packet, 8)?;
-        assert_eq!(hdr.pkt_type, PacketType::OneRTT);
+            // Endpoint recv an unknown packet.
+            let mut pkt_unknown = pkt.clone();
+            let info = TestTool::new_test_packet_info(is_server);
+            e.recv(&mut pkt_unknown, &info)?;
 
-        Ok(())
-    }
+            // Endpoint send stateless reset
+            e.process_connections()?;
+            let packets = sock.packets.borrow();
+            if got_reset {
+                assert!(packets.len() > 0);
+                let (packet, _) = &packets[0];
+                let (hdr, _) = PacketHeader::from_bytes(&packet, 8)?;
+                assert_eq!(hdr.pkt_type, PacketType::OneRTT);
+            } else {
+                assert!(packets.len() == 0);
+            }
+        }
 
-    #[test]
-    fn endpoint_stateless_reset_by_server() -> Result<()> {
-        let mut packet_stateless = TEST_STATELESS_RESET.clone();
-        let sock = Rc::new(MockSocket::new());
-
-        // Server recv a stateless packet with unknown token.
-        endpoint_process_stateless_reset(sock.clone(), &mut packet_stateless, true, true)?;
-
-        // Server send stateless reset
-        let packets = sock.packets.borrow();
-        assert!(packets.len() > 0);
-
-        let (packet, _) = &packets[0];
-        let (hdr, _) = PacketHeader::from_bytes(&packet, 8)?;
-        assert_eq!(hdr.pkt_type, PacketType::OneRTT);
-        Ok(())
-    }
-
-    #[test]
-    fn endpoint_stateless_reset_client_disabled() -> Result<()> {
-        let mut packet_stateless = TEST_STATELESS_RESET.clone();
-        let sock = Rc::new(MockSocket::new());
-
-        // Client recv a stateless packet with unknown token.
-        endpoint_process_stateless_reset(sock.clone(), &mut packet_stateless, false, false)?;
-
-        // Do nothing with stateless reset disabled.
-        let packets = sock.packets.borrow();
-        assert!(packets.len() == 0);
-        Ok(())
-    }
-
-    #[test]
-    fn endpoint_stateless_reset_server_disabled() -> Result<()> {
-        let mut packet_stateless = TEST_STATELESS_RESET.clone();
-        let sock = Rc::new(MockSocket::new());
-
-        // Server recv a stateless packet with unknown token.
-        endpoint_process_stateless_reset(sock.clone(), &mut packet_stateless, true, false)?;
-
-        // Do nothing with stateless reset disabled.
-        let packets = sock.packets.borrow();
-        assert!(packets.len() == 0);
         Ok(())
     }
 

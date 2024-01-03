@@ -11,6 +11,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [v0.5.0] - 2024-01-03
+
+### Added
+- Add support for building on MacOS
+- Add support for stateless reset
+- Relaese tls_conf_selector as soon as the hanshake is completed.
+- Add linear mode and upper limit for probe timeout
+- Add FFI enable_multipath()/set_multipath_algorithm()
+- Add RoundRobin multipath scheduler
+- Add more units test for mulitpath transport
+- tquic_client: stop trying and exit if it fails to reconnect the server multiple times.
+- tquic_client: output the stats first and then exit when it receives an SIGINT signal.
+
+### Changed
+- Simplify FFI quic_set_logger() to avoid from return unnessary errors
+- Rename set_multipath() in Config to enable_multipath()
+- Rename set_multipath_algor() in Config to set_multipath_algorithm()
+- Change default congestion control algorithm to BBR
+
+### Fixed
+- Fix stream scheduling for multipe incredmental streams
+- Fix reinjection for multipath transport
+
+
 ## [v0.4.0] - 2023-12-18
 
 ### Added
@@ -77,6 +101,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Provide example clients and servers.
 
 
+[v0.5.0]: https://github.com/tencent/tquic/compare/v0.4.0...v0.5.0
 [v0.4.0]: https://github.com/tencent/tquic/compare/v0.3.0...v0.4.0
 [v0.3.0]: https://github.com/tencent/tquic/compare/v0.2.0...v0.3.0
 [v0.2.0]: https://github.com/tencent/tquic/compare/v0.1.0...v0.2.0

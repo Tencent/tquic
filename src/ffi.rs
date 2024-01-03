@@ -215,10 +215,43 @@ pub extern "C" fn quic_config_set_initial_rtt(config: &mut Config, v: u64) {
     config.set_initial_rtt(v);
 }
 
+/// Set the linear factor for calculating the probe timeout.
+/// The endpoint do not backoff the first `v` consecutive probe timeouts.
+/// The default value is `0`.
+/// The configuration should be changed with caution. Setting a value greater than the default
+/// will cause retransmission to be more aggressive.
+#[no_mangle]
+pub extern "C" fn quic_config_set_pto_linear_factor(config: &mut Config, v: u64) {
+    config.set_pto_linear_factor(v);
+}
+
+/// Set the upper limit of probe timeout in milliseconds.
+/// A Probe Timeout (PTO) triggers the sending of one or two probe datagrams and enables a
+/// connection to recover from loss of tail packets or acknowledgments.
+/// See RFC 9002 Section 6.2.
+#[no_mangle]
+pub extern "C" fn quic_config_set_max_pto(config: &mut Config, v: u64) {
+    config.set_max_pto(v);
+}
+
 /// Set the `active_connection_id_limit` transport parameter.
 #[no_mangle]
 pub extern "C" fn quic_config_set_active_connection_id_limit(config: &mut Config, v: u64) {
     config.set_active_connection_id_limit(v);
+}
+
+/// Set the `enable_multipath` transport parameter.
+/// The default value is false. (Experimental)
+#[no_mangle]
+pub extern "C" fn quic_config_enable_multipath(config: &mut Config, enabled: bool) {
+    config.enable_multipath(enabled);
+}
+
+/// Set the multipath scheduling algorithm
+/// The default value is MultipathAlgorithm::MinRtt
+#[no_mangle]
+pub extern "C" fn quic_config_set_multipath_algorithm(config: &mut Config, v: MultipathAlgorithm) {
+    config.set_multipath_algorithm(v);
 }
 
 /// Set the maximum size of the connection flow control window.
@@ -724,6 +757,12 @@ pub extern "C" fn quic_conn_is_closed(conn: &mut Connection) -> bool {
 #[no_mangle]
 pub extern "C" fn quic_conn_is_idle_timeout(conn: &mut Connection) -> bool {
     conn.is_idle_timeout()
+}
+
+/// Check whether the connection was closed due to stateless reset.
+#[no_mangle]
+pub extern "C" fn quic_conn_is_reset(conn: &mut Connection) -> bool {
+    conn.is_reset()
 }
 
 /// Returns the error from the peer, if any.
@@ -1651,30 +1690,17 @@ fn headers_from_ptr<'a>(ptr: *const Header, len: size_t) -> Vec<h3::HeaderRef<'a
 /// `cb` is a callback function that will be called for each log message.
 /// `line` is a null-terminated log message and `argp` is user-defined data that will be passed to
 /// the callback.
-/// `level` is the log level filter, valid values are "OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE".
+/// `level` represents the log level.
 #[no_mangle]
 pub extern "C" fn quic_set_logger(
     cb: extern "C" fn(line: *const u8, argp: *mut c_void),
     argp: *mut c_void,
-    level: *const c_char,
-) -> c_int {
+    level: log::LevelFilter,
+) {
     let argp = atomic::AtomicPtr::new(argp);
     let logger = Box::new(Logger { cb, argp });
-
-    if log::set_boxed_logger(logger).is_err() {
-        return -1;
-    }
-
-    if level.is_null() {
-        return -1;
-    }
-
-    let level = unsafe { ffi::CStr::from_ptr(level).to_str().unwrap_or_default() };
-    if let Ok(level_filter) = log::LevelFilter::from_str(level) {
-        log::set_max_level(level_filter);
-    }
-
-    0
+    let _ = log::set_boxed_logger(logger);
+    log::set_max_level(level);
 }
 
 #[repr(C)]
