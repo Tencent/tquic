@@ -25,6 +25,8 @@ use std::net::Ipv6Addr;
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
 use std::rc::Rc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
@@ -36,6 +38,7 @@ use clap::CommandFactory;
 use clap::Parser;
 use log::debug;
 use log::error;
+use log::info;
 use log::warn;
 use mio::event::Event;
 use rand::Rng;
@@ -100,6 +103,10 @@ pub struct ClientOpt {
     /// Client will exit if either the max_requests or duration is reached.
     #[clap(short, long, default_value = "0", value_name = "TIME")]
     pub duration: u64,
+
+    /// Client will exit if consecutive failure reaches the threshold at the beginning.
+    #[clap(long, default_value = "10", value_name = "NUM")]
+    pub connection_failure_threshold: u64,
 
     /// Number of max samples per thread used for request time statistics.
     #[clap(long, default_value = "100000", value_name = "NUM")]
@@ -222,17 +229,23 @@ struct Client {
 
     /// Client start time.
     start_time: Instant,
+
+    /// If terminated by system signal.
+    terminated: Arc<AtomicBool>,
 }
 
 impl Client {
     /// Create a new multi-threads client.
     pub fn new(option: ClientOpt) -> Result<Self> {
         let client_ctx = Arc::new(Mutex::new(ClientContext::default()));
+        let terminated = Arc::new(AtomicBool::new(false));
+        signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&terminated))?;
 
         Ok(Self {
             option,
             context: client_ctx,
             start_time: Instant::now(),
+            terminated,
         })
     }
 
@@ -243,8 +256,9 @@ impl Client {
         for i in 0..self.option.threads {
             let client_opt = self.option.clone();
             let client_ctx = self.context.clone();
+            let terminated = self.terminated.clone();
             let thread = thread::spawn(move || {
-                let mut worker = Worker::new(i, client_opt, client_ctx).unwrap();
+                let mut worker = Worker::new(i, client_opt, client_ctx, terminated).unwrap();
                 worker.start().unwrap();
             });
             threads.push(thread);
@@ -386,10 +400,9 @@ struct Worker {
 
     /// Worker end time.
     end_time: Option<Instant>,
-}
 
-fn convert_alpn(alpns: &[ApplicationProto]) -> Vec<Vec<u8>> {
-    alpns.iter().map(|alpn| alpn.to_slice().to_vec()).collect()
+    /// If terminated by system signal.
+    terminated: Arc<AtomicBool>,
 }
 
 impl Worker {
@@ -398,6 +411,7 @@ impl Worker {
         index: u32,
         option: ClientOpt,
         client_ctx: Arc<Mutex<ClientContext>>,
+        terminated: Arc<AtomicBool>,
     ) -> Result<Self> {
         let mut config = Config::new()?;
         config.enable_stateless_reset(!option.disable_stateless_reset);
@@ -416,8 +430,10 @@ impl Worker {
         config.set_min_congestion_window(option.min_congestion_window);
         config.enable_multipath(option.enable_multipath);
         config.set_multipath_algor(option.multipath_algor);
-        let tls_config =
-            TlsConfig::new_client_config(convert_alpn(&option.alpn), option.enable_early_data)?;
+        let tls_config = TlsConfig::new_client_config(
+            ApplicationProto::convert_to_vec(&option.alpn),
+            option.enable_early_data,
+        )?;
         config.set_tls_config(tls_config);
 
         let poll = mio::Poll::new()?;
@@ -447,6 +463,7 @@ impl Worker {
             recv_buf: vec![0u8; MAX_BUF_SIZE],
             start_time: Instant::now(),
             end_time: None,
+            terminated,
         })
     }
 
@@ -488,48 +505,68 @@ impl Worker {
         Ok(())
     }
 
+    fn should_exit(&self) -> bool {
+        if self.terminated.load(Ordering::Relaxed) {
+            info!("worker terminated by system signal and waiting for tasks to finish.");
+            return true;
+        }
+
+        let worker_ctx = self.worker_ctx.borrow();
+        debug!("worker concurrent conns {}", worker_ctx.concurrent_conns);
+
+        if !worker_ctx.connected
+            && worker_ctx.conn_finish_failed >= self.option.connection_failure_threshold
+        {
+            error!(
+                "connect server[{:?}] failed",
+                self.option.connect_to.unwrap()
+            );
+            return true;
+        }
+
+        if (self.option.duration > 0
+            && (Instant::now() - self.start_time).as_secs() > self.option.duration)
+            || (self.option.max_requests_per_thread > 0
+                && worker_ctx.request_done >= self.option.max_requests_per_thread)
+        {
+            debug!(
+                "worker should exit, concurrent conns {}, request sent {}, request done {}",
+                worker_ctx.concurrent_conns, worker_ctx.request_sent, worker_ctx.request_done,
+            );
+            return true;
+        }
+
+        false
+    }
+
     fn process(&mut self) -> Result<bool> {
         // Process connections.
         self.endpoint.process_connections()?;
 
-        {
-            let worker_ctx = self.worker_ctx.borrow();
-            debug!("worker concurrent conns {}", worker_ctx.concurrent_conns);
+        // Check exit.
+        if self.should_exit() {
+            // Close endpoint.
+            self.endpoint.close(false);
 
-            // Check close.
-            if (self.option.duration > 0
-                && (Instant::now() - self.start_time).as_secs() > self.option.duration)
-                || (self.option.max_requests_per_thread > 0
-                    && worker_ctx.request_done >= self.option.max_requests_per_thread)
-            {
-                debug!(
-                    "worker should exit, concurrent conns {}, request sent {}, request done {}",
-                    worker_ctx.concurrent_conns, worker_ctx.request_sent, worker_ctx.request_done,
-                );
-
-                // Close endpoint.
-                self.endpoint.close(false);
-
-                // Close connections.
-                let mut senders = self.senders.borrow_mut();
-                for (index, _) in senders.iter_mut() {
-                    let conn = self.endpoint.conn_get_mut(*index).unwrap();
-                    _ = conn.close(true, 0x00, b"ok");
-                }
-
-                // Update worker end time.
-                if self.end_time.is_none() {
-                    debug!("all tasks finished, update the end time and wait for saving session.");
-                    self.end_time = Some(Instant::now());
-                }
-
-                if senders.len() == 0 {
-                    // All connections are closed.
-                    return Ok(true);
-                }
-
-                return Ok(false);
+            // Close connections.
+            let mut senders = self.senders.borrow_mut();
+            for (index, _) in senders.iter_mut() {
+                let conn = self.endpoint.conn_get_mut(*index).unwrap();
+                _ = conn.close(true, 0x00, b"ok");
             }
+
+            // Update worker end time.
+            if self.end_time.is_none() {
+                debug!("all tasks finished, update the end time and wait for saving session.");
+                self.end_time = Some(Instant::now());
+            }
+
+            if senders.len() == 0 {
+                // All connections are closed.
+                return Ok(true);
+            }
+
+            return Ok(false);
         }
 
         // Check and create new connections.
@@ -649,6 +686,7 @@ struct WorkerContext {
     conn_finish_failed: u64,
     concurrent_conns: u32,
     conn_stats: ConnectionStats,
+    connected: bool,
 }
 
 impl WorkerContext {
@@ -1203,6 +1241,7 @@ impl TransportHandler for WorkerHandler {
         {
             let mut worker_ctx = self.worker_ctx.borrow_mut();
             worker_ctx.conn_handshake_success += 1;
+            worker_ctx.connected = true;
         }
 
         // Try to add additional paths
