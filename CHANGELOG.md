@@ -16,11 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Add support for building on MacOS
 - Add support for stateless reset
-- Relaese tls_conf_selector as soon as the hanshake is completed.
+- Release tls_conf_selector as soon as the handshake is completed.
 - Add linear mode and upper limit for probe timeout
 - Add FFI enable_multipath()/set_multipath_algorithm()
 - Add RoundRobin multipath scheduler
-- Add more units test for mulitpath transport
+- Add more units test for multipath transport
 - tquic_client: stop trying and exit if it fails to reconnect the server multiple times.
 - tquic_client: output the stats first and then exit when it receives an SIGINT signal.
 
@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Change default congestion control algorithm to BBR
 
 ### Fixed
-- Fix stream scheduling for multipe incredmental streams
+- Fix stream scheduling for multiple incredmental streams
 - Fix reinjection for multipath transport
 
 
