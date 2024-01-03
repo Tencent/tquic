@@ -66,6 +66,14 @@ impl ApplicationProto {
             Self::H3 => b"h3",
         }
     }
+
+    /// Convert an ApplicationProto slice to a two-dimension byte vector.
+    pub fn convert_to_vec(protos: &[Self]) -> Vec<Vec<u8>> {
+        protos
+            .iter()
+            .map(|proto| proto.to_slice().to_vec())
+            .collect()
+    }
 }
 
 impl ValueEnum for ApplicationProto {

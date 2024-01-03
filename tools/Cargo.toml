@@ -22,6 +22,7 @@ slab = "0.4"
 rand = "0.8.5"
 statrs = "0.16"
 tikv-jemallocator = "0.5"
+signal-hook = "0.3.17"
 tquic = { path = "..", version = "0.4.0"}
 
 [lib]
