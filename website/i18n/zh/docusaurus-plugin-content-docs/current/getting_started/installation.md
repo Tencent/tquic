@@ -7,7 +7,7 @@ sidebar_position: 1
 
 ## 支持平台
 
-TQUIC基于Rust语言开发，目前支持Linux、iOS、Android平台，后续版本将支持其他平台。
+TQUIC基于Rust语言开发，目前支持Linux、MacOS、iOS、Android平台，后续版本将支持其他平台。
 
 
 ## 环境准备 
@@ -48,6 +48,32 @@ cargo build --release -F ffi
 ```
   </TabItem>
 
+
+  <TabItem value="MacOS" label="MacOS" default>
+
+执行如下命令进行编译：
+
+```bash
+git clone https://github.com/tencent/tquic --recursive
+cd tquic
+
+cargo build --release --all
+```
+
+:::tip
+参数`--release`指定cargo编译优化版本，编译结果位于`./target/release/` 目录，而不是默认的`./target/debug/`目录。
+参数`--all`指定cargo编译TQUIC协议库及示例工具
+:::
+
+
+如果要启用C语言接口，请在`cargo build`命令后添加参数`-F ffi`：
+
+```bash
+cargo build --release -F ffi
+```
+  </TabItem>
+
+
   <TabItem value="Android" label="Android">
 
 要编译Android平台的TQUIC库，你需要额外安装如下依赖：
@@ -77,6 +103,7 @@ cd tquic
 cargo ndk -t arm64-v8a -p 21 -- build --features ffi --release
 ```
   </TabItem>
+
 
   <TabItem value="iOS" label="iOS">
 

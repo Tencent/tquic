@@ -22,8 +22,8 @@ TQUIC库定义了公共函数使用的几种常见类型：
 | `quic_config_t` | 可以通过`quic_config_t`中各类参数来定制TQUIC库的行为。|
 | `quic_endpoint_t` | 端点是参与QUIC连接的实体，生成/接收/处理QUIC报文。端点可能维护了多个QUIC连接。 |
 | `quic_connection_t` | QUIC连接。|
-| `quic_transport_handler_t` | 用户提供的上下文。|
 | `quic_transport_methods_t` | 该结构列出了端点用于与用户代码交互的回调函数。|
+| `quic_transport_context_t` | 用户提供的上下文。|
 | `quic_packet_out_spec` | 出报文的数据及元信息。|
 
 
@@ -73,16 +73,15 @@ void quic_config_set_max_udp_payload_size(struct quic_config_t *config,
 void quic_config_set_initial_max_data(struct quic_config_t *config,
                                       uint64_t v);
 ```
-* 设置`initial_max_data`传输参数。它代表了在连接上可以发送的最大数据量的初始值。
+* 设置`initial_max_data`传输参数，单元是字节。它代表了在连接上可以发送的最大数据量的初始值。
 * 默认值是`10485760` (10 MB)。
-
 
 #### quic_config_set_initial_max_stream_data_bidi_local
 ```c
 void quic_config_set_initial_max_stream_data_bidi_local(struct quic_config_t *config,
                                                         uint64_t v);
 ```
-* 设置`initial_max_stream_data_bidi_local`传输参数。
+* 设置`initial_max_stream_data_bidi_local`传输参数，单元是字节。
 * 默认值是`5242880` (5 MB)。
 
 
@@ -91,7 +90,7 @@ void quic_config_set_initial_max_stream_data_bidi_local(struct quic_config_t *co
 void quic_config_set_initial_max_stream_data_bidi_remote(struct quic_config_t *config,
                                                          uint64_t v);
 ```
-* 设置`initial_max_stream_data_bidi_remote`传输参数。
+* 设置`initial_max_stream_data_bidi_remote`传输参数，单元是字节。
 * 默认值是`2097152` (2 MB)。
 
 
@@ -100,7 +99,7 @@ void quic_config_set_initial_max_stream_data_bidi_remote(struct quic_config_t *c
 void quic_config_set_initial_max_stream_data_uni(struct quic_config_t *config,
                                                  uint64_t v);
 ```
-* 设置`initial_max_stream_data_uni`传输参数。
+* 设置`initial_max_stream_data_uni`传输参数，单元是字节。
 * 默认值是`1048576` (1 MB)。
 
 
@@ -136,7 +135,7 @@ void quic_config_set_ack_delay_exponent(struct quic_config_t *config,
 void quic_config_set_max_ack_delay(struct quic_config_t *config,
                                    uint64_t v);
 ```
-* 设置`max_ack_delay`传输参数。
+* 设置`max_ack_delay`传输参数，单位是毫秒。
 * 默认值是`25`。
 
 
@@ -177,6 +176,23 @@ void quic_config_set_initial_rtt(struct quic_config_t *config, uint64_t v);
 :::
 
 
+#### quic_config_set_pto_linear_factor
+```c
+void quic_config_set_pto_linear_factor(struct quic_config_t *config, uint64_t v);
+```
+* 设置PTO线性系数。PTO在前`v`个连续探测超时保持不变，之后才开始指数回退。
+* 默认值是`0`。
+
+
+#### quic_config_set_max_pto
+```
+void quic_config_set_max_pto(struct quic_config_t *config, uint64_t v);
+```
+* Set the upper limit of probe timeout in milliseconds. A Probe Timeout (PTO) triggers the sending of one or two probe datagrams and enables a connection to recover from loss of tail packets or acknowledgments. See RFC 9002 Section 6.2.
+* 设置探测超时的最大值，单位是毫秒。探测超(PTO)会触发发送一个或两个探测数据报，使得连接可以恢复丢失的尾包或确认。
+* 默认没有限制。
+
+
 #### quic_config_set_active_connection_id_limit
 ```c
 void quic_config_set_active_connection_id_limit(struct quic_config_t *config,
@@ -186,12 +202,28 @@ void quic_config_set_active_connection_id_limit(struct quic_config_t *config,
 * 默认值是`2`。如果参数值小于2，会被忽略。
 
 
+#### quic_config_enable_multipath
+```c
+void quic_config_enable_multipath(struct quic_config_t *config, bool enabled);
+```
+* 设置`enable_multipath`传输参数。
+* 默认不启用。(Experimental)
+
+
+#### quic_config_set_multipath_algorithm
+```c
+void quic_config_set_multipath_algorithm(struct quic_config_t *config, enum MultipathAlgorithm v);
+```
+* 设置多路径调度算法。
+* 默认值是MinRTT。
+
+
 #### quic_config_set_max_connection_window
 ```c
 void quic_config_set_max_connection_window(struct quic_config_t *config,
                                            uint64_t v);
 ```
-* 设置连接级别流量控制窗口的最大大小。
+* 设置连接级别流量控制窗口的最大大小，单元是字节。
 * 默认值是`25165824` (24 MB)。
 
 
@@ -200,7 +232,7 @@ void quic_config_set_max_connection_window(struct quic_config_t *config,
 void quic_config_set_max_stream_window(struct quic_config_t *config,
                                        uint64_t v);
 ```
-* 设置流级别流量控制窗口的最大大小。
+* 设置流级别流量控制窗口的最大大小，单元是字节。
 * 默认值是`16777216` (16MB)。
 
 #### quic_config_set_max_concurrent_conns
@@ -219,6 +251,7 @@ int quic_config_set_reset_token_key(struct quic_config_t *config,
                                     size_t token_key_len);
 ```
 * 设置生成 Reset 令牌的密钥。参数`token_key_len`应该不小于64。
+* 默认值是随机数
 
 
 #### quic_config_set_address_token_lifetime
@@ -236,8 +269,8 @@ int quic_config_set_address_token_key(struct quic_config_t *config,
                                       const uint8_t *token_keys,
                                       size_t token_keys_len);
 ```
-* 设置生成地址令牌的密钥。
-参数`token_key_len`应该是16的倍数。
+* 设置生成地址令牌的密钥。参数`token_key_len`应该是16的倍数。
+* 默认值是随机数
 
 
 #### quic_config_enable_retry
@@ -265,6 +298,13 @@ void quic_config_set_send_batch_size(struct quic_config_t *config,
 ```
 * 设置批量发送报文的数量。
 * 默认值是`64`。
+
+
+#### quic_config_set_tls_config
+```c
+void quic_config_set_tls_config(struct quic_config_t *config, SSL_CTX *ssl_ctx);
+```
+* 设置TLS配置。
 
 
 #### quic_config_set_tls_selector
@@ -665,6 +705,13 @@ bool quic_conn_is_idle_timeout(struct quic_conn_t *conn);
 * 检查连接是否由于闲置超时而关闭。
 
 
+#### quic_conn_is_reset
+```c
+bool quic_conn_is_reset(struct quic_conn_t *conn);
+```
+* 检查连接是否由于无状态重置而关闭。
+
+
 #### quic_conn_peer_error
 ```c
 bool quic_conn_peer_error(struct quic_conn_t *conn,
@@ -858,18 +905,16 @@ void quic_conn_path_iter_free(struct quic_path_address_iter_t *iter);
 * 释放FourTupleIter。
 
 
-## 其他类型
+## 其他类型或函数
 
-#### quic_transport_handler_t
+### 其他类型
+
+#### quic_transport_context_t
 ```c
 typedef void *quic_transport_context_t;
 
-typedef struct quic_transport_handler_t {
-  const struct quic_transport_methods_t *methods;
-  quic_transport_context_t context;
-} quic_transport_handler_t;
 ```
-* 传输层回调句柄，包括回调函数和上下文。
+* 传输层回调上下文。
 
 
 #### quic_packet_out_spec_t 
@@ -916,4 +961,39 @@ typedef enum quic_congestion_control_algorithm {
 } quic_congestion_control_algorithm;
 ```
 * 拥塞控制算法。
+
+
+#### quic_multipath_algorithm
+```c
+typedef enum quic_multipath_algorithm {
+  QUIC_MULTIPATH_ALGORITHM_MIN_RTT,
+  QUIC_MULTIPATH_ALGORITHM_REDUNDANT,
+  QUIC_MULTIPATH_ALGORITHM_ROUND_ROBIN,
+} quic_multipath_algorithm;
+```
+* 多路径调度算法。
+
+
+#### quic_log_level
+```c
+typedef enum quic_log_level {
+  QUIC_LOG_LEVEL_OFF,
+  QUIC_LOG_LEVEL_ERROR,
+  QUIC_LOG_LEVEL_WARN,
+  QUIC_LOG_LEVEL_INFO,
+  QUIC_LOG_LEVEL_DEBUG,
+  QUIC_LOG_LEVEL_TRACE,
+} quic_log_level;
+```
+* 日志级别。
+
+
+### 其他函数
+
+#### quic_set_logger
+```c
+void quic_set_logger(void (*cb)(const uint8_t *line, void *argp), void *argp, quic_log_level level);
+```
+* 设置日志回调函数。
+* 对于每条日志，会调用函数`cb`。`line` 代表null结尾的日志消息。`argp`代表传递给回调函数`cb`的用户自定义数据
 

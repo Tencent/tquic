@@ -75,7 +75,7 @@ the size of UDP payloads that the endpoint is willing to receive.
 void quic_config_set_initial_max_data(struct quic_config_t *config,
                                       uint64_t v);
 ```
-* Set the `initial_max_data` transport parameter. It means the initial
+* Set the `initial_max_data` transport parameter in bytes. It means the initial
   value for the maximum amount of data that can be sent on the connection.
 * The default value is `10485760` (10 MB).
 
@@ -85,7 +85,7 @@ void quic_config_set_initial_max_data(struct quic_config_t *config,
 void quic_config_set_initial_max_stream_data_bidi_local(struct quic_config_t *config,
                                                         uint64_t v);
 ```
-* Set the `initial_max_stream_data_bidi_local` transport parameter.
+* Set the `initial_max_stream_data_bidi_local` transport parameter in bytes.
 * The default value is `5242880` (5 MB).
 
 
@@ -94,7 +94,7 @@ void quic_config_set_initial_max_stream_data_bidi_local(struct quic_config_t *co
 void quic_config_set_initial_max_stream_data_bidi_remote(struct quic_config_t *config,
                                                          uint64_t v);
 ```
-* Set the `initial_max_stream_data_bidi_remote` transport parameter.
+* Set the `initial_max_stream_data_bidi_remote` transport parameter in bytes.
 * The default value is `2097152` (2 MB).
 
 
@@ -103,7 +103,7 @@ void quic_config_set_initial_max_stream_data_bidi_remote(struct quic_config_t *c
 void quic_config_set_initial_max_stream_data_uni(struct quic_config_t *config,
                                                  uint64_t v);
 ```
-* Set the `initial_max_stream_data_uni` transport parameter.
+* Set the `initial_max_stream_data_uni` transport parameter in bytes.
 * The default value is `1048576` (1 MB).
 
 
@@ -139,7 +139,7 @@ void quic_config_set_ack_delay_exponent(struct quic_config_t *config,
 void quic_config_set_max_ack_delay(struct quic_config_t *config,
                                    uint64_t v);
 ```
-* Set the `max_ack_delay` transport parameter.
+* Set the `max_ack_delay` transport parameter in milliseconds.
 * The default value is `25`.
 
 
@@ -181,6 +181,22 @@ will cause retransmission of handshake packets to be more aggressive.
 :::
 
 
+#### quic_config_set_pto_linear_factor
+```c
+void quic_config_set_pto_linear_factor(struct quic_config_t *config, uint64_t v);
+```
+* Set the linear factor for calculating the probe timeout. The endpoint do not backoff the first `v` consecutive probe timeouts.
+* The default value is `0`.
+
+
+#### quic_config_set_max_pto
+```
+void quic_config_set_max_pto(struct quic_config_t *config, uint64_t v);
+```
+* Set the upper limit of probe timeout in milliseconds. A Probe Timeout (PTO) triggers the sending of one or two probe datagrams and enables a connection to recover from loss of tail packets or acknowledgments. See RFC 9002 Section 6.2.
+* The probe timeout value has no limit by default.
+
+
 #### quic_config_set_active_connection_id_limit
 ```c
 void quic_config_set_active_connection_id_limit(struct quic_config_t *config,
@@ -190,12 +206,28 @@ void quic_config_set_active_connection_id_limit(struct quic_config_t *config,
 * The default value is `2`. Lower values will be ignored.
 
 
+#### quic_config_enable_multipath
+```c
+void quic_config_enable_multipath(struct quic_config_t *config, bool enabled);
+```
+* Set the `enable_multipath` transport parameter.
+* The default value is false. (Experimental)
+
+
+#### quic_config_set_multipath_algorithm
+```c
+void quic_config_set_multipath_algorithm(struct quic_config_t *config, enum MultipathAlgorithm v);
+```
+* Set the multipath scheduling algorithm
+* The default value is MultipathAlgorithm::MinRtt
+
+
 #### quic_config_set_max_connection_window
 ```c
 void quic_config_set_max_connection_window(struct quic_config_t *config,
                                            uint64_t v);
 ```
-* Set the maximum size of the connection flow control window.
+* Set the maximum size of the connection flow control window in bytes.
 * The default value is `25165824` (24 MB).
 
 
@@ -204,7 +236,7 @@ void quic_config_set_max_connection_window(struct quic_config_t *config,
 void quic_config_set_max_stream_window(struct quic_config_t *config,
                                        uint64_t v);
 ```
-* Set the maximum size of the stream flow control window.
+* Set the maximum size of the stream flow control window in bytes.
 * The default value is `16777216` (16MB).
 
 #### quic_config_set_max_concurrent_conns
@@ -223,6 +255,7 @@ int quic_config_set_reset_token_key(struct quic_config_t *config,
                                     size_t token_key_len);
 ```
 * Set the key for reset token generation. The `token_key_len` should be not less than 64.
+* The default value is random bytes
 
 
 #### quic_config_set_address_token_lifetime
@@ -240,8 +273,8 @@ int quic_config_set_address_token_key(struct quic_config_t *config,
                                       const uint8_t *token_keys,
                                       size_t token_keys_len);
 ```
-* Set the key for address token generation.
-The `token_key_len` should be a multiple of 16.
+* Set the key for address token generation. The `token_key_len` should be a multiple of 16.
+* The default value is random bytes
 
 
 #### quic_config_enable_retry
@@ -269,6 +302,13 @@ void quic_config_set_send_batch_size(struct quic_config_t *config,
 ```
 * Set the batch size for sending packets.
 * The default value is `64`.
+
+
+#### quic_config_set_tls_config
+```c
+void quic_config_set_tls_config(struct quic_config_t *config, SSL_CTX *ssl_ctx);
+```
+* Set TLS config.
 
 
 #### quic_config_set_tls_selector
@@ -678,6 +718,13 @@ bool quic_conn_is_idle_timeout(struct quic_conn_t *conn);
 * Check whether the connection was closed due to idle timeout.
 
 
+#### quic_conn_is_reset
+```c
+bool quic_conn_is_reset(struct quic_conn_t *conn);
+```
+* Check whether the connection was closed due to stateless reset.
+
+
 #### quic_conn_peer_error
 ```c
 bool quic_conn_peer_error(struct quic_conn_t *conn,
@@ -870,8 +917,9 @@ void quic_conn_path_iter_free(struct quic_path_address_iter_t *iter);
 * Destroy the FourTupleIter
 
 
+## Miscellaneous types and functions
 
-## Miscellaneous types
+### Miscellaneous types
 
 #### quic_transport_handler_t
 ```c
@@ -926,5 +974,40 @@ typedef enum quic_congestion_control_algorithm {
   QUIC_CONGESTION_CONTROL_ALGORITHM_COPA,
 } quic_congestion_control_algorithm;
 ```
-* Congestion control algorithm.
+* Congestion control algorithms.
+
+
+#### quic_multipath_algorithm
+```c
+typedef enum quic_multipath_algorithm {
+  QUIC_MULTIPATH_ALGORITHM_MIN_RTT,
+  QUIC_MULTIPATH_ALGORITHM_REDUNDANT,
+  QUIC_MULTIPATH_ALGORITHM_ROUND_ROBIN,
+} quic_multipath_algorithm;
+```
+* Multipath scheduling algorithms.
+
+
+#### quic_log_level
+```c
+typedef enum quic_log_level {
+  QUIC_LOG_LEVEL_OFF,
+  QUIC_LOG_LEVEL_ERROR,
+  QUIC_LOG_LEVEL_WARN,
+  QUIC_LOG_LEVEL_INFO,
+  QUIC_LOG_LEVEL_DEBUG,
+  QUIC_LOG_LEVEL_TRACE,
+} quic_log_level;
+```
+* An enum representing the available verbosity level filters of the logger.
+
+
+### Miscellaneous functions
+
+#### quic_set_logger
+```c
+void quic_set_logger(void (*cb)(const uint8_t *line, void *argp), void *argp, quic_log_level level);
+```
+* Set callback for logging.
+* `cb` is a callback function that will be called for each log message. `line` is a null-terminated log message and `argp` is user-defined data that will be passed to the callback.
 
