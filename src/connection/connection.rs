@@ -358,30 +358,27 @@ impl Connection {
         description: String,
     ) {
         let trace = qlog::TraceSeq::new(
-            qlog::VantagePoint::new(None, self.is_server),
             Some(title.to_string()),
             Some(description.to_string()),
-            Some(qlog::Configuration::default()),
             None,
+            qlog::VantagePoint::new(None, self.is_server),
         );
         let level = events::EventImportance::Extra;
         let mut writer = qlog::QlogWriter::new(
-            qlog::QLOG_VERSION.to_string(),
             Some(title),
             Some(description),
-            None,
-            time::Instant::now(),
             trace,
             level,
             writer,
+            time::Instant::now(),
         );
         writer.start().ok();
 
         // Write TransportParametersSet event to qlog
-        Self::qlog_transport_params_set(
+        Self::qlog_quic_params_set(
             &mut writer,
             &self.local_transport_params,
-            events::TransportOwner::Local,
+            events::Owner::Local,
             self.tls_session.cipher(),
         );
 
@@ -588,7 +585,6 @@ impl Connection {
         // Process each QUIC frame in the QUIC packet
         let mut ack_eliciting_pkt = false;
         let mut probing_pkt = true;
-        let mut qframes = vec![];
 
         while !payload.is_empty() {
             let (frame, len) = Frame::from_bytes(&mut payload, hdr.pkt_type)?;
@@ -598,9 +594,6 @@ impl Connection {
             if !frame.probing() {
                 probing_pkt = false;
             }
-            if self.qlog.is_some() {
-                qframes.push(frame.to_qlog());
-            }
 
             self.recv_frame(frame, &hdr, pid, space_id, info.time)?;
             let _ = payload.split_to(len);
@@ -608,7 +601,7 @@ impl Connection {
 
         // Write TransportPacketReceived event to qlog.
         if let Some(qlog) = &mut self.qlog {
-            Self::qlog_transport_packet_received(qlog, &hdr, pkt_num, read, payload_len, qframes);
+            Self::qlog_quic_packet_received(qlog, &hdr, pkt_num, read, payload_len);
         }
 
         // Process acknowledged frames.
@@ -1165,10 +1158,10 @@ impl Connection {
 
         // Write TransportParametersSet event to qlog.
         if let Some(qlog) = &mut self.qlog {
-            Self::qlog_transport_params_set(
+            Self::qlog_quic_params_set(
                 qlog,
                 &self.peer_transport_params,
-                events::TransportOwner::Remote,
+                events::Owner::Remote,
                 self.tls_session.cipher(),
             );
         }
@@ -1275,9 +1268,9 @@ impl Connection {
                         self.streams
                             .on_stream_frame_acked(stream_id, offset, length);
 
-                        // Write TransportDataMoved event to qlog
+                        // Write QuicStreamDataMoved event to qlog
                         if let Some(qlog) = &mut self.qlog {
-                            Self::qlog_transport_data_acked(qlog, stream_id, offset, length);
+                            Self::qlog_quic_data_acked(qlog, stream_id, offset, length);
                         }
                     }
 
@@ -1587,11 +1580,7 @@ impl Connection {
 
         // Write TransportPacketSent event to qlog.
         if let Some(qlog) = &mut self.qlog {
-            let mut qframes = Vec::with_capacity(sent_pkt.frames.len());
-            for frame in &sent_pkt.frames {
-                qframes.push(frame.to_qlog());
-            }
-            Self::qlog_transport_packet_sent(qlog, &hdr, pkt_num, written, payload_len, qframes);
+            Self::qlog_quic_packet_sent(qlog, &hdr, pkt_num, written, payload_len);
         }
 
         // Notify the packet sent event to the multipath scheduler
@@ -3408,7 +3397,7 @@ impl Connection {
 
         match self.streams.stream_read(stream_id, out) {
             Ok((read, fin)) => {
-                // Write TransportDataMoved event to qlog
+                // Write QuicStreamDataMoved event to qlog
                 if let Some(qlog) = &mut self.qlog {
                     Self::qlog_transport_data_read(qlog, stream_id, read_off.unwrap_or(0), read);
                 }
@@ -3426,7 +3415,7 @@ impl Connection {
 
         match self.streams.stream_write(stream_id, buf, fin) {
             Ok(written) => {
-                // Write TransportDataMoved event to qlog
+                // Write QuicStreamDataMoved event to qlog
                 if let Some(qlog) = &mut self.qlog {
                     Self::qlog_transport_data_write(
                         qlog,
@@ -3631,25 +3620,24 @@ impl Connection {
         self.context = Some(Box::new(data))
     }
 
-    /// Write an TransportParametersSet event to the qlog.
-    fn qlog_transport_params_set(
+    /// Write a QuicParametersSet event to the qlog.
+    fn qlog_quic_params_set(
         qlog: &mut qlog::QlogWriter,
         params: &TransportParams,
-        owner: events::TransportOwner,
+        owner: events::Owner,
         cipher: Option<tls::Algorithm>,
     ) {
         let ev_data = params.to_qlog(owner, cipher);
         qlog.add_event_data(time::Instant::now(), ev_data).ok();
     }
 
-    /// Write an TransportPacketReceived event to the qlog.
-    fn qlog_transport_packet_received(
+    /// Write a QuicPacketReceived event to the qlog.
+    fn qlog_quic_packet_received(
         qlog: &mut qlog::QlogWriter,
         hdr: &PacketHeader,
         pkt_num: u64,
         pkt_len: usize,
         payload_len: usize,
-        qlog_frames: Vec<qlog::events::QuicFrame>,
     ) {
         let qlog_pkt_hdr = events::PacketHeader::new_with_type(
             hdr.pkt_type.to_qlog(),
@@ -3663,9 +3651,8 @@ impl Connection {
             payload_length: Some(payload_len as u64),
             data: None,
         };
-        let ev_data = events::EventData::TransportPacketReceived {
+        let ev_data = events::EventData::QuicPacketReceived {
             header: qlog_pkt_hdr,
-            frames: Some(qlog_frames),
             is_coalesced: None,
             retry_token: None,
             stateless_reset_token: None,
@@ -3677,14 +3664,13 @@ impl Connection {
         qlog.add_event_data(time::Instant::now(), ev_data).ok();
     }
 
-    /// Write an TransportPacketSent event to the qlog.
-    fn qlog_transport_packet_sent(
+    /// Write a QuicPacketSent event to the qlog.
+    fn qlog_quic_packet_sent(
         qlog: &mut qlog::QlogWriter,
         hdr: &PacketHeader,
         pkt_num: u64,
         pkt_len: usize,
         payload_len: usize,
-        qlog_frames: Vec<qlog::events::QuicFrame>,
     ) {
         let qlog_pkt_hdr = events::PacketHeader::new_with_type(
             hdr.pkt_type.to_qlog(),
@@ -3700,29 +3686,28 @@ impl Connection {
         };
         let now = time::Instant::now();
 
-        let ev_data = events::EventData::TransportPacketSent {
+        let ev_data = events::EventData::QuicPacketSent {
             header: qlog_pkt_hdr,
-            frames: Some(qlog_frames.into()),
             is_coalesced: None,
             retry_token: None,
             stateless_reset_token: None,
             supported_versions: None,
             raw: Some(qlog_raw_info),
             datagram_id: None,
-            send_at_time: Some(qlog.relative_time(now)),
+            is_mtu_probe_packet: None,
             trigger: None,
         };
         qlog.add_event_data(now, ev_data).ok();
     }
 
-    /// Write an TransportDataMoved event to the qlog.
-    fn qlog_transport_data_acked(
+    /// Write a QuicStreamDataMoved event to the qlog.
+    fn qlog_quic_data_acked(
         qlog: &mut qlog::QlogWriter,
         stream_id: u64,
         offset: u64,
         length: usize,
     ) {
-        let ev_data = events::EventData::TransportDataMoved {
+        let ev_data = events::EventData::QuicStreamDataMoved {
             stream_id: Some(stream_id),
             offset: Some(offset),
             length: Some(length as u64),
@@ -3733,14 +3718,14 @@ impl Connection {
         qlog.add_event_data(time::Instant::now(), ev_data).ok();
     }
 
-    /// Write an TransportDataMoved event to the qlog.
+    /// Write a QuicStreamDataMoved event to the qlog.
     fn qlog_transport_data_read(
         qlog: &mut qlog::QlogWriter,
         stream_id: u64,
         read_off: u64,
         read: usize,
     ) {
-        let ev_data = qlog::events::EventData::TransportDataMoved {
+        let ev_data = qlog::events::EventData::QuicStreamDataMoved {
             stream_id: Some(stream_id),
             offset: Some(read_off),
             length: Some(read as u64),
@@ -3751,14 +3736,14 @@ impl Connection {
         qlog.add_event_data(time::Instant::now(), ev_data).ok();
     }
 
-    /// Write TransportDataMoved event to the qlog.
+    /// Write a QuicStreamDataMoved event to the qlog.
     fn qlog_transport_data_write(
         qlog: &mut qlog::QlogWriter,
         stream_id: u64,
         write_off: u64,
         written: usize,
     ) {
-        let ev_data = qlog::events::EventData::TransportDataMoved {
+        let ev_data = qlog::events::EventData::QuicStreamDataMoved {
             stream_id: Some(stream_id),
             offset: Some(write_off),
             length: Some(written as u64),
@@ -6447,17 +6432,17 @@ pub(crate) mod tests {
         let mut clog_content = String::new();
         cfile.read_to_string(&mut clog_content).unwrap();
         assert_eq!(clog_content.contains("client"), true);
-        assert_eq!(clog_content.contains("transport:parameters_set"), true);
-        assert_eq!(clog_content.contains("transport:data_moved"), true);
-        assert_eq!(clog_content.contains("transport:packet_sent"), true);
+        assert_eq!(clog_content.contains("quic:parameters_set"), true);
+        assert_eq!(clog_content.contains("quic:stream_data_moved"), true);
+        assert_eq!(clog_content.contains("quic:packet_sent"), true);
 
         // Check server qlog
         let mut slog_content = String::new();
         sfile.read_to_string(&mut slog_content).unwrap();
         assert_eq!(slog_content.contains("server"), true);
-        assert_eq!(slog_content.contains("transport:parameters_set"), true);
-        assert_eq!(slog_content.contains("transport:data_moved"), true);
-        assert_eq!(slog_content.contains("transport:packet_received"), true);
+        assert_eq!(slog_content.contains("quic:parameters_set"), true);
+        assert_eq!(slog_content.contains("quic:stream_data_moved"), true);
+        assert_eq!(slog_content.contains("quic:packet_received"), true);
 
         Ok(())
     }

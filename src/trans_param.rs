@@ -391,23 +391,18 @@ impl TransportParams {
     }
 
     /// Create TransportParametersSet event data for Qlog.
-    pub fn to_qlog(
-        &self,
-        owner: qlog::events::TransportOwner,
-        cipher: Option<tls::Algorithm>,
-    ) -> EventData {
+    pub fn to_qlog(&self, owner: qlog::events::Owner, cipher: Option<tls::Algorithm>) -> EventData {
         let original_destination_connection_id = Some(format!(
             "{:?}",
             self.original_destination_connection_id.as_ref()
         ));
         let stateless_reset_token = Some(format!("{:?}", self.stateless_reset_token.as_ref()));
 
-        qlog::events::EventData::TransportParametersSet {
+        qlog::events::EventData::QuicParametersSet {
             owner: Some(owner),
             resumption_allowed: None,
             early_data_enabled: None,
             tls_cipher: Some(format!("{:?}", cipher)),
-            aead_tag_length: None,
             original_destination_connection_id,
             initial_source_connection_id: None,
             retry_source_connection_id: None,
@@ -425,6 +420,8 @@ impl TransportParams {
             initial_max_streams_bidi: Some(self.initial_max_streams_bidi),
             initial_max_streams_uni: Some(self.initial_max_streams_uni),
             preferred_address: None,
+            max_datagram_frame_size: None,
+            grease_quic_bit: None,
         }
     }
 }
