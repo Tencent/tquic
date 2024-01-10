@@ -75,6 +75,9 @@ if [ "$ROLE" == "client" ]; then
     zerortt)
         CLIENT_ARGS="$CLIENT_ARGS --session-file=session.bin --enable-early-data"
         ;;
+    transfer)
+        CLIENT_ARGS="$CLIENT_ARGS --send-udp-payload-size 1400"
+        ;;
     http3)
         CLIENT_ALPN="--alpn h3"
         ;;
@@ -107,6 +110,9 @@ elif [ "$ROLE" == "server" ]; then
         ;;
     multiconnect)
         SERVER_ARGS="$SERVER_ARGS --initial-rtt 100"
+        ;;
+    transfer)
+        SERVER_ARGS="$SERVER_ARGS --send-udp-payload-size 1400"
         ;;
     *)
         ;;

@@ -1187,7 +1187,7 @@ impl Connection {
         let max_datagram_size = peer_params.max_udp_payload_size as usize;
         active_path
             .recovery
-            .update_max_datagram_size(max_datagram_size);
+            .update_max_datagram_size(max_datagram_size, true);
 
         self.cids.set_scid_limit(peer_params.active_conn_id_limit);
 
@@ -1303,16 +1303,18 @@ impl Connection {
         }
     }
 
-    /// Get the maximum possible size of outgoing QUIC packet.
-    /// This is depended on both the configured max datagram size and the max_udp_payload_size
-    /// transport parameter advertised by the remote peer.
-    pub(crate) fn max_datagram_size(&self) -> usize {
-        if !self.is_established() {
+    /// Get the maximum datagram size of the given path.
+    pub(crate) fn max_datagram_size(&self, pid: usize) -> usize {
+        // The peer's `max_udp_payload_size` transport parameter limits the
+        // size of UDP payloads that it is willing to receive. Therefore,
+        // prior to receiving that parameter, we only use the default value.
+        if !self.flags.contains(AppliedPeerTransportParams) {
             return crate::MIN_CLIENT_INITIAL_LEN;
         }
 
+        // Use the configured or validated max_datagram_size
         self.paths
-            .get_active()
+            .get(pid)
             .ok()
             .map_or(crate::MIN_CLIENT_INITIAL_LEN, |path| {
                 path.recovery.max_datagram_size
@@ -1356,8 +1358,7 @@ impl Connection {
         let pid = self.select_send_path()?;
 
         // TODO: limit bytes sent before address validation
-        // TODO: limit bytes sent by path mtu.
-        let mut left = cmp::min(out.len(), self.max_datagram_size());
+        let mut left = cmp::min(out.len(), self.max_datagram_size(pid));
         let out = &mut out[..left];
         let mut done = 0;
 

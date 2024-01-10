@@ -421,10 +421,11 @@ impl Config {
         self.local_transport_params.max_udp_payload_size = v as u64;
     }
 
-    /// Set the maximum outgoing UDP payload size.
-    /// This is depended on both the configured max payload size and the max_udp_payload_size
-    /// transport parameter advertised by the remote peer.
+    /// Set the initial maximum outgoing UDP payload size.
     /// The default and minimum value is `1200`.
+    ///
+    /// The configuration should be changed with caution. The connection may
+    /// not work properly if an inappropriate value is set.
     pub fn set_send_udp_payload_size(&mut self, v: usize) {
         self.recovery.max_datagram_size = cmp::max(v, DEFAULT_SEND_UDP_PAYLOAD_SIZE);
     }

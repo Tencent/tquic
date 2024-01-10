@@ -318,9 +318,9 @@ void quic_config_set_recv_udp_payload_size(struct quic_config_t *config, uint16_
 
 /**
  * Set the maximum outgoing UDP payload size.
- * This is depended on both the configured max payload size and the max_udp_payload_size
- * transport parameter advertised by the remote peer.
  * The default and minimum value is `1200`.
+ * The configuration should be changed with caution. The connection may
+ * not work properly if an inappropriate value is set.
  */
 void quic_config_set_send_udp_payload_size(struct quic_config_t *config, uintptr_t v);
 

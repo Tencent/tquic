@@ -736,8 +736,18 @@ impl Recovery {
         self.bytes_in_flight = self.bytes_in_flight.saturating_sub(unacked_bytes);
     }
 
-    pub(super) fn update_max_datagram_size(&mut self, new_max_datagram_size: usize) {
-        let max_datagram_size = cmp::min(self.max_datagram_size, new_max_datagram_size);
+    /// Update maximum datagram size
+    ///
+    /// If `is_upper` is true, `max_datagram_size` is the upper limit of maximum datagram size.
+    /// If `is_upper` is false, `max_datagram_size` is the new maximum datagram size.
+    pub(super) fn update_max_datagram_size(
+        &mut self,
+        mut max_datagram_size: usize,
+        is_upper: bool,
+    ) {
+        if is_upper {
+            max_datagram_size = cmp::min(self.max_datagram_size, max_datagram_size);
+        }
 
         // TODO: notify CC and pacer
 
