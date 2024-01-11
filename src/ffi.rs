@@ -126,10 +126,11 @@ pub extern "C" fn quic_config_set_recv_udp_payload_size(config: &mut Config, v: 
     config.set_recv_udp_payload_size(v);
 }
 
-/// Set the maximum outgoing UDP payload size.
-/// This is depended on both the configured max payload size and the max_udp_payload_size
-/// transport parameter advertised by the remote peer.
+/// Set the initial maximum outgoing UDP payload size.
 /// The default and minimum value is `1200`.
+///
+/// The configuration should be changed with caution. The connection may
+/// not work properly if an inappropriate value is set.
 #[no_mangle]
 pub extern "C" fn quic_config_set_send_udp_payload_size(config: &mut Config, v: usize) {
     config.set_send_udp_payload_size(v);
