@@ -1,8 +1,0 @@
-{
-  "label": "接口参考手册",
-  "position": 4,
-  "link": {
-    "type": "generated-index",
-    "description": "TQUIC库不同编程语言的接口说明。"
-  }
-}
