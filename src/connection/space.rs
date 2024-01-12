@@ -118,6 +118,9 @@ pub struct PacketNumSpace {
     /// number space.
     pub bytes_in_flight: usize,
 
+    /// Number of ack-eliciting packets in flight.
+    pub ack_eliciting_in_flight: u64,
+
     /// Packet number space for application data
     pub is_data: bool,
 
@@ -146,6 +149,7 @@ impl PacketNumSpace {
             largest_acked_pkt: std::u64::MAX,
             loss_probes: 0,
             bytes_in_flight: 0,
+            ack_eliciting_in_flight: 0,
             is_data: id != SpaceId::Initial && id != SpaceId::Handshake,
             reinject: ReinjectQueue::default(),
         }
