@@ -18,16 +18,3 @@ Cargo.lock
 
 # Misc
 .DS_Store
-
-# Website 
-/website/node_modules
-/website/build
-/website/.env.local
-/website/.env.development.local
-/website/.env.test.local
-/website/.env.production.local
-/website/npm-debug.log*
-/website/yarn-debug.log*
-/website/yarn-error.log*
-/website/.docusaurus
-/website/.cache-loader
