@@ -4747,6 +4747,36 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn handshake_with_antiamplification_deadlock() -> Result<()> {
+        let mut test_pair = TestPair::new_with_test_config()?;
+
+        // Client send Initial.
+        let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+        TestPair::conn_packets_in(&mut test_pair.server, packets)?;
+
+        // Server send Initial and Handshake.
+        let mut packets = TestPair::conn_packets_out(&mut test_pair.server)?;
+
+        // Fake dropping the second packet.
+        packets.truncate(1);
+
+        // Client recv Initial and the first Handshake.
+        TestPair::conn_packets_in(&mut test_pair.client, packets)?;
+        assert!(!test_pair.client.tls_session.is_completed());
+
+        // Client send ACK and PADDING and wait for retransmission of the second packet.
+        let _ = TestPair::conn_packets_out(&mut test_pair.client)?;
+
+        // `LossDetection` timer should not be None to avoid deadlock.
+        assert!(test_pair.client.timeout().is_some());
+        assert!(test_pair.client.timers.get(Timer::LossDetection).is_some());
+
+        // TODO: complete the remaining part after supporting anti-amplification in server side.
+
+        Ok(())
+    }
+
+    #[test]
     fn handshake_with_alpn_mismatched() -> Result<()> {
         let mut client_config = TestPair::new_test_config(false)?;
         let mut server_config = TestPair::new_test_config(true)?;
