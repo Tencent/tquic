@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+/// Maximum count of sequence number in the sliding window.
+const SEQ_NUM_WINDOW_SIZE: u64 = 128;
+
 /// A sliding window packet number for deduplication detection.
 /// See RFC 4303 Section 3.4.3 for a similar algorithm.
 #[derive(Clone, Copy, Default)]
@@ -60,9 +63,7 @@ impl SeqNumWindow {
 
     /// Return the largest sequence number
     fn upper(&self) -> u64 {
-        self.lower
-            .saturating_add(std::mem::size_of::<u128>() as u64 * 8)
-            - 1
+        self.lower.saturating_add(SEQ_NUM_WINDOW_SIZE) - 1
     }
 }
 
