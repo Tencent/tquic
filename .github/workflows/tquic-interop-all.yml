@@ -1,0 +1,104 @@
+name: InteropAll
+
+on:
+  schedule:
+    - cron: '30 3 * * *'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  tquic_interop_testing:
+    name: Interop testing
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - server: tquic
+            client: tquic
+          - server: tquic
+            client: lsquic
+          - server: tquic
+            client: quiche
+          - server: tquic
+            client: picoquic
+          - server: tquic
+            client: ngtcp2
+          - server: tquic
+            client: msquic
+          - server: tquic
+            client: mvfst
+          - server: tquic
+            client: s2n-quic
+          - server: tquic
+            client: quinn
+          - server: tquic
+            client: neqo
+          - server: tquic
+            client: go-x-net
+          - server: tquic
+            client: quic-go
+          - server: tquic
+            client: kwik
+          - server: tquic
+            client: aioquic
+          - server: tquic
+            client: chrome
+          - server: lsquic
+            client: tquic
+          - server: quiche
+            client: tquic
+          - server: picoquic
+            client: tquic
+          - server: ngtcp2
+            client: tquic
+          - server: msquic
+            client: tquic
+          - server: mvfst
+            client: tquic
+          - server: s2n-quic
+            client: tquic
+          - server: quinn
+            client: tquic
+          - server: neqo
+            client: tquic
+          - server: go-x-net
+            client: tquic
+          - server: quic-go
+            client: tquic
+          - server: kwik
+            client: tquic
+          - server: aioquic
+            client: tquic
+          - server: nginx
+            client: tquic
+          - server: haproxy
+            client: tquic
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: 'recursive'
+
+    - name: Build docker image
+      run: docker build -t tquic_interop:v1 -f interop/Dockerfile .
+
+    - name: Install quic-interop-runner
+      run: |
+        git clone https://github.com/tquic-group/quic-interop-runner.git
+        cd quic-interop-runner
+        pip3 install -r requirements.txt
+
+    - name: Install dependences
+      run: |
+        sudo modprobe ip6table_filter
+        sudo add-apt-repository -y ppa:wireshark-dev/stable
+        sudo apt install -y tshark
+
+    - name: Run the interop tests
+      run: |
+        cd quic-interop-runner
+        python3 run.py -s ${{ matrix.server }} -c ${{ matrix.client }} -t handshake,retry,resumption,http3,ipv6,transfer,multiplexing,longrtt,blackhole,transferloss,transfercorruption,goodput,crosstraffic -d -r tquic=tquic_interop:v1
