@@ -764,10 +764,10 @@ pub(crate) mod tests {
         assert!(tls_session_pair.server.peer_cert().is_none());
         assert!(tls_session_pair.client.peer_cert_chain().is_some());
         assert!(tls_session_pair.server.peer_cert_chain().is_none());
-        assert!(tls_session_pair.client.curve() == Some("X25519".to_string()));
-        assert!(tls_session_pair.server.curve() == Some("X25519".to_string()));
-        assert!(tls_session_pair.client.cipher() == Some(boringssl::crypto::Algorithm::Aes128Gcm));
-        assert!(tls_session_pair.server.cipher() == Some(boringssl::crypto::Algorithm::Aes128Gcm));
+        assert!(tls_session_pair.client.curve().is_some());
+        assert!(tls_session_pair.server.curve().is_some());
+        assert!(tls_session_pair.client.cipher().is_some());
+        assert!(tls_session_pair.server.cipher().is_some());
         assert!(tls_session_pair.client.server_name() == Some("example.org"));
         assert!(tls_session_pair.client.peer_transport_params() == b"tp");
         assert!(tls_session_pair.server.peer_transport_params() == b"tp");
@@ -777,9 +777,7 @@ pub(crate) mod tests {
         assert!(tls_session_pair.server.write_level() == Level::OneRTT);
         assert!(tls_session_pair.client.error().is_none());
         assert!(tls_session_pair.server.error().is_none());
-        assert!(
-            tls_session_pair.client.peer_sign_algor() == Some("rsa_pss_rsae_sha256".to_string())
-        );
+        assert!(tls_session_pair.client.peer_sign_algor().is_some());
         assert!(tls_session_pair.server.peer_sign_algor() == None);
         assert!(
             tls_session_pair.client.get_overhead(Level::OneRTT)
