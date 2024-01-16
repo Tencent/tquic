@@ -491,7 +491,7 @@ impl Connection {
             buf.len() - read
         } else {
             let mut b = &buf[read..];
-            let len = b.read_varint()?;
+            let len = b.read_varint().map_err(|_| Error::Done)?;
             read = buf.len() - b.len();
             // Make sure the length field is valid.
             if len > b.len() as u64 {
@@ -550,9 +550,7 @@ impl Connection {
 
         // Decrypt packet payload
         let payload_offset = pkt_num_offset + hdr.pkt_num_len;
-        let payload_len = length
-            .checked_sub(hdr.pkt_num_len)
-            .ok_or(Error::InvalidPacket)?;
+        let payload_len = length.checked_sub(hdr.pkt_num_len).ok_or(Error::Done)?;
         let mut cid_seq = None;
         if self.flags.contains(EnableMultipath) {
             let (seq, _) = self
@@ -977,7 +975,7 @@ impl Connection {
 
         let mut found_version = 0;
         while !payload.is_empty() {
-            let version = payload.read_u32()?;
+            let version = payload.read_u32().map_err(|_| Error::Done)?;
             if crate::version_is_supported(version) {
                 found_version = cmp::max(found_version, version);
             }
@@ -4288,6 +4286,30 @@ pub(crate) mod tests {
             }
         }
 
+        /// Assemble new version negotiation packet.
+        fn new_test_version_negotiation_packet(
+            dcid: &ConnectionId,
+            scid: &ConnectionId,
+            versions: &[u8],
+        ) -> Vec<u8> {
+            let mut pkt = vec![
+                0x80, // Header form and unused bits.
+                0x00, 0x00, 0x00, 0x00, // The Version field must be set to 0x00000000.
+            ];
+
+            // Append DCID.
+            pkt.push(dcid.len);
+            pkt.append(&mut dcid.data.to_vec());
+            // Append SCID.
+            pkt.push(scid.len);
+            pkt.append(&mut scid.data.to_vec());
+            // Append supported versions.
+            let mut versions = versions.to_vec();
+            pkt.append(&mut versions);
+
+            pkt
+        }
+
         /// Create random test data
         pub fn new_test_data(len: usize) -> bytes::Bytes {
             let mut data = BytesMut::with_capacity(len);
@@ -4335,6 +4357,117 @@ pub(crate) mod tests {
             TestPair::conn_packets_in(&mut self.server, packets)?;
             Ok(())
         }
+    }
+
+    #[test]
+    fn version_negotiation_with_unknown_version() -> Result<()> {
+        let mut test_pair = TestPair::new_with_test_config()?;
+        let info = TestPair::new_test_packet_info(true);
+        let _ = TestPair::conn_packets_out(&mut test_pair.client)?;
+
+        let mut pkt = TestPair::new_test_version_negotiation_packet(
+            test_pair.client.scid().as_ref().unwrap(),
+            test_pair.client.dcid().as_ref().unwrap(),
+            &vec![0x00, 0x00, 0x00, 0x00],
+        );
+
+        assert_eq!(
+            test_pair.client.recv(&mut pkt, &info),
+            Err(Error::UnknownVersion)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn version_negotiation_with_same_version() -> Result<()> {
+        let mut test_pair = TestPair::new_with_test_config()?;
+        let info = TestPair::new_test_packet_info(true);
+        let _ = TestPair::conn_packets_out(&mut test_pair.client)?;
+
+        let mut pkt = TestPair::new_test_version_negotiation_packet(
+            test_pair.client.scid().as_ref().unwrap(),
+            test_pair.client.dcid().as_ref().unwrap(),
+            &vec![0x00, 0x00, 0x00, 0x01],
+        );
+
+        assert!(test_pair.client.recv(&mut pkt, &info).is_ok());
+        assert!(!test_pair.client.flags.contains(DidVersionNegotiation));
+
+        Ok(())
+    }
+
+    #[test]
+    fn version_negotiation_with_invalid_dcid() -> Result<()> {
+        let mut test_pair = TestPair::new_with_test_config()?;
+        let info = TestPair::new_test_packet_info(true);
+        let _ = TestPair::conn_packets_out(&mut test_pair.client)?;
+
+        let mut pkt = TestPair::new_test_version_negotiation_packet(
+            test_pair.client.dcid().as_ref().unwrap(),
+            test_pair.client.dcid().as_ref().unwrap(),
+            &vec![0x00, 0x00, 0x00, 0x00],
+        );
+
+        assert!(test_pair.client.recv(&mut pkt, &info).is_ok());
+        assert!(!test_pair.client.flags.contains(DidVersionNegotiation));
+
+        Ok(())
+    }
+
+    #[test]
+    fn version_negotiation_with_invalid_scid() -> Result<()> {
+        let mut test_pair = TestPair::new_with_test_config()?;
+        let info = TestPair::new_test_packet_info(true);
+        let _ = TestPair::conn_packets_out(&mut test_pair.client)?;
+
+        // Assemble version negotiation packet.
+        let mut pkt = TestPair::new_test_version_negotiation_packet(
+            test_pair.client.scid().as_ref().unwrap(),
+            test_pair.client.scid().as_ref().unwrap(),
+            &vec![0x00, 0x00, 0x00, 0x00],
+        );
+
+        assert!(test_pair.client.recv(&mut pkt, &info).is_ok());
+        assert!(!test_pair.client.flags.contains(DidVersionNegotiation));
+
+        Ok(())
+    }
+
+    #[test]
+    fn version_negotiation_with_invalid_version() -> Result<()> {
+        let mut test_pair = TestPair::new_with_test_config()?;
+        let info = TestPair::new_test_packet_info(true);
+        let _ = TestPair::conn_packets_out(&mut test_pair.client)?;
+
+        let mut pkt = TestPair::new_test_version_negotiation_packet(
+            test_pair.client.scid().as_ref().unwrap(),
+            test_pair.client.dcid().as_ref().unwrap(),
+            &vec![0xFF],
+        );
+
+        assert!(test_pair.client.recv(&mut pkt, &info).is_ok());
+        assert!(!test_pair.client.flags.contains(DidVersionNegotiation));
+
+        Ok(())
+    }
+
+    #[test]
+    fn version_negotiation_after_other_packet() -> Result<()> {
+        let mut test_pair = TestPair::new_with_test_config()?;
+        let info = TestPair::new_test_packet_info(true);
+        assert_eq!(test_pair.handshake(), Ok(()));
+
+        let mut pkt = TestPair::new_test_version_negotiation_packet(
+            test_pair.client.scid().as_ref().unwrap(),
+            test_pair.client.dcid().as_ref().unwrap(),
+            &vec![0x00, 0x00, 0x00, 0x00],
+        );
+
+        assert!(test_pair.client.recv(&mut pkt, &info).is_ok());
+        assert!(!test_pair.client.flags.contains(DidVersionNegotiation));
+
+        Ok(())
     }
 
     #[test]
@@ -5493,7 +5626,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn recv_packet_invalid_length() -> Result<()> {
+    fn recv_packet_invalid_length_too_big() -> Result<()> {
         let mut test_pair = TestPair::new_with_test_config()?;
         let info = TestPair::new_test_packet_info(false);
 
@@ -5503,9 +5636,51 @@ pub(crate) mod tests {
 
         // Tamper Length field of the Initial packet
         let initial_pkt = &mut packets[0].0;
-        let initial_pkt_len = initial_pkt.len();
-        let mut len = &mut initial_pkt[47..49]; // length field
+        let mut len = &mut initial_pkt[48..50]; // length field
         len.write_varint_with_len(10000 as u64, 2)?;
+
+        // Server drop Initial packet with invalid length
+        assert_eq!(
+            TestPair::conn_packets_in(&mut test_pair.server, packets),
+            Ok(())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recv_packet_invalid_length_too_small() -> Result<()> {
+        let mut test_pair = TestPair::new_with_test_config()?;
+        let info = TestPair::new_test_packet_info(false);
+
+        // Client send Initial packet
+        let mut packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+        assert!(packets.len() > 0);
+
+        // Tamper Length field of the Initial packet
+        let initial_pkt = &mut packets[0].0;
+        let mut len = &mut initial_pkt[48..50]; // length field
+        len.write_varint_with_len(1 as u64, 2)?;
+
+        // Server drop Initial packet with invalid length
+        assert_eq!(
+            TestPair::conn_packets_in(&mut test_pair.server, packets),
+            Ok(())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recv_packet_invalid_length_variant_error() -> Result<()> {
+        let mut test_pair = TestPair::new_with_test_config()?;
+        let info = TestPair::new_test_packet_info(false);
+
+        // Client send Initial.
+        let mut packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+
+        // Tamper Length field of the Initial packet
+        let initial_pkt = &mut packets[0].0;
+        initial_pkt[48] = 0;
+        initial_pkt[49] = 0;
 
         // Server drop Initial packet with invalid length
         assert_eq!(
