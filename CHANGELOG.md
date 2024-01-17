@@ -11,16 +11,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [v0.6.0] - 2024-01-07
+
+### Added
+- Support the latest version of qlog (v0.4)
+- Add `cid_len` option to tquic tools
+- Ignore undecrypted packets with invalid format
+
+### Changed
+- Move website dir to tquic-group/tquic-website repo
+
+### Fixed
+- Fix the selected MTU for the sending path
+- Fix anti-deadlock PTO during handshake
+- Fix the assertion of negotiated parameters in TLS unit tests
+
+
 ## [v0.5.0] - 2024-01-03
 
 ### Added
 - Add support for building on MacOS
 - Add support for stateless reset
-- Relaese tls_conf_selector as soon as the hanshake is completed.
+- Release tls_conf_selector as soon as the handshake is completed.
 - Add linear mode and upper limit for probe timeout
 - Add FFI enable_multipath()/set_multipath_algorithm()
 - Add RoundRobin multipath scheduler
-- Add more units test for mulitpath transport
+- Add more units test for multipath transport
 - tquic_client: stop trying and exit if it fails to reconnect the server multiple times.
 - tquic_client: output the stats first and then exit when it receives an SIGINT signal.
 
@@ -31,7 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Change default congestion control algorithm to BBR
 
 ### Fixed
-- Fix stream scheduling for multipe incredmental streams
+- Fix stream scheduling for multiple incredmental streams
 - Fix reinjection for multipath transport
 
 
@@ -101,6 +117,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Provide example clients and servers.
 
 
+[v0.6.0]: https://github.com/tencent/tquic/compare/v0.5.0...v0.6.0
 [v0.5.0]: https://github.com/tencent/tquic/compare/v0.4.0...v0.5.0
 [v0.4.0]: https://github.com/tencent/tquic/compare/v0.3.0...v0.4.0
 [v0.3.0]: https://github.com/tencent/tquic/compare/v0.2.0...v0.3.0

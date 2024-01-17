@@ -17,7 +17,6 @@ extend-exclude = [
     "*.der",
     "*.pem",
     "LICENSE",
-    "**/website/**/*",
     "**/target/**/*",
     "**/deps/**/*",
     "**/corpus/**/*",

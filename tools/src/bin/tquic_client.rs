@@ -70,7 +70,7 @@ use tquic_tools::QuicSocket;
 use tquic_tools::Result;
 
 #[global_allocator]
-static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 #[derive(Parser, Debug, Clone)]
 #[clap(name = "client")]
@@ -211,6 +211,10 @@ pub struct ClientOpt {
     /// Save QUIC qlog into the given file.
     #[clap(long, value_name = "FILE")]
     pub qlog_file: Option<String>,
+
+    /// Length of connection id in bytes.
+    #[clap(long, default_value = "8", value_name = "NUM")]
+    pub cid_len: usize,
 
     /// Batch size for sending packets.
     #[clap(long, default_value = "1", value_name = "NUM")]
@@ -422,6 +426,7 @@ impl Worker {
         config.set_max_pto(option.max_pto);
         config.set_max_concurrent_conns(option.max_concurrent_conns);
         config.set_initial_max_streams_bidi(option.max_concurrent_requests);
+        config.set_cid_len(option.cid_len);
         config.set_send_batch_size(option.send_batch_size);
         config.set_recv_udp_payload_size(option.recv_udp_payload_size);
         config.set_send_udp_payload_size(option.send_udp_payload_size);

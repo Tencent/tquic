@@ -358,30 +358,27 @@ impl Connection {
         description: String,
     ) {
         let trace = qlog::TraceSeq::new(
-            qlog::VantagePoint::new(None, self.is_server),
             Some(title.to_string()),
             Some(description.to_string()),
-            Some(qlog::Configuration::default()),
             None,
+            qlog::VantagePoint::new(None, self.is_server),
         );
         let level = events::EventImportance::Extra;
         let mut writer = qlog::QlogWriter::new(
-            qlog::QLOG_VERSION.to_string(),
             Some(title),
             Some(description),
-            None,
-            time::Instant::now(),
             trace,
             level,
             writer,
+            time::Instant::now(),
         );
         writer.start().ok();
 
         // Write TransportParametersSet event to qlog
-        Self::qlog_transport_params_set(
+        Self::qlog_quic_params_set(
             &mut writer,
             &self.local_transport_params,
-            events::TransportOwner::Local,
+            events::Owner::Local,
             self.tls_session.cipher(),
         );
 
@@ -494,7 +491,7 @@ impl Connection {
             buf.len() - read
         } else {
             let mut b = &buf[read..];
-            let len = b.read_varint()?;
+            let len = b.read_varint().map_err(|_| Error::Done)?;
             read = buf.len() - b.len();
             // Make sure the length field is valid.
             if len > b.len() as u64 {
@@ -553,9 +550,7 @@ impl Connection {
 
         // Decrypt packet payload
         let payload_offset = pkt_num_offset + hdr.pkt_num_len;
-        let payload_len = length
-            .checked_sub(hdr.pkt_num_len)
-            .ok_or(Error::InvalidPacket)?;
+        let payload_len = length.checked_sub(hdr.pkt_num_len).ok_or(Error::Done)?;
         let mut cid_seq = None;
         if self.flags.contains(EnableMultipath) {
             let (seq, _) = self
@@ -588,7 +583,6 @@ impl Connection {
         // Process each QUIC frame in the QUIC packet
         let mut ack_eliciting_pkt = false;
         let mut probing_pkt = true;
-        let mut qframes = vec![];
 
         while !payload.is_empty() {
             let (frame, len) = Frame::from_bytes(&mut payload, hdr.pkt_type)?;
@@ -598,9 +592,6 @@ impl Connection {
             if !frame.probing() {
                 probing_pkt = false;
             }
-            if self.qlog.is_some() {
-                qframes.push(frame.to_qlog());
-            }
 
             self.recv_frame(frame, &hdr, pid, space_id, info.time)?;
             let _ = payload.split_to(len);
@@ -608,7 +599,7 @@ impl Connection {
 
         // Write TransportPacketReceived event to qlog.
         if let Some(qlog) = &mut self.qlog {
-            Self::qlog_transport_packet_received(qlog, &hdr, pkt_num, read, payload_len, qframes);
+            Self::qlog_quic_packet_received(qlog, &hdr, pkt_num, read, payload_len);
         }
 
         // Process acknowledged frames.
@@ -984,7 +975,7 @@ impl Connection {
 
         let mut found_version = 0;
         while !payload.is_empty() {
-            let version = payload.read_u32()?;
+            let version = payload.read_u32().map_err(|_| Error::Done)?;
             if crate::version_is_supported(version) {
                 found_version = cmp::max(found_version, version);
             }
@@ -1165,10 +1156,10 @@ impl Connection {
 
         // Write TransportParametersSet event to qlog.
         if let Some(qlog) = &mut self.qlog {
-            Self::qlog_transport_params_set(
+            Self::qlog_quic_params_set(
                 qlog,
                 &self.peer_transport_params,
-                events::TransportOwner::Remote,
+                events::Owner::Remote,
                 self.tls_session.cipher(),
             );
         }
@@ -1194,7 +1185,7 @@ impl Connection {
         let max_datagram_size = peer_params.max_udp_payload_size as usize;
         active_path
             .recovery
-            .update_max_datagram_size(max_datagram_size);
+            .update_max_datagram_size(max_datagram_size, true);
 
         self.cids.set_scid_limit(peer_params.active_conn_id_limit);
 
@@ -1275,9 +1266,9 @@ impl Connection {
                         self.streams
                             .on_stream_frame_acked(stream_id, offset, length);
 
-                        // Write TransportDataMoved event to qlog
+                        // Write QuicStreamDataMoved event to qlog
                         if let Some(qlog) = &mut self.qlog {
-                            Self::qlog_transport_data_acked(qlog, stream_id, offset, length);
+                            Self::qlog_quic_data_acked(qlog, stream_id, offset, length);
                         }
                     }
 
@@ -1310,16 +1301,18 @@ impl Connection {
         }
     }
 
-    /// Get the maximum possible size of outgoing QUIC packet.
-    /// This is depended on both the configured max datagram size and the max_udp_payload_size
-    /// transport parameter advertised by the remote peer.
-    pub(crate) fn max_datagram_size(&self) -> usize {
-        if !self.is_established() {
+    /// Get the maximum datagram size of the given path.
+    pub(crate) fn max_datagram_size(&self, pid: usize) -> usize {
+        // The peer's `max_udp_payload_size` transport parameter limits the
+        // size of UDP payloads that it is willing to receive. Therefore,
+        // prior to receiving that parameter, we only use the default value.
+        if !self.flags.contains(AppliedPeerTransportParams) {
             return crate::MIN_CLIENT_INITIAL_LEN;
         }
 
+        // Use the configured or validated max_datagram_size
         self.paths
-            .get_active()
+            .get(pid)
             .ok()
             .map_or(crate::MIN_CLIENT_INITIAL_LEN, |path| {
                 path.recovery.max_datagram_size
@@ -1363,8 +1356,7 @@ impl Connection {
         let pid = self.select_send_path()?;
 
         // TODO: limit bytes sent before address validation
-        // TODO: limit bytes sent by path mtu.
-        let mut left = cmp::min(out.len(), self.max_datagram_size());
+        let mut left = cmp::min(out.len(), self.max_datagram_size(pid));
         let out = &mut out[..left];
         let mut done = 0;
 
@@ -1587,11 +1579,7 @@ impl Connection {
 
         // Write TransportPacketSent event to qlog.
         if let Some(qlog) = &mut self.qlog {
-            let mut qframes = Vec::with_capacity(sent_pkt.frames.len());
-            for frame in &sent_pkt.frames {
-                qframes.push(frame.to_qlog());
-            }
-            Self::qlog_transport_packet_sent(qlog, &hdr, pkt_num, written, payload_len, qframes);
+            Self::qlog_quic_packet_sent(qlog, &hdr, pkt_num, written, payload_len);
         }
 
         // Notify the packet sent event to the multipath scheduler
@@ -3408,7 +3396,7 @@ impl Connection {
 
         match self.streams.stream_read(stream_id, out) {
             Ok((read, fin)) => {
-                // Write TransportDataMoved event to qlog
+                // Write QuicStreamDataMoved event to qlog
                 if let Some(qlog) = &mut self.qlog {
                     Self::qlog_transport_data_read(qlog, stream_id, read_off.unwrap_or(0), read);
                 }
@@ -3426,7 +3414,7 @@ impl Connection {
 
         match self.streams.stream_write(stream_id, buf, fin) {
             Ok(written) => {
-                // Write TransportDataMoved event to qlog
+                // Write QuicStreamDataMoved event to qlog
                 if let Some(qlog) = &mut self.qlog {
                     Self::qlog_transport_data_write(
                         qlog,
@@ -3631,25 +3619,24 @@ impl Connection {
         self.context = Some(Box::new(data))
     }
 
-    /// Write an TransportParametersSet event to the qlog.
-    fn qlog_transport_params_set(
+    /// Write a QuicParametersSet event to the qlog.
+    fn qlog_quic_params_set(
         qlog: &mut qlog::QlogWriter,
         params: &TransportParams,
-        owner: events::TransportOwner,
+        owner: events::Owner,
         cipher: Option<tls::Algorithm>,
     ) {
         let ev_data = params.to_qlog(owner, cipher);
         qlog.add_event_data(time::Instant::now(), ev_data).ok();
     }
 
-    /// Write an TransportPacketReceived event to the qlog.
-    fn qlog_transport_packet_received(
+    /// Write a QuicPacketReceived event to the qlog.
+    fn qlog_quic_packet_received(
         qlog: &mut qlog::QlogWriter,
         hdr: &PacketHeader,
         pkt_num: u64,
         pkt_len: usize,
         payload_len: usize,
-        qlog_frames: Vec<qlog::events::QuicFrame>,
     ) {
         let qlog_pkt_hdr = events::PacketHeader::new_with_type(
             hdr.pkt_type.to_qlog(),
@@ -3663,9 +3650,8 @@ impl Connection {
             payload_length: Some(payload_len as u64),
             data: None,
         };
-        let ev_data = events::EventData::TransportPacketReceived {
+        let ev_data = events::EventData::QuicPacketReceived {
             header: qlog_pkt_hdr,
-            frames: Some(qlog_frames),
             is_coalesced: None,
             retry_token: None,
             stateless_reset_token: None,
@@ -3677,14 +3663,13 @@ impl Connection {
         qlog.add_event_data(time::Instant::now(), ev_data).ok();
     }
 
-    /// Write an TransportPacketSent event to the qlog.
-    fn qlog_transport_packet_sent(
+    /// Write a QuicPacketSent event to the qlog.
+    fn qlog_quic_packet_sent(
         qlog: &mut qlog::QlogWriter,
         hdr: &PacketHeader,
         pkt_num: u64,
         pkt_len: usize,
         payload_len: usize,
-        qlog_frames: Vec<qlog::events::QuicFrame>,
     ) {
         let qlog_pkt_hdr = events::PacketHeader::new_with_type(
             hdr.pkt_type.to_qlog(),
@@ -3700,29 +3685,28 @@ impl Connection {
         };
         let now = time::Instant::now();
 
-        let ev_data = events::EventData::TransportPacketSent {
+        let ev_data = events::EventData::QuicPacketSent {
             header: qlog_pkt_hdr,
-            frames: Some(qlog_frames.into()),
             is_coalesced: None,
             retry_token: None,
             stateless_reset_token: None,
             supported_versions: None,
             raw: Some(qlog_raw_info),
             datagram_id: None,
-            send_at_time: Some(qlog.relative_time(now)),
+            is_mtu_probe_packet: None,
             trigger: None,
         };
         qlog.add_event_data(now, ev_data).ok();
     }
 
-    /// Write an TransportDataMoved event to the qlog.
-    fn qlog_transport_data_acked(
+    /// Write a QuicStreamDataMoved event to the qlog.
+    fn qlog_quic_data_acked(
         qlog: &mut qlog::QlogWriter,
         stream_id: u64,
         offset: u64,
         length: usize,
     ) {
-        let ev_data = events::EventData::TransportDataMoved {
+        let ev_data = events::EventData::QuicStreamDataMoved {
             stream_id: Some(stream_id),
             offset: Some(offset),
             length: Some(length as u64),
@@ -3733,14 +3717,14 @@ impl Connection {
         qlog.add_event_data(time::Instant::now(), ev_data).ok();
     }
 
-    /// Write an TransportDataMoved event to the qlog.
+    /// Write a QuicStreamDataMoved event to the qlog.
     fn qlog_transport_data_read(
         qlog: &mut qlog::QlogWriter,
         stream_id: u64,
         read_off: u64,
         read: usize,
     ) {
-        let ev_data = qlog::events::EventData::TransportDataMoved {
+        let ev_data = qlog::events::EventData::QuicStreamDataMoved {
             stream_id: Some(stream_id),
             offset: Some(read_off),
             length: Some(read as u64),
@@ -3751,14 +3735,14 @@ impl Connection {
         qlog.add_event_data(time::Instant::now(), ev_data).ok();
     }
 
-    /// Write TransportDataMoved event to the qlog.
+    /// Write a QuicStreamDataMoved event to the qlog.
     fn qlog_transport_data_write(
         qlog: &mut qlog::QlogWriter,
         stream_id: u64,
         write_off: u64,
         written: usize,
     ) {
-        let ev_data = qlog::events::EventData::TransportDataMoved {
+        let ev_data = qlog::events::EventData::QuicStreamDataMoved {
             stream_id: Some(stream_id),
             offset: Some(write_off),
             length: Some(written as u64),
@@ -4302,6 +4286,30 @@ pub(crate) mod tests {
             }
         }
 
+        /// Assemble new version negotiation packet.
+        fn new_test_version_negotiation_packet(
+            dcid: &ConnectionId,
+            scid: &ConnectionId,
+            versions: &[u8],
+        ) -> Vec<u8> {
+            let mut pkt = vec![
+                0x80, // Header form and unused bits.
+                0x00, 0x00, 0x00, 0x00, // The Version field must be set to 0x00000000.
+            ];
+
+            // Append DCID.
+            pkt.push(dcid.len);
+            pkt.append(&mut dcid.data.to_vec());
+            // Append SCID.
+            pkt.push(scid.len);
+            pkt.append(&mut scid.data.to_vec());
+            // Append supported versions.
+            let mut versions = versions.to_vec();
+            pkt.append(&mut versions);
+
+            pkt
+        }
+
         /// Create random test data
         pub fn new_test_data(len: usize) -> bytes::Bytes {
             let mut data = BytesMut::with_capacity(len);
@@ -4349,6 +4357,117 @@ pub(crate) mod tests {
             TestPair::conn_packets_in(&mut self.server, packets)?;
             Ok(())
         }
+    }
+
+    #[test]
+    fn version_negotiation_with_unknown_version() -> Result<()> {
+        let mut test_pair = TestPair::new_with_test_config()?;
+        let info = TestPair::new_test_packet_info(true);
+        let _ = TestPair::conn_packets_out(&mut test_pair.client)?;
+
+        let mut pkt = TestPair::new_test_version_negotiation_packet(
+            test_pair.client.scid().as_ref().unwrap(),
+            test_pair.client.dcid().as_ref().unwrap(),
+            &vec![0x00, 0x00, 0x00, 0x00],
+        );
+
+        assert_eq!(
+            test_pair.client.recv(&mut pkt, &info),
+            Err(Error::UnknownVersion)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn version_negotiation_with_same_version() -> Result<()> {
+        let mut test_pair = TestPair::new_with_test_config()?;
+        let info = TestPair::new_test_packet_info(true);
+        let _ = TestPair::conn_packets_out(&mut test_pair.client)?;
+
+        let mut pkt = TestPair::new_test_version_negotiation_packet(
+            test_pair.client.scid().as_ref().unwrap(),
+            test_pair.client.dcid().as_ref().unwrap(),
+            &vec![0x00, 0x00, 0x00, 0x01],
+        );
+
+        assert!(test_pair.client.recv(&mut pkt, &info).is_ok());
+        assert!(!test_pair.client.flags.contains(DidVersionNegotiation));
+
+        Ok(())
+    }
+
+    #[test]
+    fn version_negotiation_with_invalid_dcid() -> Result<()> {
+        let mut test_pair = TestPair::new_with_test_config()?;
+        let info = TestPair::new_test_packet_info(true);
+        let _ = TestPair::conn_packets_out(&mut test_pair.client)?;
+
+        let mut pkt = TestPair::new_test_version_negotiation_packet(
+            test_pair.client.dcid().as_ref().unwrap(),
+            test_pair.client.dcid().as_ref().unwrap(),
+            &vec![0x00, 0x00, 0x00, 0x00],
+        );
+
+        assert!(test_pair.client.recv(&mut pkt, &info).is_ok());
+        assert!(!test_pair.client.flags.contains(DidVersionNegotiation));
+
+        Ok(())
+    }
+
+    #[test]
+    fn version_negotiation_with_invalid_scid() -> Result<()> {
+        let mut test_pair = TestPair::new_with_test_config()?;
+        let info = TestPair::new_test_packet_info(true);
+        let _ = TestPair::conn_packets_out(&mut test_pair.client)?;
+
+        // Assemble version negotiation packet.
+        let mut pkt = TestPair::new_test_version_negotiation_packet(
+            test_pair.client.scid().as_ref().unwrap(),
+            test_pair.client.scid().as_ref().unwrap(),
+            &vec![0x00, 0x00, 0x00, 0x00],
+        );
+
+        assert!(test_pair.client.recv(&mut pkt, &info).is_ok());
+        assert!(!test_pair.client.flags.contains(DidVersionNegotiation));
+
+        Ok(())
+    }
+
+    #[test]
+    fn version_negotiation_with_invalid_version() -> Result<()> {
+        let mut test_pair = TestPair::new_with_test_config()?;
+        let info = TestPair::new_test_packet_info(true);
+        let _ = TestPair::conn_packets_out(&mut test_pair.client)?;
+
+        let mut pkt = TestPair::new_test_version_negotiation_packet(
+            test_pair.client.scid().as_ref().unwrap(),
+            test_pair.client.dcid().as_ref().unwrap(),
+            &vec![0xFF],
+        );
+
+        assert!(test_pair.client.recv(&mut pkt, &info).is_ok());
+        assert!(!test_pair.client.flags.contains(DidVersionNegotiation));
+
+        Ok(())
+    }
+
+    #[test]
+    fn version_negotiation_after_other_packet() -> Result<()> {
+        let mut test_pair = TestPair::new_with_test_config()?;
+        let info = TestPair::new_test_packet_info(true);
+        assert_eq!(test_pair.handshake(), Ok(()));
+
+        let mut pkt = TestPair::new_test_version_negotiation_packet(
+            test_pair.client.scid().as_ref().unwrap(),
+            test_pair.client.dcid().as_ref().unwrap(),
+            &vec![0x00, 0x00, 0x00, 0x00],
+        );
+
+        assert!(test_pair.client.recv(&mut pkt, &info).is_ok());
+        assert!(!test_pair.client.flags.contains(DidVersionNegotiation));
+
+        Ok(())
     }
 
     #[test]
@@ -4756,6 +4875,36 @@ pub(crate) mod tests {
         let packets = TestPair::conn_packets_out(&mut test_pair.server)?;
         assert_eq!(test_pair.client.is_established(), true);
         assert_eq!(test_pair.server.is_established(), true);
+
+        Ok(())
+    }
+
+    #[test]
+    fn handshake_with_antiamplification_deadlock() -> Result<()> {
+        let mut test_pair = TestPair::new_with_test_config()?;
+
+        // Client send Initial.
+        let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+        TestPair::conn_packets_in(&mut test_pair.server, packets)?;
+
+        // Server send Initial and Handshake.
+        let mut packets = TestPair::conn_packets_out(&mut test_pair.server)?;
+
+        // Fake dropping the second packet.
+        packets.truncate(1);
+
+        // Client recv Initial and the first Handshake.
+        TestPair::conn_packets_in(&mut test_pair.client, packets)?;
+        assert!(!test_pair.client.tls_session.is_completed());
+
+        // Client send ACK and PADDING and wait for retransmission of the second packet.
+        let _ = TestPair::conn_packets_out(&mut test_pair.client)?;
+
+        // `LossDetection` timer should not be None to avoid deadlock.
+        assert!(test_pair.client.timeout().is_some());
+        assert!(test_pair.client.timers.get(Timer::LossDetection).is_some());
+
+        // TODO: complete the remaining part after supporting anti-amplification in server side.
 
         Ok(())
     }
@@ -5477,7 +5626,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn recv_packet_invalid_length() -> Result<()> {
+    fn recv_packet_invalid_length_too_big() -> Result<()> {
         let mut test_pair = TestPair::new_with_test_config()?;
         let info = TestPair::new_test_packet_info(false);
 
@@ -5487,9 +5636,51 @@ pub(crate) mod tests {
 
         // Tamper Length field of the Initial packet
         let initial_pkt = &mut packets[0].0;
-        let initial_pkt_len = initial_pkt.len();
-        let mut len = &mut initial_pkt[47..49]; // length field
+        let mut len = &mut initial_pkt[48..50]; // length field
         len.write_varint_with_len(10000 as u64, 2)?;
+
+        // Server drop Initial packet with invalid length
+        assert_eq!(
+            TestPair::conn_packets_in(&mut test_pair.server, packets),
+            Ok(())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recv_packet_invalid_length_too_small() -> Result<()> {
+        let mut test_pair = TestPair::new_with_test_config()?;
+        let info = TestPair::new_test_packet_info(false);
+
+        // Client send Initial packet
+        let mut packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+        assert!(packets.len() > 0);
+
+        // Tamper Length field of the Initial packet
+        let initial_pkt = &mut packets[0].0;
+        let mut len = &mut initial_pkt[48..50]; // length field
+        len.write_varint_with_len(1 as u64, 2)?;
+
+        // Server drop Initial packet with invalid length
+        assert_eq!(
+            TestPair::conn_packets_in(&mut test_pair.server, packets),
+            Ok(())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recv_packet_invalid_length_variant_error() -> Result<()> {
+        let mut test_pair = TestPair::new_with_test_config()?;
+        let info = TestPair::new_test_packet_info(false);
+
+        // Client send Initial.
+        let mut packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+
+        // Tamper Length field of the Initial packet
+        let initial_pkt = &mut packets[0].0;
+        initial_pkt[48] = 0;
+        initial_pkt[49] = 0;
 
         // Server drop Initial packet with invalid length
         assert_eq!(
@@ -6447,17 +6638,17 @@ pub(crate) mod tests {
         let mut clog_content = String::new();
         cfile.read_to_string(&mut clog_content).unwrap();
         assert_eq!(clog_content.contains("client"), true);
-        assert_eq!(clog_content.contains("transport:parameters_set"), true);
-        assert_eq!(clog_content.contains("transport:data_moved"), true);
-        assert_eq!(clog_content.contains("transport:packet_sent"), true);
+        assert_eq!(clog_content.contains("quic:parameters_set"), true);
+        assert_eq!(clog_content.contains("quic:stream_data_moved"), true);
+        assert_eq!(clog_content.contains("quic:packet_sent"), true);
 
         // Check server qlog
         let mut slog_content = String::new();
         sfile.read_to_string(&mut slog_content).unwrap();
         assert_eq!(slog_content.contains("server"), true);
-        assert_eq!(slog_content.contains("transport:parameters_set"), true);
-        assert_eq!(slog_content.contains("transport:data_moved"), true);
-        assert_eq!(slog_content.contains("transport:packet_received"), true);
+        assert_eq!(slog_content.contains("quic:parameters_set"), true);
+        assert_eq!(slog_content.contains("quic:stream_data_moved"), true);
+        assert_eq!(slog_content.contains("quic:packet_received"), true);
 
         Ok(())
     }

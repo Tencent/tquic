@@ -51,7 +51,7 @@ pub trait Encoder {
     /// Write an IPv4Addr to self in the big-endian byte order.
     fn write_ipv4_addr(&mut self, addr: &Ipv4Addr) -> Result<usize>;
 
-    /// Write an IPv4Addr to self in the big-endian byte order.
+    /// Write an IPv6Addr to self in the big-endian byte order.
     fn write_ipv6_addr(&mut self, addr: &Ipv6Addr) -> Result<usize>;
 }
 

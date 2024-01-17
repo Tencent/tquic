@@ -48,7 +48,7 @@ use tquic_tools::QuicSocket;
 use tquic_tools::Result;
 
 #[global_allocator]
-static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 #[derive(Parser, Debug)]
 #[clap(name = "server")]
@@ -150,6 +150,10 @@ pub struct ServerOpt {
     #[clap(long, value_name = "FILE")]
     pub qlog_file: Option<String>,
 
+    /// Length of connection id in bytes.
+    #[clap(long, default_value = "8", value_name = "NUM")]
+    pub cid_len: usize,
+
     /// Batch size for sending packets.
     #[clap(long, default_value = "16", value_name = "NUM")]
     pub send_batch_size: usize,
@@ -185,6 +189,7 @@ impl Server {
         config.set_initial_rtt(option.initial_rtt);
         config.set_pto_linear_factor(option.pto_linear_factor);
         config.set_max_pto(option.max_pto);
+        config.set_cid_len(option.cid_len);
         config.set_send_batch_size(option.send_batch_size);
         config.set_congestion_control_algorithm(option.congestion_control_algor);
         config.set_initial_congestion_window(option.initial_congestion_window);
