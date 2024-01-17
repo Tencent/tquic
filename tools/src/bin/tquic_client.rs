@@ -70,7 +70,7 @@ use tquic_tools::QuicSocket;
 use tquic_tools::Result;
 
 #[global_allocator]
-static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 #[derive(Parser, Debug, Clone)]
 #[clap(name = "client")]
