@@ -32,7 +32,26 @@ jobs:
     - name: Update rust
       run: rustup update
     - name: Build TQUIC library and tools
-      run: cargo build --all -F ffi --verbose
+      run: cargo build --all -F ffi --verbose && cargo test
+
+  build_freebsd:
+    name: Build for FreeBSD
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: 'recursive'
+    - name: Build in FreeBSD VM
+      uses: vmactions/freebsd-vm@v1
+      with:
+        usesh: true
+        prepare: |
+          freebsd-version
+          pkg install -y curl gmake cmake
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        run: |
+          . "$HOME/.cargo/env"
+          cargo build --all -F ffi --verbose && cargo test
 
   build_ios:
     name: Build for iOS
