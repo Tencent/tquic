@@ -1332,7 +1332,7 @@ mod tests {
     impl TestSocket {
         /// Create a UdpSocket using random unused port.
         fn new(reg: &mio::Registry, conf: &CaseConf, trace_id: String) -> Result<Self> {
-            let addr: SocketAddr = "127.8.8.8:0".parse().unwrap();
+            let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
             let mut socket = mio::net::UdpSocket::bind(addr)?;
 
             const TOKEN: mio::Token = mio::Token(0);
