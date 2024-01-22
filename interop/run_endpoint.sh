@@ -42,6 +42,7 @@ TQUIC_SERVER="tquic_server"
 ROOT_DIR="/www"
 DOWNLOAD_DIR="/downloads"
 LOG_DIR="/logs"
+QLOG_DIR="/logs/qlog"
 
 CC_ALGOR="CUBIC"
 case ${CONGESTION^^} in
@@ -58,7 +59,7 @@ COPA)
     ;;
 esac
 
-COMMON_ARGS="--keylog-file $SSLKEYLOGFILE --log-level TRACE --idle-timeout 30000 --handshake-timeout 30000 --congestion-control-algor $CC_ALGOR"
+COMMON_ARGS="--keylog-file $SSLKEYLOGFILE --qlog-dir $QLOG_DIR --log-level TRACE --idle-timeout 30000 --handshake-timeout 30000 --congestion-control-algor $CC_ALGOR"
 
 if [ "$ROLE" == "client" ]; then
     # Wait for the simulator to start up.
@@ -66,7 +67,7 @@ if [ "$ROLE" == "client" ]; then
 
     REQS=($REQUESTS)
 
-    CLIENT_ARGS="$COMMON_ARGS --dump-path ${DOWNLOAD_DIR} --max-concurrent-requests ${#REQS[@]}"
+    CLIENT_ARGS="$COMMON_ARGS --dump-dir ${DOWNLOAD_DIR} --max-concurrent-requests ${#REQS[@]}"
     CLIENT_ALPN="--alpn hq-interop"
     case $TESTCASE in
     resumption)

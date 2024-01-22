@@ -24,6 +24,7 @@ use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -137,7 +138,7 @@ pub struct ClientOpt {
     /// Dump response body into the given directory.
     /// If the specified directory does not exist, a new directory will be created.
     #[clap(long, value_name = "DIR")]
-    pub dump_path: Option<String>,
+    pub dump_dir: Option<String>,
 
     /// File used for session resumption.
     #[clap(short, long, value_name = "FILE")]
@@ -208,9 +209,9 @@ pub struct ClientOpt {
     #[clap(short, long, value_name = "FILE")]
     pub keylog_file: Option<String>,
 
-    /// Save QUIC qlog into the given file.
-    #[clap(long, value_name = "FILE")]
-    pub qlog_file: Option<String>,
+    /// Save qlog file (<trace_id>.qlog) into the given directory.
+    #[clap(long, value_name = "DIR")]
+    pub qlog_dir: Option<String>,
 
     /// Length of connection id in bytes.
     #[clap(long, default_value = "8", value_name = "NUM")]
@@ -755,7 +756,7 @@ impl Request {
     }
 
     // TODO: support custom headers.
-    fn new(method: &str, url: &Url, body: &Option<Vec<u8>>, dump_path: &Option<String>) -> Self {
+    fn new(method: &str, url: &Url, body: &Option<Vec<u8>>, dump_dir: &Option<String>) -> Self {
         let authority = match url.port() {
             Some(port) => format!("{}:{}", url.host_str().unwrap(), port),
             None => url.host_str().unwrap().to_string(),
@@ -778,7 +779,7 @@ impl Request {
             url: url.clone(),
             line: format!("GET {}\r\n", url.path()),
             headers,
-            response_writer: Self::make_response_writer(url, dump_path),
+            response_writer: Self::make_response_writer(url, dump_dir),
             start_time: None,
         }
     }
@@ -891,7 +892,7 @@ impl RequestSender {
 
     fn send_request(&mut self, conn: &mut Connection) -> Result<()> {
         let url = &self.option.urls[self.current_url_idx];
-        let mut request = Request::new("GET", url, &None, &self.option.dump_path);
+        let mut request = Request::new("GET", url, &None, &self.option.dump_dir);
         debug!(
             "{} send request {} current index {}",
             conn.trace_id(),
@@ -1220,11 +1221,13 @@ impl TransportHandler for WorkerHandler {
             }
         }
 
-        if let Some(qlog_file) = &self.option.qlog_file {
+        if let Some(qlog_dir) = &self.option.qlog_dir {
+            let qlog_file = format!("{}.qlog", conn.trace_id());
+            let qlog_file = Path::new(qlog_dir).join(qlog_file);
             if let Ok(qlog) = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(qlog_file)
+                .open(qlog_file.as_path())
             {
                 conn.set_qlog(
                     Box::new(qlog),
@@ -1232,7 +1235,7 @@ impl TransportHandler for WorkerHandler {
                     format!("id={}", conn.trace_id()),
                 );
             } else {
-                error!("{} set qlog failed", conn.trace_id());
+                error!("{} set qlog {:?} failed", conn.trace_id(), qlog_file);
             }
         }
     }
@@ -1392,20 +1395,28 @@ fn parse_option() -> std::result::Result<ClientOpt, clap::error::Error> {
     Ok(option)
 }
 
-fn process_option(option: &mut ClientOpt) {
-    env_logger::builder().filter_level(option.log_level).init();
+fn process_option(option: &mut ClientOpt) -> Result<()> {
+    env_logger::builder()
+        .filter_level(option.log_level)
+        .format_timestamp_millis()
+        .init();
 
-    if let Some(dump_path) = &option.dump_path {
-        if let Err(e) = create_dir_all(dump_path) {
-            warn!(
-                "create dump path directory error: {:?}, can't dump response body",
-                e
-            );
-            option.dump_path = None;
+    if let Some(dump_dir) = &option.dump_dir {
+        if let Err(e) = create_dir_all(dump_dir) {
+            warn!("create dump directory {} error: {:?}", dump_dir, e);
+            return Err(Box::new(e));
+        }
+    }
+
+    if let Some(qlog_dir) = &option.qlog_dir {
+        if let Err(e) = create_dir_all(qlog_dir) {
+            warn!("create qlog directory {} error: {:?}", qlog_dir, e);
+            return Err(Box::new(e));
         }
     }
 
     process_connect_address(option);
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -1416,7 +1427,7 @@ fn main() -> Result<()> {
     };
 
     // Process client option.
-    process_option(&mut option);
+    process_option(&mut option)?;
 
     // Create client.
     let mut client = Client::new(option)?;
