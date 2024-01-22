@@ -875,6 +875,7 @@ mod tests {
     fn init() {
         env_logger::builder()
             .filter_level(log::LevelFilter::Trace)
+            .format_timestamp_millis()
             .is_test(true)
             .init();
     }
