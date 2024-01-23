@@ -32,6 +32,8 @@ use super::HandshakeStatus;
 use crate::congestion_control;
 use crate::congestion_control::CongestionController;
 use crate::frame;
+use crate::qlog;
+use crate::qlog::events::EventData;
 use crate::ranges::RangeSet;
 use crate::Error;
 use crate::RecoveryConfig;
@@ -91,6 +93,10 @@ pub struct Recovery {
     /// Congestion controller for the corresponding path.
     pub congestion: Box<dyn CongestionController>,
 
+    /// It tracks the last metrics used for emitting qlog RecoveryMetricsUpdated
+    /// event.
+    last_metrics: RecoveryMetrics,
+
     /// Trace id.
     trace_id: String,
 }
@@ -110,6 +116,7 @@ impl Recovery {
             ack_eliciting_in_flight: 0,
             rtt: RttEstimator::new(conf.initial_rtt),
             congestion: congestion_control::build_congestion_controller(conf),
+            last_metrics: RecoveryMetrics::default(),
             trace_id: String::from(""),
         }
     }
@@ -185,6 +192,7 @@ impl Recovery {
     /// Handle packet acknowledgment event.
     ///
     /// See RFC 9002 Section A.7. On Receiving an Acknowledgment.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn on_ack_received(
         &mut self,
         ranges: &RangeSet,
@@ -192,6 +200,7 @@ impl Recovery {
         space_id: SpaceId,
         spaces: &mut PacketNumSpaceMap,
         handshake_status: HandshakeStatus,
+        qlog: Option<&mut qlog::QlogWriter>,
         now: Instant,
     ) -> Result<(usize, usize)> {
         let space = spaces.get_mut(space_id).ok_or(Error::InternalError)?;
@@ -242,7 +251,7 @@ impl Recovery {
         }
 
         // Detect lost packets
-        let (lost_packets, lost_bytes) = self.detect_lost_packets(space, now);
+        let (lost_packets, lost_bytes) = self.detect_lost_packets(space, qlog, now);
 
         // Remove acked or lost packets from sent queue in batch.
         self.drain_sent_packets(space, now, self.rtt.smoothed_rtt());
@@ -374,7 +383,12 @@ impl Recovery {
     /// It is called every time an ACK is received or the time threshold loss
     /// detection timer expires.
     /// See RFC 9002 Section A.10. Detecting Lost Packets
-    fn detect_lost_packets(&mut self, space: &mut PacketNumSpace, now: Instant) -> (usize, usize) {
+    fn detect_lost_packets(
+        &mut self,
+        space: &mut PacketNumSpace,
+        mut qlog: Option<&mut qlog::QlogWriter>,
+        now: Instant,
+    ) -> (usize, usize) {
         space.loss_time = None;
 
         let mut lost_packets = 0;
@@ -419,6 +433,9 @@ impl Recovery {
                     }
                 }
                 latest_lost_packet = Some(unacked.clone());
+                if let Some(qlog) = qlog.as_mut() {
+                    self.qlog_recovery_packet_lost(qlog, unacked);
+                }
                 trace!(
                     "now={:?} {} {} ON_LOST {:?} inflight={} cwnd={}",
                     now,
@@ -532,6 +549,7 @@ impl Recovery {
         space_id: SpaceId,
         spaces: &mut PacketNumSpaceMap,
         handshake_status: HandshakeStatus,
+        qlog: Option<&mut qlog::QlogWriter>,
         now: Instant,
     ) -> (usize, usize) {
         let (earliest_loss_time, sid) = self.get_loss_time_and_space(space_id, spaces);
@@ -543,7 +561,7 @@ impl Recovery {
         // Loss timer mode
         if earliest_loss_time.is_some() {
             // Time threshold loss detection.
-            let (lost_packets, lost_bytes) = self.detect_lost_packets(space, now);
+            let (lost_packets, lost_bytes) = self.detect_lost_packets(space, qlog, now);
             self.drain_sent_packets(space, now, self.rtt.smoothed_rtt());
             self.set_loss_detection_timer(space_id, spaces, handshake_status, now);
             return (lost_packets, lost_bytes);
@@ -783,6 +801,124 @@ impl Recovery {
     pub(crate) fn can_send(&self) -> bool {
         self.bytes_in_flight < self.congestion.congestion_window() as usize
     }
+
+    /// Write a qlog RecoveryMetricsUpdated event if any recovery metric is updated.
+    pub(crate) fn qlog_recovery_metrics_updated(&mut self, qlog: &mut qlog::QlogWriter) {
+        let mut updated = false;
+
+        let mut min_rtt = None;
+        if self.last_metrics.min_rtt != self.rtt.min_rtt() {
+            self.last_metrics.min_rtt = self.rtt.min_rtt();
+            min_rtt = Some(self.last_metrics.min_rtt.as_secs_f32() * 1000.0);
+            updated = true;
+        }
+
+        let mut smoothed_rtt = None;
+        if self.last_metrics.smoothed_rtt != self.rtt.smoothed_rtt() {
+            self.last_metrics.smoothed_rtt = self.rtt.smoothed_rtt();
+            smoothed_rtt = Some(self.last_metrics.smoothed_rtt.as_secs_f32() * 1000.0);
+            updated = true;
+        }
+
+        let mut latest_rtt = None;
+        if self.last_metrics.latest_rtt != self.rtt.latest_rtt() {
+            self.last_metrics.latest_rtt = self.rtt.latest_rtt();
+            latest_rtt = Some(self.last_metrics.latest_rtt.as_secs_f32() * 1000.0);
+            updated = true;
+        }
+
+        let mut rtt_variance = None;
+        if self.last_metrics.rttvar != self.rtt.rttvar() {
+            self.last_metrics.rttvar = self.rtt.rttvar();
+            rtt_variance = Some(self.last_metrics.rttvar.as_secs_f32() * 1000.0);
+            updated = true;
+        }
+
+        let mut congestion_window = None;
+        if self.last_metrics.cwnd != self.congestion.congestion_window() {
+            self.last_metrics.cwnd = self.congestion.congestion_window();
+            congestion_window = Some(self.last_metrics.cwnd);
+            updated = true;
+        }
+
+        let mut bytes_in_flight = None;
+        if self.last_metrics.bytes_in_flight != self.bytes_in_flight as u64 {
+            self.last_metrics.bytes_in_flight = self.bytes_in_flight as u64;
+            bytes_in_flight = Some(self.last_metrics.bytes_in_flight);
+            updated = true;
+        }
+
+        let mut pacing_rate = None;
+        if self.last_metrics.pacing_rate != self.congestion.pacing_rate() {
+            self.last_metrics.pacing_rate = self.congestion.pacing_rate();
+            pacing_rate = self.last_metrics.pacing_rate.map(|v| v * 8); // bps
+            updated = true;
+        }
+
+        if !updated {
+            return;
+        }
+
+        let ev_data = EventData::RecoveryMetricsUpdated {
+            min_rtt,
+            smoothed_rtt,
+            latest_rtt,
+            rtt_variance,
+            pto_count: None,
+            congestion_window,
+            bytes_in_flight,
+            ssthresh: None,
+            packets_in_flight: None,
+            pacing_rate,
+        };
+        qlog.add_event_data(Instant::now(), ev_data).ok();
+    }
+
+    /// Write a qlog RecoveryPacketLost event.
+    pub(crate) fn qlog_recovery_packet_lost(
+        &mut self,
+        qlog: &mut qlog::QlogWriter,
+        pkt: &SentPacket,
+    ) {
+        let ev_data = EventData::RecoveryPacketLost {
+            header: Some(qlog::events::PacketHeader {
+                packet_type: pkt.pkt_type.to_qlog(),
+                packet_number: pkt.pkt_num,
+                ..qlog::events::PacketHeader::default()
+            }),
+            frames: None,
+            is_mtu_probe_packet: None,
+            trigger: None,
+        };
+        qlog.add_event_data(Instant::now(), ev_data).ok();
+    }
+}
+
+/// Metrics used for emitting qlog RecoveryMetricsUpdated event.
+#[derive(Default)]
+struct RecoveryMetrics {
+    /// The minimum RTT observed on the path, ignoring ack delay
+    min_rtt: Duration,
+
+    /// The smoothed RTT of the path is an exponentially weighted moving average
+    /// of an endpoint's RTT samples
+    smoothed_rtt: Duration,
+
+    /// The most recent RTT sample.
+    latest_rtt: Duration,
+
+    /// The RTT variance estimates the variation in the RTT samples using a
+    /// mean variation
+    rttvar: Duration,
+
+    /// Congestion window in bytes.
+    cwnd: u64,
+
+    /// Total number of bytes in fight.
+    bytes_in_flight: u64,
+
+    /// Pacing rate in Bps
+    pacing_rate: Option<u64>,
 }
 
 #[cfg(test)]
@@ -806,7 +942,7 @@ mod tests {
             in_flight: true,
             has_data: true,
             rate_sample_state: Default::default(),
-            reinjected: false,
+            ..SentPacket::default()
         }
     }
 
@@ -864,7 +1000,15 @@ mod tests {
         let mut acked = RangeSet::default();
         acked.insert(0..1);
         acked.insert(2..3);
-        recovery.on_ack_received(&acked, 0, SpaceId::Handshake, &mut spaces, status, now)?;
+        recovery.on_ack_received(
+            &acked,
+            0,
+            SpaceId::Handshake,
+            &mut spaces,
+            status,
+            None,
+            now,
+        )?;
         assert_eq!(spaces.get(space_id).unwrap().sent.len(), 2);
         assert_eq!(spaces.get(space_id).unwrap().ack_eliciting_in_flight, 1);
         assert_eq!(recovery.ack_eliciting_in_flight, 1);
@@ -872,7 +1016,7 @@ mod tests {
         // Advance ticks until loss timeout
         now = recovery.loss_detection_timer().unwrap();
         let (lost_pkts, lost_bytes) =
-            recovery.on_loss_detection_timeout(SpaceId::Handshake, &mut spaces, status, now);
+            recovery.on_loss_detection_timeout(SpaceId::Handshake, &mut spaces, status, None, now);
         assert_eq!(lost_pkts, 1);
         assert_eq!(lost_bytes, 1001);
         assert_eq!(spaces.get(space_id).unwrap().ack_eliciting_in_flight, 0);
@@ -928,16 +1072,30 @@ mod tests {
         acked.insert(1..4);
 
         // Detect packet loss base on reordering threshold
-        let (lost_pkts, lost_bytes) =
-            recovery.on_ack_received(&acked, 0, SpaceId::Handshake, &mut spaces, status, now)?;
+        let (lost_pkts, lost_bytes) = recovery.on_ack_received(
+            &acked,
+            0,
+            SpaceId::Handshake,
+            &mut spaces,
+            status,
+            None,
+            now,
+        )?;
         assert_eq!(spaces.get(space_id).unwrap().sent.len(), 4);
         assert_eq!(lost_pkts, 1);
         assert_eq!(lost_bytes, 1000);
 
         // Advance ticks and fake receiving of duplicated ack
         now += recovery.rtt.smoothed_rtt();
-        let (lost_pkts, lost_bytes) =
-            recovery.on_ack_received(&acked, 0, SpaceId::Handshake, &mut spaces, status, now)?;
+        let (lost_pkts, lost_bytes) = recovery.on_ack_received(
+            &acked,
+            0,
+            SpaceId::Handshake,
+            &mut spaces,
+            status,
+            None,
+            now,
+        )?;
         assert_eq!(lost_pkts, 0);
         assert_eq!(lost_bytes, 0);
 
@@ -982,8 +1140,15 @@ mod tests {
         now += Duration::from_millis(100);
         let mut acked = RangeSet::default();
         acked.insert(0..1);
-        let (lost_pkts, lost_bytes) =
-            recovery.on_ack_received(&acked, 0, SpaceId::Handshake, &mut spaces, status, now)?;
+        let (lost_pkts, lost_bytes) = recovery.on_ack_received(
+            &acked,
+            0,
+            SpaceId::Handshake,
+            &mut spaces,
+            status,
+            None,
+            now,
+        )?;
         assert_eq!(spaces.get(space_id).unwrap().sent.len(), 1);
         assert_eq!(lost_pkts, 0);
         assert_eq!(lost_bytes, 0);
@@ -992,7 +1157,7 @@ mod tests {
         // Advance ticks until pto timeout
         now = recovery.loss_detection_timer().unwrap();
         let (lost_pkts, lost_bytes) =
-            recovery.on_loss_detection_timeout(SpaceId::Handshake, &mut spaces, status, now);
+            recovery.on_loss_detection_timeout(SpaceId::Handshake, &mut spaces, status, None, now);
         assert_eq!(recovery.pto_count, 1);
         assert_eq!(lost_pkts, 0);
         assert_eq!(lost_bytes, 0);
@@ -1045,7 +1210,15 @@ mod tests {
         now += Duration::from_millis(100);
         let mut acked = RangeSet::default();
         acked.insert(0..2);
-        recovery.on_ack_received(&acked, 0, SpaceId::Handshake, &mut spaces, status, now)?;
+        recovery.on_ack_received(
+            &acked,
+            0,
+            SpaceId::Handshake,
+            &mut spaces,
+            status,
+            None,
+            now,
+        )?;
         assert_eq!(spaces.get(SpaceId::Handshake).unwrap().sent.len(), 1);
         assert_eq!(
             spaces.get(SpaceId::Handshake).unwrap().bytes_in_flight,
@@ -1146,7 +1319,7 @@ mod tests {
             vec![500..950],
         ));
         // Fake receiving duplicated ACK.
-        recovery.on_ack_received(&ack, 0, SpaceId::Data, &mut spaces, status, now)?;
+        recovery.on_ack_received(&ack, 0, SpaceId::Data, &mut spaces, status, None, now)?;
         assert!(check_acked_packets(
             &spaces.get(SpaceId::Data).unwrap().sent,
             vec![500..950],
@@ -1222,8 +1395,15 @@ mod tests {
         acked.insert(0..2);
 
         // Detect packet loss base on reordering threshold
-        let (lost_pkts, lost_bytes) =
-            recovery.on_ack_received(&acked, 0, SpaceId::Handshake, &mut spaces, status, now)?;
+        let (lost_pkts, lost_bytes) = recovery.on_ack_received(
+            &acked,
+            0,
+            SpaceId::Handshake,
+            &mut spaces,
+            status,
+            None,
+            now,
+        )?;
         assert_eq!(cwnd_before_ack, recovery.congestion.congestion_window());
 
         Ok(())

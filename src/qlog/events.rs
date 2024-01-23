@@ -248,6 +248,7 @@ pub enum EventData {
     #[serde(rename = "quic:packet_sent")]
     QuicPacketSent {
         header: PacketHeader,
+        frames: Option<SmallVec<[QuicFrame; 1]>>,
         is_coalesced: Option<bool>,
         retry_token: Option<Token>,
         stateless_reset_token: Option<String>,
@@ -262,6 +263,7 @@ pub enum EventData {
     #[serde(rename = "quic:packet_received")]
     QuicPacketReceived {
         header: PacketHeader,
+        frames: Option<SmallVec<[QuicFrame; 1]>>,
         is_coalesced: Option<bool>,
         retry_token: Option<Token>,
         stateless_reset_token: Option<String>,
@@ -854,7 +856,7 @@ pub enum ConnectionState {
     Closed,
 }
 
-#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PacketType {
     Initial,
@@ -865,6 +867,7 @@ pub enum PacketType {
     OneRtt,
     Retry,
     VersionNegotiation,
+    #[default]
     Unknown,
 }
 
@@ -877,7 +880,7 @@ pub enum PacketNumberSpace {
 }
 
 #[serde_with::skip_serializing_none]
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Debug)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Debug, Default)]
 pub struct PacketHeader {
     pub packet_type: PacketType,
     pub packet_number: u64,
@@ -1659,6 +1662,7 @@ pub mod tests {
         let pkt_hdr = new_test_pkt_hdr(PacketType::Initial);
         let event_data = EventData::QuicPacketSent {
             header: pkt_hdr,
+            frames: None,
             is_coalesced: None,
             retry_token: None,
             stateless_reset_token: None,

@@ -20,6 +20,7 @@ use std::time::Instant;
 use rustc_hash::FxHashMap;
 
 use crate::frame;
+use crate::packet;
 use crate::ranges::RangeSet;
 use crate::tls::Level;
 use crate::window::SeqNumWindow;
@@ -303,6 +304,9 @@ pub struct RateSamplePacketState {
 /// Metadata of sent packet
 #[derive(Clone)]
 pub struct SentPacket {
+    /// The packet type of the sent packet.
+    pub pkt_type: packet::PacketType,
+
     /// The packet number of the sent packet.
     pub pkt_num: u64,
 
@@ -339,6 +343,25 @@ pub struct SentPacket {
 
     /// Whether it is a reinjected packet.
     pub reinjected: bool,
+}
+
+impl Default for SentPacket {
+    fn default() -> Self {
+        SentPacket {
+            pkt_type: packet::PacketType::OneRTT,
+            pkt_num: 0,
+            frames: vec![],
+            time_sent: Instant::now(),
+            time_acked: None,
+            time_lost: None,
+            ack_eliciting: false,
+            in_flight: false,
+            has_data: false,
+            sent_size: 0,
+            rate_sample_state: RateSamplePacketState::default(),
+            reinjected: false,
+        }
+    }
 }
 
 impl std::fmt::Debug for SentPacket {
@@ -444,7 +467,7 @@ mod tests {
             has_data: false,
             sent_size: 240,
             rate_sample_state: Default::default(),
-            reinjected: false,
+            ..SentPacket::default()
         };
         assert_eq!(
             format!("{:?}", sent_pkt),
