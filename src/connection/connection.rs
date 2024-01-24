@@ -583,6 +583,7 @@ impl Connection {
         // Process each QUIC frame in the QUIC packet
         let mut ack_eliciting_pkt = false;
         let mut probing_pkt = true;
+        let mut qframes = vec![];
 
         while !payload.is_empty() {
             let (frame, len) = Frame::from_bytes(&mut payload, hdr.pkt_type)?;
@@ -592,14 +593,23 @@ impl Connection {
             if !frame.probing() {
                 probing_pkt = false;
             }
+            if self.qlog.is_some() {
+                qframes.push(frame.to_qlog());
+            }
 
             self.recv_frame(frame, &hdr, pid, space_id, info.time)?;
             let _ = payload.split_to(len);
         }
 
-        // Write TransportPacketReceived event to qlog.
+        // Write events to qlog.
         if let Some(qlog) = &mut self.qlog {
-            Self::qlog_quic_packet_received(qlog, &hdr, pkt_num, read, payload_len);
+            // Write TransportPacketReceived event to qlog.
+            Self::qlog_quic_packet_received(qlog, &hdr, pkt_num, read, payload_len, qframes);
+
+            // Write RecoveryMetricsUpdate event to qlog.
+            if let Ok(path) = self.paths.get_mut(pid) {
+                path.recovery.qlog_recovery_metrics_updated(qlog);
+            }
         }
 
         // Process acknowledged frames.
@@ -715,6 +725,7 @@ impl Connection {
                     space_id,
                     &mut self.spaces,
                     handshake_status,
+                    self.qlog.as_mut(),
                     now,
                 )?;
                 self.stats.lost_count += lost_pkts;
@@ -1557,6 +1568,7 @@ impl Connection {
         )?;
 
         let sent_pkt = space::SentPacket {
+            pkt_type,
             pkt_num,
             time_sent: now,
             time_acked: None,
@@ -1577,9 +1589,19 @@ impl Connection {
             self.paths.get(path_id)?
         );
 
-        // Write TransportPacketSent event to qlog.
+        // Write events to qlog.
         if let Some(qlog) = &mut self.qlog {
-            Self::qlog_quic_packet_sent(qlog, &hdr, pkt_num, written, payload_len);
+            // Write TransportPacketSent event to qlog.
+            let mut qframes = Vec::with_capacity(sent_pkt.frames.len());
+            for frame in &sent_pkt.frames {
+                qframes.push(frame.to_qlog());
+            }
+            Self::qlog_quic_packet_sent(qlog, &hdr, pkt_num, written, payload_len, qframes);
+
+            // Write RecoveryMetricsUpdate event to qlog.
+            if let Ok(path) = self.paths.get_mut(path_id) {
+                path.recovery.qlog_recovery_metrics_updated(qlog);
+            }
         }
 
         // Notify the packet sent event to the multipath scheduler
@@ -2862,8 +2884,14 @@ impl Connection {
                                 SpaceId::Data, // TODO: update for multipath
                                 &mut self.spaces,
                                 handshake_status,
+                                self.qlog.as_mut(),
                                 now,
                             );
+
+                            // Write RecoveryMetricsUpdate event to qlog.
+                            if let Some(qlog) = &mut self.qlog {
+                                path.recovery.qlog_recovery_metrics_updated(qlog);
+                            }
                         }
                     }
                 }
@@ -3637,6 +3665,7 @@ impl Connection {
         pkt_num: u64,
         pkt_len: usize,
         payload_len: usize,
+        qlog_frames: Vec<qlog::events::QuicFrame>,
     ) {
         let qlog_pkt_hdr = events::PacketHeader::new_with_type(
             hdr.pkt_type.to_qlog(),
@@ -3652,6 +3681,7 @@ impl Connection {
         };
         let ev_data = events::EventData::QuicPacketReceived {
             header: qlog_pkt_hdr,
+            frames: Some(qlog_frames.into()),
             is_coalesced: None,
             retry_token: None,
             stateless_reset_token: None,
@@ -3670,6 +3700,7 @@ impl Connection {
         pkt_num: u64,
         pkt_len: usize,
         payload_len: usize,
+        qlog_frames: Vec<qlog::events::QuicFrame>,
     ) {
         let qlog_pkt_hdr = events::PacketHeader::new_with_type(
             hdr.pkt_type.to_qlog(),
@@ -3687,6 +3718,7 @@ impl Connection {
 
         let ev_data = events::EventData::QuicPacketSent {
             header: qlog_pkt_hdr,
+            frames: Some(qlog_frames.into()),
             is_coalesced: None,
             retry_token: None,
             stateless_reset_token: None,
@@ -6611,28 +6643,37 @@ pub(crate) mod tests {
         let mut sfile = slog.reopen().unwrap();
 
         let mut test_pair = TestPair::new_with_test_config()?;
-        assert_eq!(test_pair.handshake(), Ok(()));
         test_pair
             .client
             .set_qlog(Box::new(clog), "title".into(), "desc".into());
         test_pair
             .server
             .set_qlog(Box::new(slog), "title".into(), "desc".into());
+        assert_eq!(test_pair.handshake(), Ok(()));
 
         // Client create a stream and send data
         let data = Bytes::from_static(b"test data over quic");
-        test_pair.client.stream_set_priority(0, 0, false)?;
-        test_pair.client.stream_write(0, data.clone(), true)?;
-        test_pair.client.stream_shutdown(0, Shutdown::Read, 0)?;
+        test_pair.client.stream_write(0, data.clone(), false)?;
         let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+        TestPair::conn_packets_in(&mut test_pair.server, packets)?;
+
+        // Client lost some packets
+        test_pair.client.stream_write(0, data.clone(), false)?;
+        let _ = TestPair::conn_packets_out(&mut test_pair.client)?;
+        test_pair.client.stream_write(0, data.clone(), false)?;
+        let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+        TestPair::conn_packets_in(&mut test_pair.server, packets)?;
 
         // Server read data from the stream
-        TestPair::conn_packets_in(&mut test_pair.server, packets)?;
         let mut buf = vec![0; data.len()];
         test_pair.server.stream_read(0, &mut buf)?;
-
         let packets = TestPair::conn_packets_out(&mut test_pair.server)?;
         TestPair::conn_packets_in(&mut test_pair.client, packets)?;
+
+        // Advance ticks until loss timeout
+        assert!(test_pair.client.timeout().is_some());
+        let timeout = test_pair.client.timers.get(Timer::LossDetection);
+        test_pair.client.on_timeout(timeout.unwrap());
 
         // Check client qlog
         let mut clog_content = String::new();
@@ -6641,6 +6682,8 @@ pub(crate) mod tests {
         assert_eq!(clog_content.contains("quic:parameters_set"), true);
         assert_eq!(clog_content.contains("quic:stream_data_moved"), true);
         assert_eq!(clog_content.contains("quic:packet_sent"), true);
+        assert_eq!(clog_content.contains("recovery:metrics_updated"), true);
+        assert_eq!(clog_content.contains("recovery:packet_lost"), true);
 
         // Check server qlog
         let mut slog_content = String::new();
@@ -6649,6 +6692,7 @@ pub(crate) mod tests {
         assert_eq!(slog_content.contains("quic:parameters_set"), true);
         assert_eq!(slog_content.contains("quic:stream_data_moved"), true);
         assert_eq!(slog_content.contains("quic:packet_received"), true);
+        assert_eq!(slog_content.contains("recovery:metrics_updated"), true);
 
         Ok(())
     }

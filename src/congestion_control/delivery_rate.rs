@@ -285,7 +285,7 @@ mod tests {
             has_data: false,
             sent_size: 240,
             rate_sample_state: Default::default(),
-            reinjected: false,
+            ..SentPacket::default()
         };
 
         rate_estimator.on_packet_sent(&mut pkt_n1, bytes_in_flight, bytes_lost);
@@ -308,7 +308,7 @@ mod tests {
             has_data: false,
             sent_size: 240,
             rate_sample_state: Default::default(),
-            reinjected: false,
+            ..SentPacket::default()
         };
 
         bytes_in_flight += pkt_n1.sent_size as u64;
@@ -361,7 +361,6 @@ mod tests {
         let now = Instant::now();
         let mut pkts_part1: Vec<SentPacket> = Vec::new();
         let mut pkts_part2: Vec<SentPacket> = Vec::new();
-        // let mut pkts_part3: Vec<SentPacket> = Vec::new();
         let bytes_lost = 0;
         let mut bytes_in_flight = 0;
         let pkt_size: u64 = 240;
@@ -380,7 +379,7 @@ mod tests {
                 has_data: false,
                 sent_size: pkt_size as usize,
                 rate_sample_state: Default::default(),
-                reinjected: false,
+                ..SentPacket::default()
             });
         }
 
@@ -397,7 +396,7 @@ mod tests {
                 has_data: false,
                 sent_size: pkt_size as usize,
                 rate_sample_state: Default::default(),
-                reinjected: false,
+                ..SentPacket::default()
             });
         }
 
