@@ -101,4 +101,4 @@ jobs:
     - name: Run the interop tests
       run: |
         cd quic-interop-runner
-        python3 run.py -s ${{ matrix.server }} -c ${{ matrix.client }} -t handshake,retry,resumption,http3,ipv6,transfer,multiplexing,longrtt,blackhole,transferloss,transfercorruption,goodput,crosstraffic -d -r tquic=tquic_interop:v1
+        python3 run.py -s ${{ matrix.server }} -c ${{ matrix.client }} -t handshake,retry,resumption,zerortt,http3,ipv6,transfer,multiplexing,longrtt,blackhole,transferloss,transfercorruption,goodput,crosstraffic -d -r tquic=tquic_interop:v1
