@@ -20,7 +20,8 @@ use std::net::SocketAddr;
 
 use clap::builder::PossibleValue;
 use clap::ValueEnum;
-use log::debug;
+use env_logger::Target;
+use log::*;
 use mio::net::UdpSocket;
 use mio::Interest;
 use mio::Registry;
@@ -221,4 +222,20 @@ impl PacketSendHandler for QuicSocket {
         }
         Ok(count)
     }
+}
+
+/// Get the target for the log output.
+pub fn log_target(log_file: &Option<String>) -> Result<Target> {
+    if let Some(log_file) = log_file {
+        if let Ok(file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_file)
+        {
+            return Ok(Target::Pipe(Box::new(file)));
+        }
+        return Err(format!("create log file {:?} failed", log_file).into());
+    }
+
+    Ok(Target::Stderr)
 }
