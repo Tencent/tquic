@@ -876,7 +876,7 @@ impl RequestSender {
     /// Receive responses.
     pub fn recv_responses(&mut self, conn: &mut Connection, stream_id: u64) {
         if self.streams.get_mut(&stream_id).is_none() {
-            debug!("{} stream {} not exist", conn.trace_id(), stream_id);
+            debug!("{} stream {} request not exist", conn.trace_id(), stream_id);
             return;
         }
 
@@ -1047,20 +1047,6 @@ impl RequestSender {
                 worker_ctx.request_done += 1;
                 Self::sample_request_time(request, &mut worker_ctx);
                 self.streams.remove(&stream_id);
-
-                if self.request_done == self.option.max_requests_per_conn {
-                    worker_ctx.concurrent_conns -= 1;
-                    debug!(
-                        "{} all requests finished, close connection",
-                        conn.trace_id()
-                    );
-                    match conn.close(true, 0x00, b"ok") {
-                        Ok(_) | Err(Error::Done) => (),
-                        Err(e) => panic!("error closing conn: {:?}", e),
-                    }
-
-                    return;
-                }
             }
         }
     }
@@ -1114,20 +1100,6 @@ impl RequestSender {
                     let request = self.streams.get_mut(&stream_id).unwrap();
                     Self::sample_request_time(request, &mut worker_ctx);
                     self.streams.remove(&stream_id);
-
-                    if self.request_done == self.option.max_requests_per_conn {
-                        worker_ctx.concurrent_conns -= 1;
-                        debug!(
-                            "{} all requests finished, close connection",
-                            conn.trace_id()
-                        );
-                        match conn.close(true, 0x00, b"ok") {
-                            Ok(_) | Err(Error::Done) => (),
-                            Err(e) => panic!("error closing conn: {:?}", e),
-                        }
-
-                        return;
-                    }
                 }
                 Ok((stream_id, tquic::h3::Http3Event::Reset(e))) => {
                     error!(
@@ -1203,6 +1175,49 @@ impl WorkerHandler {
             local_addresses: option.local_addresses.clone(),
         }
     }
+
+    fn try_new_request_sender(&mut self, conn: &mut Connection) {
+        let index = conn.index().unwrap();
+        let mut senders = self.senders.borrow_mut();
+        let sender = senders.get(&index);
+        if sender.is_some() {
+            return;
+        }
+
+        let sender = RequestSender::new(&self.option, conn, self.worker_ctx.clone());
+        senders.insert(index, sender);
+    }
+
+    fn try_close_conn(&mut self, conn: &mut Connection) {
+        let index = conn.index().unwrap();
+        let senders = self.senders.borrow_mut();
+        let sender = senders.get(&index);
+        if let Some(s) = sender {
+            if s.request_done == s.option.max_requests_per_conn && !conn.is_closing() {
+                let mut worker_ctx = self.worker_ctx.borrow_mut();
+                worker_ctx.concurrent_conns -= 1;
+                debug!(
+                    "{} all requests finished, close connection",
+                    conn.trace_id()
+                );
+                match conn.close(true, 0x00, b"ok") {
+                    Ok(_) | Err(Error::Done) => (),
+                    Err(e) => panic!("error closing conn: {:?}", e),
+                }
+            }
+        }
+    }
+
+    fn try_send_request(&mut self, conn: &mut Connection) {
+        let index = conn.index().unwrap();
+        let mut senders = self.senders.borrow_mut();
+        let sender = senders.get_mut(&index);
+        if let Some(s) = sender {
+            s.send_requests(conn);
+        } else {
+            error!("{} sender not exist", conn.trace_id());
+        }
+    }
 }
 
 impl TransportHandler for WorkerHandler {
@@ -1238,6 +1253,10 @@ impl TransportHandler for WorkerHandler {
                 error!("{} set qlog {:?} failed", conn.trace_id(), qlog_file);
             }
         }
+
+        if conn.is_in_early_data() {
+            self.try_new_request_sender(conn);
+        }
     }
 
     fn on_conn_established(&mut self, conn: &mut Connection) {
@@ -1271,11 +1290,7 @@ impl TransportHandler for WorkerHandler {
             }
         }
 
-        let mut sender = RequestSender::new(&self.option, conn, self.worker_ctx.clone());
-        sender.send_requests(conn);
-        let mut senders = self.senders.borrow_mut();
-        let index = conn.index().unwrap();
-        senders.insert(index, sender);
+        self.try_new_request_sender(conn);
     }
 
     fn on_conn_closed(&mut self, conn: &mut Connection) {
@@ -1336,7 +1351,7 @@ impl TransportHandler for WorkerHandler {
         if let Some(s) = sender {
             s.recv_responses(conn, stream_id);
         } else {
-            error!("{} stream {} not exist", conn.trace_id(), stream_id);
+            debug!("{} stream {} sender not exist", conn.trace_id(), stream_id);
         }
     }
 
@@ -1347,14 +1362,8 @@ impl TransportHandler for WorkerHandler {
     fn on_stream_closed(&mut self, conn: &mut Connection, stream_id: u64) {
         debug!("{} stream {} is closed", conn.trace_id(), stream_id);
 
-        let index = conn.index().unwrap();
-        let mut senders = self.senders.borrow_mut();
-        let sender = senders.get_mut(&index);
-        if let Some(s) = sender {
-            s.send_requests(conn);
-        } else {
-            error!("{} stream {} not exist", conn.trace_id(), stream_id);
-        }
+        self.try_send_request(conn);
+        self.try_close_conn(conn);
     }
 
     fn on_new_token(&mut self, _conn: &mut Connection, _token: Vec<u8>) {}
