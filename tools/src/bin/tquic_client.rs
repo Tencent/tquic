@@ -121,6 +121,10 @@ pub struct ClientOpt {
     #[clap(long, default_value = "INFO", value_name = "STR")]
     pub log_level: log::LevelFilter,
 
+    /// Log file path. If no file is specified, logs will be written to `stderr`.
+    #[clap(long, value_name = "FILE")]
+    pub log_file: Option<String>,
+
     /// Override server's address.
     #[clap(short, long, value_name = "ADDR")]
     pub connect_to: Option<SocketAddr>,
@@ -1406,6 +1410,7 @@ fn parse_option() -> std::result::Result<ClientOpt, clap::error::Error> {
 
 fn process_option(option: &mut ClientOpt) -> Result<()> {
     env_logger::builder()
+        .target(tquic_tools::log_target(&option.log_file)?)
         .filter_level(option.log_level)
         .format_timestamp_millis()
         .init();

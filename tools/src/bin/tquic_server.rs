@@ -71,6 +71,10 @@ pub struct ServerOpt {
     #[clap(long, default_value = "INFO")]
     pub log_level: log::LevelFilter,
 
+    /// Log file path. If no file is specified, logs will be written to `stderr`.
+    #[clap(long, value_name = "FILE")]
+    pub log_file: Option<String>,
+
     /// Address to listen.
     #[clap(short, long, default_value = "0.0.0.0:4433", value_name = "ADDR")]
     pub listen: SocketAddr,
@@ -766,6 +770,7 @@ impl TransportHandler for ServerHandler {
 
 fn process_option(option: &mut ServerOpt) -> Result<()> {
     env_logger::builder()
+        .target(tquic_tools::log_target(&option.log_file)?)
         .filter_level(option.log_level)
         .format_timestamp_millis()
         .init();

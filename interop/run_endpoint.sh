@@ -59,7 +59,7 @@ COPA)
     ;;
 esac
 
-COMMON_ARGS="--keylog-file $SSLKEYLOGFILE --qlog-dir $QLOG_DIR --log-level TRACE --idle-timeout 30000 --handshake-timeout 30000 --congestion-control-algor $CC_ALGOR"
+COMMON_ARGS="--keylog-file $SSLKEYLOGFILE --qlog-dir $QLOG_DIR --log-level TRACE --log-file $LOG_DIR/$ROLE.log --idle-timeout 30000 --handshake-timeout 30000 --congestion-control-algor $CC_ALGOR"
 
 if [ "$ROLE" == "client" ]; then
     # Wait for the simulator to start up.
@@ -92,15 +92,15 @@ if [ "$ROLE" == "client" ]; then
         CLIENT_ARGS="$CLIENT_ARGS --initial-rtt 100"
         for REQ in $REQUESTS
         do
-            $TQUIC_DIR/$TQUIC_CLIENT $CLIENT_ARGS $REQ >> $LOG_DIR/$ROLE.log 2>&1
+            $TQUIC_DIR/$TQUIC_CLIENT $CLIENT_ARGS $REQ
         done
         ;;
     zerortt)
-        $TQUIC_DIR/$TQUIC_CLIENT $CLIENT_ARGS ${REQS[0]} > $LOG_DIR/$ROLE.log 2>&1
-        $TQUIC_DIR/$TQUIC_CLIENT $CLIENT_ARGS ${REQS[@]:1} >> $LOG_DIR/$ROLE.log 2>&1
+        $TQUIC_DIR/$TQUIC_CLIENT $CLIENT_ARGS ${REQS[0]}
+        $TQUIC_DIR/$TQUIC_CLIENT $CLIENT_ARGS ${REQS[@]:1}
         ;;
     *)
-        $TQUIC_DIR/$TQUIC_CLIENT $CLIENT_ARGS $REQUESTS > $LOG_DIR/$ROLE.log 2>&1
+        $TQUIC_DIR/$TQUIC_CLIENT $CLIENT_ARGS $REQUESTS
         ;;
     esac
 elif [ "$ROLE" == "server" ]; then
@@ -118,5 +118,5 @@ elif [ "$ROLE" == "server" ]; then
     *)
         ;;
     esac
-    $TQUIC_DIR/$TQUIC_SERVER $SERVER_ARGS > $LOG_DIR/$ROLE.log 2>&1
+    $TQUIC_DIR/$TQUIC_SERVER $SERVER_ARGS
 fi
