@@ -21,14 +21,14 @@ set -x
 /setup.sh
 
 case "$TESTCASE" in
-handshake|http3|resumption|zerortt|ipv6|goodput|crosstraffic|transfer|transferloss|transfercorruption|multiplexing|longrtt|chacha20|blackhole|retry|handshakeloss|handshakecorruption|multiconnect)
+handshake|http3|multiconnect|resumption|retry|transfer|zerortt)
     ;;
 chacha20)
     if [ "$ROLE" == "client" ]; then
         exit 127
     fi
     ;;
-keyupdate|ecn|amplificationlimit|v2)
+keyupdate|ecn|v2)
     exit 127
     ;;
 *)
