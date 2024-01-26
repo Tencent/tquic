@@ -13,9 +13,6 @@
 // limitations under the License.
 
 use std::io::ErrorKind;
-use std::net::IpAddr;
-use std::net::Ipv4Addr;
-use std::net::Ipv6Addr;
 use std::net::SocketAddr;
 
 use clap::builder::PossibleValue;
@@ -123,21 +120,13 @@ impl QuicSocket {
         })
     }
 
-    pub fn new_client_socket(is_ipv4: bool, registry: &Registry) -> Result<Self> {
-        let local = match is_ipv4 {
-            true => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-            false => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
-        };
-        QuicSocket::new(&SocketAddr::new(local, 0), registry)
-    }
-
     /// Return the local address of the initial socket.
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
     }
 
     /// Add additional socket binding with given local address.
-    pub fn add(&mut self, local: &SocketAddr, registry: &Registry) -> Result<()> {
+    pub fn add(&mut self, local: &SocketAddr, registry: &Registry) -> Result<SocketAddr> {
         let socket = UdpSocket::bind(*local)?;
         let local_addr = socket.local_addr()?;
         let sid = self.socks.insert(socket);
@@ -145,7 +134,7 @@ impl QuicSocket {
 
         let socket = self.socks.get_mut(sid).unwrap();
         registry.register(socket, Token(sid), Interest::READABLE)?;
-        Ok(())
+        Ok(local_addr)
     }
 
     /// Delete socket binding with given local address.
