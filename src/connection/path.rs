@@ -451,7 +451,7 @@ impl PathMap {
         Ok(pid)
     }
 
-    /// Return a immutable iterator over all existing paths.
+    /// Return an immutable iterator over all existing paths.
     pub fn iter(&self) -> slab::Iter<Path> {
         self.paths.iter()
     }

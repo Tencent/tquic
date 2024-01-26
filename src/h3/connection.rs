@@ -4998,7 +4998,7 @@ mod tests {
         assert_eq!(s.client_poll(), Err(Http3Error::IdError));
     }
 
-    // Server try to send GOAWAY frame on a uninitialized control stream.
+    // Server try to send GOAWAY frame on an uninitialized control stream.
     #[test]
     fn server_send_goaway_on_uninitialized_control_stream() {
         let mut s = Session::new().unwrap();

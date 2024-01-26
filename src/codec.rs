@@ -313,7 +313,7 @@ pub fn decode_varint_len(first: u8) -> usize {
     }
 }
 
-/// Return the encoding length of a int using variable-length integer encoding.
+/// Return the encoding length of an int using variable-length integer encoding.
 ///
 /// See RFC 9000 Section 16 Table 4 Summary of Integer Encodings.
 pub fn encode_varint_len(n: u64) -> usize {

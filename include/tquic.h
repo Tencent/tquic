@@ -191,7 +191,7 @@ typedef struct quic_transport_methods_t {
 typedef void *quic_transport_context_t;
 
 /**
- * Data and meta information of a outgoing packet.
+ * Data and meta information of an outgoing packet.
  */
 typedef struct quic_packet_out_spec_t {
   const struct iovec *iov;
@@ -216,7 +216,7 @@ typedef struct quic_packet_send_methods_t {
 typedef void *quic_packet_send_context_t;
 
 /**
- * Meta information of a incoming packet.
+ * Meta information of an incoming packet.
  */
 typedef struct quic_packet_info_t {
   const struct sockaddr *src;

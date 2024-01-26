@@ -1309,7 +1309,7 @@ fn sock_addr_to_c(addr: &SocketAddr, out: &mut sockaddr_storage) -> socklen_t {
     }
 }
 
-/// Meta information of a incoming packet.
+/// Meta information of an incoming packet.
 #[repr(C)]
 pub struct PacketInfo<'a> {
     src: &'a sockaddr,
@@ -1328,7 +1328,7 @@ impl<'a> From<&PacketInfo<'a>> for crate::PacketInfo {
     }
 }
 
-/// Data and meta information of a outgoing packet.
+/// Data and meta information of an outgoing packet.
 #[repr(C)]
 pub struct PacketOutSpec {
     iov: *const iovec,

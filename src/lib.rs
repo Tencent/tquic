@@ -754,7 +754,7 @@ impl EventQueue {
         self.0 = Some(VecDeque::new());
     }
 
-    /// Add a endpoint-faceing event.
+    /// Add an endpoint-faceing event.
     fn add(&mut self, e: Event) -> bool {
         if let Some(events) = &mut self.0 {
             events.push_back(e);
@@ -763,7 +763,7 @@ impl EventQueue {
         false
     }
 
-    /// Return a endpoint-facing event.
+    /// Return an endpoint-facing event.
     fn poll(&mut self) -> Option<Event> {
         if let Some(events) = &mut self.0 {
             return events.pop_front();

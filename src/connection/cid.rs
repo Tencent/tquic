@@ -67,7 +67,7 @@ impl ConnectionIdDeque {
 
     /// Insert the given ConnectionIdItem.
     ///
-    /// The caller must not add a invalid duplicated cid
+    /// The caller must not add an invalid duplicated cid
     fn insert(&mut self, cid: ConnectionIdItem) -> Result<()> {
         if self.queue.len() == self.capacity {
             return Err(Error::ConnectionIdLimitError);
@@ -585,7 +585,7 @@ mod tests {
         assert_eq!(cids.unused_scids(), 0);
         assert_eq!(cids.next_scid_to_advertise(), None);
 
-        // Add a invalid scid without reset token
+        // Add an invalid scid without reset token
         let scid1 = ConnectionId::random();
         assert_eq!(
             cids.add_scid(scid1, None, true, None, false),
@@ -786,7 +786,7 @@ mod tests {
         );
 
         // Fake receiving of NEW_CONNECTION_ID that carrys a new issued CID with
-        // a invalid Retire Prior To field
+        // an invalid Retire Prior To field
         assert_eq!(
             cids.add_dcid(ConnectionId::random(), 1, 1, 2),
             Err(Error::ProtocolViolation)
@@ -813,7 +813,7 @@ mod tests {
         // Fake receiving of RETIRE_CONNECTION_ID that carrys invalid sequence number
         assert_eq!(cids.retire_scid(2, &scid1), Err(Error::ProtocolViolation));
 
-        // Fake receiving of RETIRE_CONNECTION_ID that use a unexpected path
+        // Fake receiving of RETIRE_CONNECTION_ID that use an unexpected path
         assert_eq!(cids.retire_scid(0, &scid0), Err(Error::ProtocolViolation));
 
         Ok(())
