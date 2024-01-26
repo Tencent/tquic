@@ -3424,7 +3424,7 @@ mod tests {
         let mut map = StreamMap::new(false, 50, 50, StreamTransportParams::default());
         map.update_peer_stream_transport_params(peer_tp);
 
-        // 1. Set priority on a invalid stream.
+        // 1. Set priority on an invalid stream.
         assert_eq!(
             map.stream_set_priority(1, 1, true),
             Err(Error::StreamStateError)
@@ -5202,7 +5202,7 @@ mod tests {
         map.on_stream_frame_acked(0, 10, 4);
         assert!(map.is_closed(0));
 
-        // Receive a ACK frame for a stream which has been closed, do nothing.
+        // Receive an ACK frame for a stream which has been closed, do nothing.
         map.on_stream_frame_acked(0, 10, 4);
     }
 
@@ -5224,7 +5224,7 @@ mod tests {
         assert!(stream.send.is_complete());
         map.on_reset_stream_frame_acked(4);
 
-        // Receive a ACK for a RESET_STREAM frame, no effect on the stream receive-side.
+        // Receive an ACK for a RESET_STREAM frame, no effect on the stream receive-side.
         // The stream is still not complete because the stream receive-side is not complete.
         let stream = map.get_mut(4).unwrap();
         assert!(!stream.is_complete());
@@ -5247,7 +5247,7 @@ mod tests {
         map.on_reset_stream_frame_acked(4);
         assert!(map.is_closed(4));
 
-        // Receive a ACK for a RESET_STREAM frame which has been closed, do nothing.
+        // Receive an ACK for a RESET_STREAM frame which has been closed, do nothing.
         map.on_reset_stream_frame_acked(4);
     }
 

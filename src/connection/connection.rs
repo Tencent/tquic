@@ -203,7 +203,7 @@ impl Connection {
 
         let mut path = path::Path::new(local, remote, true, &conf.recovery, &trace_id);
         if is_server {
-            // The server connection is created upon receiving a Initial packet
+            // The server connection is created upon receiving an Initial packet
             // with a valid token sent by the client.
             path.verified_peer_address = addr_token.is_some();
             // The server connection assumes the peer has validate the server's
@@ -388,7 +388,7 @@ impl Connection {
     /// Process an incoming UDP datagram from the peer.
     ///
     /// On success the number of bytes processed is returned. On error the
-    /// connection will be closed with a error code.
+    /// connection will be closed with an error code.
     #[doc(hidden)]
     pub fn recv(&mut self, buf: &mut [u8], info: &PacketInfo) -> Result<usize> {
         let len = buf.len();
@@ -1684,7 +1684,7 @@ impl Connection {
         path_id: usize,
         has_initial: bool,
     ) -> Result<()> {
-        // Write a ACK frame
+        // Write an ACK frame
         self.try_write_ack_frame(out, st, pkt_type, path_id)?;
 
         // Write a CONNECTION_CLOSE frame
@@ -2583,12 +2583,12 @@ impl Connection {
         }
     }
 
-    /// Select a available path for sending packet
+    /// Select an available path for sending packet
     ///
     /// The selected path should have a packet that can be sent out, unless none
     /// of the paths are feasible.
     fn select_send_path(&mut self) -> Result<usize> {
-        // Select a unvalidated path with path probing packets to send
+        // Select an unvalidated path with path probing packets to send
         if self.is_established() {
             let mut probing = self
                 .paths
@@ -2906,7 +2906,7 @@ impl Connection {
 
                 Timer::KeyDiscard => (), // TODO: support key discarding
 
-                Timer::KeepAlive => (), // TODO: schedule a outgoing Ping
+                Timer::KeepAlive => (), // TODO: schedule an outgoing Ping
 
                 Timer::PathChallenge => self.paths.on_path_chal_timeout(now),
 
@@ -3558,7 +3558,7 @@ impl Connection {
         }
     }
 
-    /// Return a endpoint-facing event.
+    /// Return an endpoint-facing event.
     pub(crate) fn poll(&mut self) -> Option<Event> {
         if let Some(event) = self.events.poll() {
             return Some(event);
@@ -3947,7 +3947,7 @@ struct FrameWriteStatus {
     /// Whether it contains frames other than ACK, PADDING, and CONNECTION_CLOSE
     ack_eliciting: bool,
 
-    /// Whether it is a in-flight packet (ack-eliciting packet or contain a
+    /// Whether it is an in-flight packet (ack-eliciting packet or contain a
     /// PADDING frame)
     in_flight: bool,
 

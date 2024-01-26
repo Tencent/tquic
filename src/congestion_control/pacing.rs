@@ -27,7 +27,7 @@ const MIN_BURST_PACKET_NUM: u64 = 10;
 
 /// The upper bound of burst packet number.
 ///
-/// Used to restrict capacity. A extremely large capacity is meaningless.
+/// Used to restrict capacity. An extremely large capacity is meaningless.
 const MAX_BURST_PACKET_NUM: u64 = 128;
 
 /// Using a value for N that is small, but at least 1 (for example, 1.25) ensures

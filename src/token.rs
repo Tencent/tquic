@@ -41,7 +41,7 @@ pub enum AddressTokenType {
     ResumeToken = 1,
 }
 
-/// QUIC uses a address token in the Initial packet to provide address validation
+/// QUIC uses an address token in the Initial packet to provide address validation
 /// prior to completing the handshake.
 #[derive(Debug)]
 pub struct AddressToken {
