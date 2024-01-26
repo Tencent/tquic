@@ -867,6 +867,15 @@ pub enum Shutdown {
     Write = 1,
 }
 
+/// Important events about path
+pub enum PathEvent {
+    /// The path has been validated.
+    Validated(usize),
+
+    /// The path has been abandoned.
+    Abandoned(usize),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
