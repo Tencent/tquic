@@ -93,6 +93,9 @@ pub struct Recovery {
     /// Congestion controller for the corresponding path.
     pub congestion: Box<dyn CongestionController>,
 
+    /// Path level Statistics.
+    pub stats: PathStats,
+
     /// It tracks the last metrics used for emitting qlog RecoveryMetricsUpdated
     /// event.
     last_metrics: RecoveryMetrics,
@@ -116,6 +119,7 @@ impl Recovery {
             ack_eliciting_in_flight: 0,
             rtt: RttEstimator::new(conf.initial_rtt),
             congestion: congestion_control::build_congestion_controller(conf),
+            stats: PathStats::default(),
             last_metrics: RecoveryMetrics::default(),
             trace_id: String::from(""),
         }
@@ -202,7 +206,7 @@ impl Recovery {
         handshake_status: HandshakeStatus,
         qlog: Option<&mut qlog::QlogWriter>,
         now: Instant,
-    ) -> Result<(usize, usize)> {
+    ) -> Result<(u64, u64)> {
         let space = spaces.get_mut(space_id).ok_or(Error::InternalError)?;
 
         // Update the largest packet number acknowledged in the space
@@ -340,6 +344,7 @@ impl Recovery {
                     self.bytes_in_flight,
                     self.congestion.congestion_window()
                 );
+                self.stat_acked_event(1, sent_pkt.sent_size as u64);
 
                 space.acked.append(&mut sent_pkt.frames);
                 newly_acked.push(AckedPacket {
@@ -388,7 +393,7 @@ impl Recovery {
         space: &mut PacketNumSpace,
         mut qlog: Option<&mut qlog::QlogWriter>,
         now: Instant,
-    ) -> (usize, usize) {
+    ) -> (u64, u64) {
         space.loss_time = None;
 
         let mut lost_packets = 0;
@@ -421,7 +426,7 @@ impl Recovery {
 
                 lost_packets += 1;
                 if unacked.in_flight {
-                    lost_bytes += unacked.sent_size;
+                    lost_bytes += unacked.sent_size as u64;
                     space.bytes_in_flight = space.bytes_in_flight.saturating_sub(unacked.sent_size);
                     self.bytes_in_flight = self.bytes_in_flight.saturating_sub(unacked.sent_size);
 
@@ -461,7 +466,7 @@ impl Recovery {
                     now,
                     &lost_packet,
                     self.in_persistent_congestion(),
-                    lost_bytes as u64,
+                    lost_bytes,
                     self.bytes_in_flight as u64,
                 );
                 trace!(
@@ -476,6 +481,7 @@ impl Recovery {
             }
         }
 
+        self.stat_lost_event(lost_packets, lost_bytes);
         (lost_packets, lost_bytes)
     }
 
@@ -551,7 +557,7 @@ impl Recovery {
         handshake_status: HandshakeStatus,
         qlog: Option<&mut qlog::QlogWriter>,
         now: Instant,
-    ) -> (usize, usize) {
+    ) -> (u64, u64) {
         let (earliest_loss_time, sid) = self.get_loss_time_and_space(space_id, spaces);
         let space = match spaces.get_mut(sid) {
             Some(space) => space,
@@ -802,6 +808,82 @@ impl Recovery {
         self.bytes_in_flight < self.congestion.congestion_window() as usize
     }
 
+    /// Update statistics for the packet sent event
+    pub(crate) fn stat_sent_event(&mut self, sent_pkts: u64, sent_bytes: u64) {
+        self.stats.sent_count = self.stats.sent_count.saturating_add(sent_pkts);
+        self.stats.sent_bytes = self.stats.sent_bytes.saturating_add(sent_bytes);
+        self.stat_cwnd_updated();
+    }
+
+    /// Update statistics for the packet recv event
+    pub(crate) fn stat_recv_event(&mut self, recv_pkts: u64, recv_bytes: u64) {
+        self.stats.recv_count = self.stats.recv_count.saturating_add(recv_pkts);
+        self.stats.recv_bytes = self.stats.recv_bytes.saturating_add(recv_bytes);
+    }
+
+    /// Update statistics for the packet acked event
+    pub(crate) fn stat_acked_event(&mut self, acked_pkts: u64, acked_bytes: u64) {
+        self.stats.acked_count = self.stats.acked_count.saturating_add(acked_pkts);
+        self.stats.acked_bytes = self.stats.acked_bytes.saturating_add(acked_bytes);
+    }
+
+    /// Update statistics for the packet loss event
+    pub(crate) fn stat_lost_event(&mut self, lost_pkts: u64, lost_bytes: u64) {
+        self.stats.lost_count = self.stats.lost_count.saturating_add(lost_pkts);
+        self.stats.lost_bytes = self.stats.lost_bytes.saturating_add(lost_bytes);
+    }
+
+    /// Update statistics for the congestion_window
+    pub(crate) fn stat_cwnd_updated(&mut self) {
+        let cwnd = self.congestion.congestion_window();
+        if self.stats.init_cwnd == 0 {
+            self.stats.init_cwnd = cwnd;
+            self.stats.min_cwnd = cwnd;
+            self.stats.max_cwnd = cwnd;
+        }
+        self.stats.final_cwnd = cwnd;
+        if self.stats.max_cwnd < cwnd {
+            self.stats.max_cwnd = cwnd;
+        }
+        if self.stats.min_cwnd > cwnd {
+            self.stats.min_cwnd = cwnd;
+        }
+        let bytes_in_flight = self.bytes_in_flight as u64;
+        if self.stats.max_inflight < bytes_in_flight {
+            self.stats.max_inflight = bytes_in_flight;
+        }
+    }
+
+    /// Update statistics for the congestion window limited event
+    pub(crate) fn stat_cwnd_limited(&mut self) {
+        let is_cwnd_limited = !self.can_send();
+        let now = Instant::now();
+        if let Some(last_cwnd_limited_time) = self.stats.last_cwnd_limited_time {
+            // Update duration timely, in case it stays in cwnd limited all the time.
+            let duration = now.saturating_duration_since(last_cwnd_limited_time);
+            self.stats.cwnd_limited_duration =
+                self.stats.cwnd_limited_duration.saturating_add(duration);
+            if is_cwnd_limited {
+                self.stats.last_cwnd_limited_time = Some(now);
+            } else {
+                self.stats.last_cwnd_limited_time = None;
+            }
+        } else if is_cwnd_limited {
+            // A new cwnd limited event
+            self.stats.cwnd_limited_count = self.stats.cwnd_limited_count.saturating_add(1);
+            self.stats.last_cwnd_limited_time = Some(now);
+        }
+    }
+
+    /// Update with the latest values from recovery.
+    pub(crate) fn stat_lazy_update(&mut self) {
+        self.stats.min_rtt = self.rtt.min_rtt();
+        self.stats.max_rtt = self.rtt.max_rtt();
+        self.stats.srtt = self.rtt.smoothed_rtt();
+        self.stats.rttvar = self.rtt.rttvar();
+        self.stats.in_slow_start = self.congestion.in_slow_start();
+    }
+
     /// Write a qlog RecoveryMetricsUpdated event if any recovery metric is updated.
     pub(crate) fn qlog_recovery_metrics_updated(&mut self, qlog: &mut qlog::QlogWriter) {
         let mut updated = false;
@@ -892,6 +974,76 @@ impl Recovery {
         };
         qlog.add_event_data(Instant::now(), ev_data).ok();
     }
+}
+
+#[derive(Default)]
+pub struct PathStats {
+    /// The number of QUIC packets received.
+    pub recv_count: u64,
+
+    /// The number of received bytes.
+    pub recv_bytes: u64,
+
+    /// The number of QUIC packets sent.
+    pub sent_count: u64,
+
+    /// The number of sent bytes.
+    pub sent_bytes: u64,
+
+    /// The number of QUIC packets lost.
+    pub lost_count: u64,
+
+    /// The number of lost bytes.
+    pub lost_bytes: u64,
+
+    /// Total number of bytes acked.
+    pub acked_bytes: u64,
+
+    /// Total number of packets acked.
+    pub acked_count: u64,
+
+    /// Initial congestion window in bytes.
+    pub init_cwnd: u64,
+
+    /// Final congestion window in bytes.
+    pub final_cwnd: u64,
+
+    /// Maximum congestion window in bytes.
+    pub max_cwnd: u64,
+
+    /// Minimum congestion window in bytes.
+    pub min_cwnd: u64,
+
+    /// Maximum inflight data in bytes.
+    pub max_inflight: u64,
+
+    /// Total loss events.
+    pub loss_event_count: u64,
+
+    /// Total congestion window limited events.
+    pub cwnd_limited_count: u64,
+
+    /// Total duration of congestion windowlimited events.
+    pub cwnd_limited_duration: Duration,
+
+    /// The time for last congestion window event
+    last_cwnd_limited_time: Option<Instant>,
+
+    /* Note: the following fields are lazily updated from Recovery */
+    /// Minimum roundtrip time.
+    pub min_rtt: Duration,
+
+    /// Maximum roundtrip time.
+    pub max_rtt: Duration,
+
+    /// Smoothed roundtrip time.
+    pub srtt: Duration,
+
+    /// Roundtrip time variation.
+    pub rttvar: Duration,
+
+    /// Whether the congestion controller is in slow start status.
+    pub in_slow_start: bool,
 }
 
 /// Metrics used for emitting qlog RecoveryMetricsUpdated event.

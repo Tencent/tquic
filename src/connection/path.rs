@@ -17,9 +17,11 @@ use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::time;
+use std::time::Duration;
 
 use slab::Slab;
 
+use super::recovery::PathStats;
 use super::recovery::Recovery;
 use super::timer;
 use crate::connection::SpaceId;
@@ -72,9 +74,6 @@ pub struct Path {
 
     /// Loss recovery and congestion control.
     pub(crate) recovery: Recovery,
-
-    /// Statistics about the path.
-    pub(super) stats: PathStats,
 
     /// The current validation state of the path.
     state: PathState,
@@ -135,7 +134,6 @@ impl Path {
             dcid_seq,
             active: false,
             recovery: Recovery::new(conf),
-            stats: PathStats::default(),
             state,
             recv_chals: VecDeque::new(),
             sent_chals: VecDeque::new(),
@@ -300,9 +298,10 @@ impl Path {
         !self.active && self.dcid_seq.is_none()
     }
 
-    /// Return statistics about the path
-    pub fn stats(&self) -> &PathStats {
-        &self.stats
+    /// Update and return the latest statistics about the path
+    pub fn stats(&mut self) -> &PathStats {
+        self.recovery.stat_lazy_update();
+        &self.recovery.stats
     }
 
     /// Return the validation state of the path
@@ -317,28 +316,6 @@ impl std::fmt::Debug for Path {
         write!(f, "remote={:?}", self.remote_addr)?;
         Ok(())
     }
-}
-
-/// Statistics about a path.
-#[derive(Debug, Default)]
-pub struct PathStats {
-    /// The number of QUIC packets received.
-    pub recv_count: usize,
-
-    /// The number of QUIC packets sent.
-    pub sent_count: usize,
-
-    /// The number of QUIC packets lost.
-    pub lost_count: usize,
-
-    /// The number of received bytes.
-    pub recv_bytes: u64,
-
-    /// The number of sent bytes.
-    pub sent_bytes: u64,
-
-    /// The number of lost bytes.
-    pub lost_bytes: u64,
 }
 
 /// Path manager for a QUIC connection
@@ -584,8 +561,8 @@ mod tests {
         assert_eq!(path_mgr.get(pid)?.remote_addr(), server_addr);
         assert_eq!(path_mgr.get(pid)?.active(), true);
         assert_eq!(path_mgr.get(pid)?.unused(), false);
-        assert_eq!(path_mgr.get(pid)?.stats().recv_count, 0);
-        assert_eq!(path_mgr.get(pid)?.stats().sent_count, 0);
+        assert_eq!(path_mgr.get_mut(pid)?.stats().recv_count, 0);
+        assert_eq!(path_mgr.get_mut(pid)?.stats().sent_count, 0);
         assert_eq!(path_mgr.get_active()?.local_addr(), client_addr);
         assert_eq!(path_mgr.get_active_mut()?.remote_addr(), server_addr);
         assert_eq!(path_mgr.get_active_path_id()?, 0);
