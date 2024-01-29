@@ -644,8 +644,10 @@ impl Connection {
         // Update statistic metrics
         self.stats.recv_count += 1;
         self.stats.recv_bytes += read as u64;
-        self.paths.get_mut(pid)?.stats.recv_count += 1;
-        self.paths.get_mut(pid)?.stats.recv_bytes += read as u64;
+        self.paths
+            .get_mut(pid)?
+            .recovery
+            .stat_recv_event(1, read as u64);
 
         // The successful use of Handshake packets indicates that no more
         // Initial packets need to be exchanged, as these keys can only be
@@ -729,7 +731,7 @@ impl Connection {
                     now,
                 )?;
                 self.stats.lost_count += lost_pkts;
-                self.stats.lost_bytes += lost_bytes as u64;
+                self.stats.lost_bytes += lost_bytes;
 
                 // An endpoint MUST discard its Handshake keys when the TLS
                 // handshake is confirmed.
@@ -1636,8 +1638,10 @@ impl Connection {
         // Update connection state and statistic metrics
         self.stats.sent_count += 1;
         self.stats.sent_bytes += written as u64;
-        self.paths.get_mut(path_id)?.stats.sent_count += 1;
-        self.paths.get_mut(path_id)?.stats.sent_bytes += written as u64;
+        self.paths
+            .get_mut(path_id)?
+            .recovery
+            .stat_sent_event(1, written as u64);
         {
             let space = self.spaces.get_mut(space_id).ok_or(Error::InternalError)?;
             space.next_pkt_num += 1;
@@ -1690,12 +1694,15 @@ impl Connection {
         // Write a CONNECTION_CLOSE frame
         self.try_write_close_frame(out, st, pkt_type, path_id)?;
 
+        let path = self.paths.get_mut(path_id)?;
+        path.recovery.stat_cwnd_limited();
+
         // Check the congestion window
         // - Packets containing frames besides ACK or CONNECTION_CLOSE frames
         // count toward congestion control limits. (RFC 9002 Section 3)
         // - Probe packets are allowed to temporarily exceed the congestion
         // window. (RFC 9002 Section 4.7)
-        if !st.is_probe && !self.paths.get(path_id)?.recovery.can_send() {
+        if !st.is_probe && !path.recovery.can_send() {
             return Err(Error::Done);
         }
 
@@ -2880,13 +2887,15 @@ impl Connection {
                             if timer > now {
                                 continue;
                             }
-                            path.recovery.on_loss_detection_timeout(
+                            let (lost_pkts, lost_bytes) = path.recovery.on_loss_detection_timeout(
                                 SpaceId::Data, // TODO: update for multipath
                                 &mut self.spaces,
                                 handshake_status,
                                 self.qlog.as_mut(),
                                 now,
                             );
+                            self.stats.lost_count += lost_pkts;
+                            self.stats.lost_bytes += lost_bytes;
 
                             // Write RecoveryMetricsUpdate event to qlog.
                             if let Some(qlog) = &mut self.qlog {
@@ -3916,19 +3925,19 @@ enum ConnectionFlags {
 #[derive(Default)]
 pub struct ConnectionStats {
     /// Total number of received packets.
-    pub recv_count: usize,
-
-    /// Total number of sent packets.
-    pub sent_count: usize,
-
-    /// Total number of lost packets.
-    pub lost_count: usize,
+    pub recv_count: u64,
 
     /// Total number of bytes received on the connection.
     pub recv_bytes: u64,
 
+    /// Total number of sent packets.
+    pub sent_count: u64,
+
     /// Total number of bytes sent on the connection.
     pub sent_bytes: u64,
+
+    /// Total number of lost packets.
+    pub lost_count: u64,
 
     /// Total number of bytes lost on the connection.
     pub lost_bytes: u64,
@@ -6600,7 +6609,7 @@ pub(crate) mod tests {
 
         conn_multipath_transfer(&mut test_pair, blocks)?;
 
-        for (i, path) in test_pair.server.paths.iter() {
+        for (i, path) in test_pair.server.paths.iter_mut() {
             let s = path.stats();
             assert!(s.sent_count > 3);
             assert!(s.recv_count > 3);
@@ -6627,7 +6636,7 @@ pub(crate) mod tests {
         }
         conn_multipath_transfer(&mut test_pair, blocks)?;
 
-        for (i, path) in test_pair.server.paths.iter() {
+        for (i, path) in test_pair.server.paths.iter_mut() {
             let s = path.stats();
             assert!(s.sent_count > 50);
             assert!(s.recv_count > 50);
