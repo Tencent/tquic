@@ -32,7 +32,12 @@ pub const QLOG_VERSION: &str = "0.4";
 
 /// The serialization format for QlogFileSeq is JSON-SEQ
 /// See RFC 7464: JavaScript Object Notation (JSON) Text Sequences
-pub const JSON_TEXT_SEQS: &str = "JSON-SEQ";
+pub const JSON_SEQ_FORMAT: &str = "JSON-SEQ";
+
+/// JSON Text Sequences are very similar to JSON, except that JSON objects are
+/// serialized as individual records, each prefixed by an ASCII Record Separator
+/// (<RS>, 0x1E), and each ending with an ASCII Line Feed character (\n, 0x0A).
+pub const JSON_SEQ_RS: &[u8] = b"\x1e";
 
 /// A qlog file using the QlogFileSeq schema can be serialized to a streamable
 /// JSON format called JSON Text Sequences (JSON-SEQ) ([RFC7464])
@@ -211,8 +216,8 @@ impl QlogWriter {
         start_time: std::time::Instant,
     ) -> Self {
         let qlog = QlogFileSeq {
-            qlog_format: crate::qlog::JSON_TEXT_SEQS.to_string(),
-            qlog_version: crate::qlog::QLOG_VERSION.to_string(),
+            qlog_format: JSON_SEQ_FORMAT.to_string(),
+            qlog_version: QLOG_VERSION.to_string(),
             title,
             description,
             trace,
@@ -233,7 +238,7 @@ impl QlogWriter {
             return Err(Error::Done);
         }
 
-        self.writer.as_mut().write_all(b" ")?;
+        self.writer.as_mut().write_all(JSON_SEQ_RS)?;
         serde_json::to_writer(self.writer.as_mut(), &self.qlog).map_err(|_| Error::Done)?;
         self.writer.as_mut().write_all(b"\n")?;
         self.ready = true;
@@ -254,7 +259,7 @@ impl QlogWriter {
     pub fn add_event(&mut self, event: Event) -> Result<()> {
         self.check(event.importance())?;
 
-        self.writer.as_mut().write_all(b" ")?;
+        self.writer.as_mut().write_all(JSON_SEQ_RS)?;
         serde_json::to_writer(self.writer.as_mut(), &event).map_err(|_| Error::Done)?;
         self.writer.as_mut().write_all(b"\n")?;
         Ok(())
@@ -365,10 +370,12 @@ mod tests {
 
         assert_eq!(
             log,
-            r#" {"qlog_format":"JSON-SEQ","qlog_version":"0.4","title":"title","description":"description","trace":{"title":"qlog trace","description":"qlog trace description","vantage_point":{"type":"server"}}}
- {"time":0.0,"name":"connectivity:connection_state_updated","data":{"new":"handshake_completed"}}
- {"time":0.0,"name":"connectivity:connection_state_updated","data":{"new":"handshake_confirmed"}}
-"#
+            format!(
+                "\u{1e}{}\n\u{1e}{}\n\u{1e}{}\n",
+                r#"{"qlog_format":"JSON-SEQ","qlog_version":"0.4","title":"title","description":"description","trace":{"title":"qlog trace","description":"qlog trace description","vantage_point":{"type":"server"}}}"#,
+                r#"{"time":0.0,"name":"connectivity:connection_state_updated","data":{"new":"handshake_completed"}}"#,
+                r#"{"time":0.0,"name":"connectivity:connection_state_updated","data":{"new":"handshake_confirmed"}}"#,
+            )
         );
 
         Ok(())

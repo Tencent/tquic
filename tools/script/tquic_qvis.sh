@@ -25,10 +25,9 @@ if [ ! -f "$1" ]; then
     exit 1
 fi
 
-
 # Convert to JSON format
 OUT="$1.qvis.json"
-jq -s '.[1:] as $events | .[0] | .trace.events=$events | .traces=[.trace] | del(.trace) | .qlog_format="JSON"' $1 > $OUT
+sed 's/^\x1e//' $1 | jq -s '.[1:] as $events | .[0] | .trace.events=$events | .traces=[.trace] | del(.trace) | .qlog_format="JSON"' > $OUT
 
 # Change for backward compatibility
 # Note qvis reportedly does not plan to implement qlog 0.4 and will continue
