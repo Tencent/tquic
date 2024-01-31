@@ -15,6 +15,7 @@ jobs:
     runs-on: ubuntu-latest
 
     strategy:
+      fail-fast: false
       matrix:
         server: [tquic]
         client: [tquic]
@@ -47,4 +48,14 @@ jobs:
     - name: Run the interop tests 
       run: |
         cd quic-interop-runner   
-        python3 run.py -s ${{ matrix.server }} -c ${{ matrix.client }} -t handshake,retry,resumption,zerortt,http3,ipv6,transfer,multiplexing,longrtt,blackhole,transferloss,transfercorruption,goodput,crosstraffic -d -r tquic=tquic_interop:v1
+        python3 run.py -s ${{ matrix.server }} -c ${{ matrix.client }} -t handshake,handshakeloss,handshakecorruption,retry,resumption,zerortt,http3,ipv6,transfer,multiplexing,longrtt,blackhole,transferloss,transfercorruption,goodput,crosstraffic -d -r tquic=tquic_interop:v1 -l ${{ matrix.client }}-${{ matrix.server }}-logs
+
+    - name: Store run logs
+      if: ${{ failure() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.client }}-${{ matrix.server }}
+        path: |
+          quic-interop-runner/*logs/*
+          !quic-interop-runner/*logs/**/crosstraffic/
+          !quic-interop-runner/*logs/**/goodput/
