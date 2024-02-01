@@ -41,7 +41,7 @@ jobs:
         python3 run.py -r $QUIC_IMAGES -s ${{ matrix.impl }} -c ${{ matrix.impl }} -t ${{ matrix.case }} -a ${{ matrix.cc }} -d -n "drop-rate --delay=15ms --bandwidth=10Mbps --queue=25 --rate_to_server=5 --rate_to_client=5" -j ${{ matrix.case }}-5-${{ matrix.cc }}-${{ matrix.impl }}.json
 
     - name: Store measurement results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.case }}-${{ matrix.impl }}
         path: quic-interop-runner/goodput*.json 
@@ -51,11 +51,11 @@ jobs:
     needs: measure
     steps:
     - name: Download all workflow run artifacts
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
     - name: Display structure of downloaded files
       run: ls -R
     - name: Store all measurement results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: goodput-all-result
         path: goodput*
