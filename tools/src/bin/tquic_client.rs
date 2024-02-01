@@ -206,7 +206,7 @@ pub struct ClientOpt {
     pub initial_rtt: u64,
 
     /// Linear factor for calculating the probe timeout.
-    #[clap(long, default_value = "3", value_name = "NUM")]
+    #[clap(long, default_value = "10", value_name = "NUM")]
     pub pto_linear_factor: u64,
 
     /// Upper limit of probe timeout in microseconds.
