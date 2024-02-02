@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# This simple scripts contains additional end-to-end test cases for tquic tools.
+# This simple script contains additional end-to-end test cases for tquic tools.
 # When conditions permit, it's plan to implement all of the following test cases
 # in the `github.com/tquic-group/quic-interop-runner` repo.
 
