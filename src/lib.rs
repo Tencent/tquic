@@ -754,7 +754,7 @@ impl EventQueue {
         self.0 = Some(VecDeque::new());
     }
 
-    /// Add a endpoint-faceing event.
+    /// Add an endpoint-faceing event.
     fn add(&mut self, e: Event) -> bool {
         if let Some(events) = &mut self.0 {
             events.push_back(e);
@@ -763,7 +763,7 @@ impl EventQueue {
         false
     }
 
-    /// Return a endpoint-facing event.
+    /// Return an endpoint-facing event.
     fn poll(&mut self) -> Option<Event> {
         if let Some(events) = &mut self.0 {
             return events.pop_front();
@@ -867,6 +867,15 @@ pub enum Shutdown {
     Write = 1,
 }
 
+/// Important events about path
+pub enum PathEvent {
+    /// The path has been validated.
+    Validated(usize),
+
+    /// The path has been abandoned.
+    Abandoned(usize),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -875,6 +884,7 @@ mod tests {
     fn init() {
         env_logger::builder()
             .filter_level(log::LevelFilter::Trace)
+            .format_timestamp_millis()
             .is_test(true)
             .init();
     }

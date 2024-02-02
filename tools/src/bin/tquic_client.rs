@@ -20,10 +20,12 @@ use std::fs::create_dir_all;
 use std::fs::File;
 use std::io::BufWriter;
 use std::io::Write;
+use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -120,6 +122,10 @@ pub struct ClientOpt {
     #[clap(long, default_value = "INFO", value_name = "STR")]
     pub log_level: log::LevelFilter,
 
+    /// Log file path. If no file is specified, logs will be written to `stderr`.
+    #[clap(long, value_name = "FILE")]
+    pub log_file: Option<String>,
+
     /// Override server's address.
     #[clap(short, long, value_name = "ADDR")]
     pub connect_to: Option<SocketAddr>,
@@ -137,7 +143,7 @@ pub struct ClientOpt {
     /// Dump response body into the given directory.
     /// If the specified directory does not exist, a new directory will be created.
     #[clap(long, value_name = "DIR")]
-    pub dump_path: Option<String>,
+    pub dump_dir: Option<String>,
 
     /// File used for session resumption.
     #[clap(short, long, value_name = "FILE")]
@@ -145,7 +151,6 @@ pub struct ClientOpt {
 
     /// Enable early data.
     #[clap(short, long)]
-    // TODO: support early data.
     pub enable_early_data: bool,
 
     /// Disable stateless reset.
@@ -172,9 +177,13 @@ pub struct ClientOpt {
     #[clap(long, default_value = "MINRTT")]
     pub multipath_algor: MultipathAlgorithm,
 
-    /// Extra local addresses for client.
-    #[clap(long, value_delimiter = ' ', value_name = "ADDR")]
-    pub local_addresses: Vec<SocketAddr>,
+    /// Optional local IP addresses for client. e.g 192.168.1.10,192.168.2.20
+    #[clap(long, value_delimiter = ',', value_name = "ADDR")]
+    pub local_addresses: Vec<IpAddr>,
+
+    /// Set active_connection_id_limit transport parameter. Values lower than 2 will be ignored.
+    #[clap(long, default_value = "2", value_name = "NUM")]
+    pub active_cid_limit: u64,
 
     /// Set max_udp_payload_size transport parameter.
     #[clap(long, default_value = "65527", value_name = "NUM")]
@@ -197,7 +206,7 @@ pub struct ClientOpt {
     pub initial_rtt: u64,
 
     /// Linear factor for calculating the probe timeout.
-    #[clap(long, default_value = "3", value_name = "NUM")]
+    #[clap(long, default_value = "10", value_name = "NUM")]
     pub pto_linear_factor: u64,
 
     /// Upper limit of probe timeout in microseconds.
@@ -208,9 +217,9 @@ pub struct ClientOpt {
     #[clap(short, long, value_name = "FILE")]
     pub keylog_file: Option<String>,
 
-    /// Save QUIC qlog into the given file.
-    #[clap(long, value_name = "FILE")]
-    pub qlog_file: Option<String>,
+    /// Save qlog file (<trace_id>.qlog) into the given directory.
+    #[clap(long, value_name = "DIR")]
+    pub qlog_dir: Option<String>,
 
     /// Length of connection id in bytes.
     #[clap(long, default_value = "8", value_name = "NUM")]
@@ -257,12 +266,12 @@ impl Client {
     pub fn start(&mut self) {
         self.start_time = Instant::now();
         let mut threads = vec![];
-        for i in 0..self.option.threads {
+        for _ in 0..self.option.threads {
             let client_opt = self.option.clone();
             let client_ctx = self.context.clone();
             let terminated = self.terminated.clone();
             let thread = thread::spawn(move || {
-                let mut worker = Worker::new(i, client_opt, client_ctx, terminated).unwrap();
+                let mut worker = Worker::new(client_opt, client_ctx, terminated).unwrap();
                 worker.start().unwrap();
             });
             threads.push(thread);
@@ -412,7 +421,6 @@ struct Worker {
 impl Worker {
     /// Create a new single thread client.
     pub fn new(
-        index: u32,
         option: ClientOpt,
         client_ctx: Arc<Mutex<ClientContext>>,
         terminated: Arc<AtomicBool>,
@@ -435,6 +443,7 @@ impl Worker {
         config.set_min_congestion_window(option.min_congestion_window);
         config.enable_multipath(option.enable_multipath);
         config.set_multipath_algorithm(option.multipath_algor);
+        config.set_active_connection_id_limit(option.active_cid_limit);
         let tls_config = TlsConfig::new_client_config(
             ApplicationProto::convert_to_vec(&option.alpn),
             option.enable_early_data,
@@ -445,16 +454,35 @@ impl Worker {
         let registry = poll.registry();
         let worker_ctx = Rc::new(RefCell::new(WorkerContext::with_option(&option)));
         let senders = Rc::new(RefCell::new(FxHashMap::default()));
-        let handlers = WorkerHandler::new(&option, worker_ctx.clone(), senders.clone());
 
+        // Use unspecified local addr or the given local addr
         let remote = option.connect_to.unwrap();
-        let mut sock = QuicSocket::new_client_socket(remote.is_ipv4(), registry)?;
-        if index == 0 && !option.local_addresses.is_empty() {
-            for local in &option.local_addresses {
-                let _ = sock.add(local, registry);
+        let local = if !option.local_addresses.is_empty() {
+            SocketAddr::new(option.local_addresses[0], 0)
+        } else {
+            match remote.is_ipv4() {
+                true => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+                false => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+            }
+        };
+        let mut sock = QuicSocket::new(&local, registry)?;
+
+        let mut assigned_addrs = Vec::new();
+        assigned_addrs.push(sock.local_addr());
+        if let Some(addrs) = option.local_addresses.get(1..) {
+            for local in addrs {
+                let addr = sock.add(&SocketAddr::new(*local, 0), registry)?;
+                assigned_addrs.push(addr);
             }
         }
         let sock = Rc::new(sock);
+
+        let handlers = WorkerHandler::new(
+            &option,
+            &assigned_addrs,
+            worker_ctx.clone(),
+            senders.clone(),
+        );
 
         Ok(Worker {
             option,
@@ -755,7 +783,7 @@ impl Request {
     }
 
     // TODO: support custom headers.
-    fn new(method: &str, url: &Url, body: &Option<Vec<u8>>, dump_path: &Option<String>) -> Self {
+    fn new(method: &str, url: &Url, body: &Option<Vec<u8>>, dump_dir: &Option<String>) -> Self {
         let authority = match url.port() {
             Some(port) => format!("{}:{}", url.host_str().unwrap(), port),
             None => url.host_str().unwrap().to_string(),
@@ -778,7 +806,7 @@ impl Request {
             url: url.clone(),
             line: format!("GET {}\r\n", url.path()),
             headers,
-            response_writer: Self::make_response_writer(url, dump_path),
+            response_writer: Self::make_response_writer(url, dump_dir),
             start_time: None,
         }
     }
@@ -875,7 +903,7 @@ impl RequestSender {
     /// Receive responses.
     pub fn recv_responses(&mut self, conn: &mut Connection, stream_id: u64) {
         if self.streams.get_mut(&stream_id).is_none() {
-            debug!("{} stream {} not exist", conn.trace_id(), stream_id);
+            debug!("{} stream {} request not exist", conn.trace_id(), stream_id);
             return;
         }
 
@@ -891,7 +919,7 @@ impl RequestSender {
 
     fn send_request(&mut self, conn: &mut Connection) -> Result<()> {
         let url = &self.option.urls[self.current_url_idx];
-        let mut request = Request::new("GET", url, &None, &self.option.dump_path);
+        let mut request = Request::new("GET", url, &None, &self.option.dump_dir);
         debug!(
             "{} send request {} current index {}",
             conn.trace_id(),
@@ -1046,20 +1074,6 @@ impl RequestSender {
                 worker_ctx.request_done += 1;
                 Self::sample_request_time(request, &mut worker_ctx);
                 self.streams.remove(&stream_id);
-
-                if self.request_done == self.option.max_requests_per_conn {
-                    worker_ctx.concurrent_conns -= 1;
-                    debug!(
-                        "{} all requests finished, close connection",
-                        conn.trace_id()
-                    );
-                    match conn.close(true, 0x00, b"ok") {
-                        Ok(_) | Err(Error::Done) => (),
-                        Err(e) => panic!("error closing conn: {:?}", e),
-                    }
-
-                    return;
-                }
             }
         }
     }
@@ -1113,20 +1127,6 @@ impl RequestSender {
                     let request = self.streams.get_mut(&stream_id).unwrap();
                     Self::sample_request_time(request, &mut worker_ctx);
                     self.streams.remove(&stream_id);
-
-                    if self.request_done == self.option.max_requests_per_conn {
-                        worker_ctx.concurrent_conns -= 1;
-                        debug!(
-                            "{} all requests finished, close connection",
-                            conn.trace_id()
-                        );
-                        match conn.close(true, 0x00, b"ok") {
-                            Ok(_) | Err(Error::Done) => (),
-                            Err(e) => panic!("error closing conn: {:?}", e),
-                        }
-
-                        return;
-                    }
                 }
                 Ok((stream_id, tquic::h3::Http3Event::Reset(e))) => {
                     error!(
@@ -1184,13 +1184,14 @@ struct WorkerHandler {
     /// Remote server.
     remote: SocketAddr,
 
-    /// Extra local addresses.
+    /// Local address list
     local_addresses: Vec<SocketAddr>,
 }
 
 impl WorkerHandler {
     fn new(
         option: &ClientOpt,
+        local_addresses: &[SocketAddr],
         worker_ctx: Rc<RefCell<WorkerContext>>,
         senders: Rc<RefCell<FxHashMap<u64, RequestSender>>>,
     ) -> Self {
@@ -1199,7 +1200,50 @@ impl WorkerHandler {
             worker_ctx,
             senders,
             remote: option.connect_to.unwrap(),
-            local_addresses: option.local_addresses.clone(),
+            local_addresses: local_addresses.to_owned(),
+        }
+    }
+
+    fn try_new_request_sender(&mut self, conn: &mut Connection) {
+        let index = conn.index().unwrap();
+        let mut senders = self.senders.borrow_mut();
+        let sender = senders.get(&index);
+        if sender.is_some() {
+            return;
+        }
+
+        let sender = RequestSender::new(&self.option, conn, self.worker_ctx.clone());
+        senders.insert(index, sender);
+    }
+
+    fn try_close_conn(&mut self, conn: &mut Connection) {
+        let index = conn.index().unwrap();
+        let senders = self.senders.borrow_mut();
+        let sender = senders.get(&index);
+        if let Some(s) = sender {
+            if s.request_done == s.option.max_requests_per_conn && !conn.is_closing() {
+                let mut worker_ctx = self.worker_ctx.borrow_mut();
+                worker_ctx.concurrent_conns -= 1;
+                debug!(
+                    "{} all requests finished, close connection",
+                    conn.trace_id()
+                );
+                match conn.close(true, 0x00, b"ok") {
+                    Ok(_) | Err(Error::Done) => (),
+                    Err(e) => panic!("error closing conn: {:?}", e),
+                }
+            }
+        }
+    }
+
+    fn try_send_request(&mut self, conn: &mut Connection) {
+        let index = conn.index().unwrap();
+        let mut senders = self.senders.borrow_mut();
+        let sender = senders.get_mut(&index);
+        if let Some(s) = sender {
+            s.send_requests(conn);
+        } else {
+            error!("{} sender not exist", conn.trace_id());
         }
     }
 }
@@ -1220,11 +1264,13 @@ impl TransportHandler for WorkerHandler {
             }
         }
 
-        if let Some(qlog_file) = &self.option.qlog_file {
+        if let Some(qlog_dir) = &self.option.qlog_dir {
+            let qlog_file = format!("{}.qlog", conn.trace_id());
+            let qlog_file = Path::new(qlog_dir).join(qlog_file);
             if let Ok(qlog) = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(qlog_file)
+                .open(qlog_file.as_path())
             {
                 conn.set_qlog(
                     Box::new(qlog),
@@ -1232,8 +1278,12 @@ impl TransportHandler for WorkerHandler {
                     format!("id={}", conn.trace_id()),
                 );
             } else {
-                error!("{} set qlog failed", conn.trace_id());
+                error!("{} set qlog {:?} failed", conn.trace_id(), qlog_file);
             }
+        }
+
+        if conn.is_in_early_data() {
+            self.try_new_request_sender(conn);
         }
     }
 
@@ -1250,29 +1300,27 @@ impl TransportHandler for WorkerHandler {
         }
 
         // Try to add additional paths
-        for local in &self.local_addresses {
-            match conn.add_path(*local, self.remote) {
-                Ok(_) => debug!(
-                    "{} add new path {}-{}",
-                    conn.trace_id(),
-                    *local,
-                    self.remote
-                ),
-                Err(e) => debug!(
-                    "{} fail to add path {}-{}: {}",
-                    conn.trace_id(),
-                    *local,
-                    self.remote,
-                    e
-                ),
+        if let Some(addrs) = self.local_addresses.get(1..) {
+            for local in addrs {
+                match conn.add_path(*local, self.remote) {
+                    Ok(_) => debug!(
+                        "{} add new path {}-{}",
+                        conn.trace_id(),
+                        *local,
+                        self.remote
+                    ),
+                    Err(e) => debug!(
+                        "{} fail to add path {}-{}: {}",
+                        conn.trace_id(),
+                        *local,
+                        self.remote,
+                        e
+                    ),
+                }
             }
         }
 
-        let mut sender = RequestSender::new(&self.option, conn, self.worker_ctx.clone());
-        sender.send_requests(conn);
-        let mut senders = self.senders.borrow_mut();
-        let index = conn.index().unwrap();
-        senders.insert(index, sender);
+        self.try_new_request_sender(conn);
     }
 
     fn on_conn_closed(&mut self, conn: &mut Connection) {
@@ -1333,7 +1381,7 @@ impl TransportHandler for WorkerHandler {
         if let Some(s) = sender {
             s.recv_responses(conn, stream_id);
         } else {
-            error!("{} stream {} not exist", conn.trace_id(), stream_id);
+            debug!("{} stream {} sender not exist", conn.trace_id(), stream_id);
         }
     }
 
@@ -1344,14 +1392,8 @@ impl TransportHandler for WorkerHandler {
     fn on_stream_closed(&mut self, conn: &mut Connection, stream_id: u64) {
         debug!("{} stream {} is closed", conn.trace_id(), stream_id);
 
-        let index = conn.index().unwrap();
-        let mut senders = self.senders.borrow_mut();
-        let sender = senders.get_mut(&index);
-        if let Some(s) = sender {
-            s.send_requests(conn);
-        } else {
-            error!("{} stream {} not exist", conn.trace_id(), stream_id);
-        }
+        self.try_send_request(conn);
+        self.try_close_conn(conn);
     }
 
     fn on_new_token(&mut self, _conn: &mut Connection, _token: Vec<u8>) {}
@@ -1392,20 +1434,29 @@ fn parse_option() -> std::result::Result<ClientOpt, clap::error::Error> {
     Ok(option)
 }
 
-fn process_option(option: &mut ClientOpt) {
-    env_logger::builder().filter_level(option.log_level).init();
+fn process_option(option: &mut ClientOpt) -> Result<()> {
+    env_logger::builder()
+        .target(tquic_tools::log_target(&option.log_file)?)
+        .filter_level(option.log_level)
+        .format_timestamp_millis()
+        .init();
 
-    if let Some(dump_path) = &option.dump_path {
-        if let Err(e) = create_dir_all(dump_path) {
-            warn!(
-                "create dump path directory error: {:?}, can't dump response body",
-                e
-            );
-            option.dump_path = None;
+    if let Some(dump_dir) = &option.dump_dir {
+        if let Err(e) = create_dir_all(dump_dir) {
+            warn!("create dump directory {} error: {:?}", dump_dir, e);
+            return Err(Box::new(e));
+        }
+    }
+
+    if let Some(qlog_dir) = &option.qlog_dir {
+        if let Err(e) = create_dir_all(qlog_dir) {
+            warn!("create qlog directory {} error: {:?}", qlog_dir, e);
+            return Err(Box::new(e));
         }
     }
 
     process_connect_address(option);
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -1416,7 +1467,7 @@ fn main() -> Result<()> {
     };
 
     // Process client option.
-    process_option(&mut option);
+    process_option(&mut option)?;
 
     // Create client.
     let mut client = Client::new(option)?;

@@ -21,14 +21,14 @@ set -x
 /setup.sh
 
 case "$TESTCASE" in
-handshake|http3|resumption|ipv6|goodput|crosstraffic|transfer|transferloss|transfercorruption|multiplexing|longrtt|chacha20|blackhole|retry|handshakeloss|handshakecorruption|multiconnect)
+handshake|http3|multiconnect|resumption|retry|transfer|zerortt)
     ;;
-zerortt|chacha20)
+chacha20)
     if [ "$ROLE" == "client" ]; then
         exit 127
     fi
     ;;
-keyupdate|ecn|amplificationlimit|v2)
+keyupdate|ecn|v2)
     exit 127
     ;;
 *)
@@ -42,6 +42,7 @@ TQUIC_SERVER="tquic_server"
 ROOT_DIR="/www"
 DOWNLOAD_DIR="/downloads"
 LOG_DIR="/logs"
+QLOG_DIR="/logs/qlog"
 
 CC_ALGOR="CUBIC"
 case ${CONGESTION^^} in
@@ -58,7 +59,7 @@ COPA)
     ;;
 esac
 
-COMMON_ARGS="--keylog-file $SSLKEYLOGFILE --log-level TRACE --idle-timeout 30000 --handshake-timeout 30000 --congestion-control-algor $CC_ALGOR"
+COMMON_ARGS="--keylog-file $SSLKEYLOGFILE --qlog-dir $QLOG_DIR --log-level TRACE --log-file $LOG_DIR/$ROLE.log --idle-timeout 30000 --handshake-timeout 30000 --congestion-control-algor $CC_ALGOR"
 
 if [ "$ROLE" == "client" ]; then
     # Wait for the simulator to start up.
@@ -66,7 +67,7 @@ if [ "$ROLE" == "client" ]; then
 
     REQS=($REQUESTS)
 
-    CLIENT_ARGS="$COMMON_ARGS --dump-path ${DOWNLOAD_DIR} --max-concurrent-requests ${#REQS[@]}"
+    CLIENT_ARGS="$COMMON_ARGS --dump-dir ${DOWNLOAD_DIR} --max-concurrent-requests ${#REQS[@]}"
     CLIENT_ALPN="--alpn hq-interop"
     case $TESTCASE in
     resumption)
@@ -91,15 +92,15 @@ if [ "$ROLE" == "client" ]; then
         CLIENT_ARGS="$CLIENT_ARGS --initial-rtt 100"
         for REQ in $REQUESTS
         do
-            $TQUIC_DIR/$TQUIC_CLIENT $CLIENT_ARGS $REQ >> $LOG_DIR/$ROLE.log 2>&1
+            $TQUIC_DIR/$TQUIC_CLIENT $CLIENT_ARGS $REQ
         done
         ;;
     zerortt)
-        $TQUIC_DIR/$TQUIC_CLIENT $CLIENT_ARGS ${REQS[0]} > $LOG_DIR/$ROLE.log 2>&1
-        $TQUIC_DIR/$TQUIC_CLIENT $CLIENT_ARGS ${REQS[@]:1} >> $LOG_DIR/$ROLE.log 2>&1
+        $TQUIC_DIR/$TQUIC_CLIENT $CLIENT_ARGS ${REQS[0]}
+        $TQUIC_DIR/$TQUIC_CLIENT $CLIENT_ARGS ${REQS[@]:1}
         ;;
     *)
-        $TQUIC_DIR/$TQUIC_CLIENT $CLIENT_ARGS $REQUESTS > $LOG_DIR/$ROLE.log 2>&1
+        $TQUIC_DIR/$TQUIC_CLIENT $CLIENT_ARGS $REQUESTS
         ;;
     esac
 elif [ "$ROLE" == "server" ]; then
@@ -117,5 +118,5 @@ elif [ "$ROLE" == "server" ]; then
     *)
         ;;
     esac
-    $TQUIC_DIR/$TQUIC_SERVER $SERVER_ARGS > $LOG_DIR/$ROLE.log 2>&1
+    $TQUIC_DIR/$TQUIC_SERVER $SERVER_ARGS
 fi

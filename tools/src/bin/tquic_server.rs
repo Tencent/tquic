@@ -16,16 +16,17 @@
 
 use std::cmp;
 use std::collections::HashMap;
+use std::fs::create_dir_all;
 use std::fs::File;
 use std::net::SocketAddr;
 use std::path;
+use std::path::Path;
 use std::rc::Rc;
 use std::time::Instant;
 
 use bytes::Bytes;
 use clap::Parser;
-use log::debug;
-use log::error;
+use log::*;
 use mio::event::Event;
 use rustc_hash::FxHashMap;
 
@@ -69,6 +70,10 @@ pub struct ServerOpt {
     /// Log level, support OFF/ERROR/WARN/INFO/DEBUG/TRACE.
     #[clap(long, default_value = "INFO")]
     pub log_level: log::LevelFilter,
+
+    /// Log file path. If no file is specified, logs will be written to `stderr`.
+    #[clap(long, value_name = "FILE")]
+    pub log_file: Option<String>,
 
     /// Address to listen.
     #[clap(short, long, default_value = "0.0.0.0:4433", value_name = "ADDR")]
@@ -114,6 +119,10 @@ pub struct ServerOpt {
     #[clap(long, default_value = "MINRTT")]
     pub multipath_algor: MultipathAlgorithm,
 
+    /// Set active_connection_id_limit transport parameter. Values lower than 2 will be ignored.
+    #[clap(long, default_value = "2", value_name = "NUM")]
+    pub active_cid_limit: u64,
+
     /// Set max_udp_payload_size transport parameter.
     #[clap(long, default_value = "65527", value_name = "NUM")]
     pub recv_udp_payload_size: u16,
@@ -135,7 +144,7 @@ pub struct ServerOpt {
     pub initial_rtt: u64,
 
     /// Linear factor for calculating the probe timeout.
-    #[clap(long, default_value = "3", value_name = "NUM")]
+    #[clap(long, default_value = "10", value_name = "NUM")]
     pub pto_linear_factor: u64,
 
     /// Upper limit of probe timeout in microseconds.
@@ -146,9 +155,9 @@ pub struct ServerOpt {
     #[clap(long, value_name = "FILE")]
     pub keylog_file: Option<String>,
 
-    /// Save QUIC qlog into the given file.
-    #[clap(long, value_name = "FILE")]
-    pub qlog_file: Option<String>,
+    /// Save qlog file (<trace_id>.qlog) into the given directory.
+    #[clap(long, value_name = "DIR")]
+    pub qlog_dir: Option<String>,
 
     /// Length of connection id in bytes.
     #[clap(long, default_value = "8", value_name = "NUM")]
@@ -196,6 +205,7 @@ impl Server {
         config.set_min_congestion_window(option.min_congestion_window);
         config.enable_multipath(option.enable_multipath);
         config.set_multipath_algorithm(option.multipath_algor);
+        config.set_active_connection_id_limit(option.active_cid_limit);
 
         if let Some(address_token_key) = &option.address_token_key {
             let address_token_key = convert_address_token_key(address_token_key);
@@ -632,8 +642,8 @@ struct ServerHandler {
     /// SSL key logger
     keylog: Option<File>,
 
-    /// Qlog file
-    qlog: Option<File>,
+    /// Qlog directory
+    qlog_dir: Option<String>,
 }
 
 impl ServerHandler {
@@ -648,22 +658,12 @@ impl ServerHandler {
             None => None,
         };
 
-        let qlog = match &option.qlog_file {
-            Some(qlog_file) => Some(
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(qlog_file)?,
-            ),
-            None => None,
-        };
-
         Ok(Self {
             root: option.root.clone(),
             buf: vec![0; MAX_BUF_SIZE],
             conns: FxHashMap::default(),
             keylog,
-            qlog,
+            qlog_dir: option.qlog_dir.clone(),
         })
     }
 
@@ -699,13 +699,28 @@ impl TransportHandler for ServerHandler {
             }
         }
 
-        if let Some(qlog) = &mut self.qlog {
-            if let Ok(qlog) = qlog.try_clone() {
+        // The qlog of each server connection is written to a different log file
+        // in JSON-SEQ format.
+        //
+        // Note: The server qlogs can also be written to the same file, with a
+        // recommended prefix for each line of logs that includes the trace id.
+        // The qlog of each connection can be then extracted by offline log
+        // processing.
+        if let Some(qlog_dir) = &self.qlog_dir {
+            let qlog_file = format!("{}.qlog", conn.trace_id());
+            let qlog_file = Path::new(qlog_dir).join(qlog_file);
+            if let Ok(qlog) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(qlog_file.as_path())
+            {
                 conn.set_qlog(
                     Box::new(qlog),
                     "server qlog".into(),
                     format!("id={}", conn.trace_id()),
                 );
+            } else {
+                error!("{} set qlog {:?} failed", conn.trace_id(), qlog_file);
             }
         }
     }
@@ -758,11 +773,26 @@ impl TransportHandler for ServerHandler {
     fn on_new_token(&mut self, _conn: &mut Connection, _token: Vec<u8>) {}
 }
 
-fn main() -> Result<()> {
-    let option = ServerOpt::parse();
+fn process_option(option: &mut ServerOpt) -> Result<()> {
+    env_logger::builder()
+        .target(tquic_tools::log_target(&option.log_file)?)
+        .filter_level(option.log_level)
+        .format_timestamp_millis()
+        .init();
 
-    // Initialize logging.
-    env_logger::builder().filter_level(option.log_level).init();
+    if let Some(qlog_dir) = &option.qlog_dir {
+        if let Err(e) = create_dir_all(qlog_dir) {
+            warn!("create qlog directory {} error: {:?}", qlog_dir, e);
+            return Err(Box::new(e));
+        }
+    }
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    // Parse and process server option
+    let mut option = ServerOpt::parse();
+    process_option(&mut option)?;
 
     // Initialize HTTP file server.
     let mut server = Server::new(&option)?;

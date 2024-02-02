@@ -11,7 +11,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-## [v0.6.0] - 2024-01-07
+## [v0.7.0] - 2024-02-02
+
+### Added
+- Add support for building on FreeBSD
+- Add more path level metrics
+- Add more quic and recovery events in qlog
+- Add tquic_qvis.sh to convert qlog files to be compatible with qvis
+- Update MultipathScheduler interface for some advanced schedulers
+- Add tquic_tools_test.sh for additional end-to-end testing
+- tquic_client: support early data
+- tquic_tools: use millisecond precision for log timestamp
+- tquic_tools: add `log-file` option to write logs to specified file
+- tquic_tools: add `active-cid-limit` option to allow more paths
+
+### Changed
+- tquic_tools: change the `qlog-log` option to the `qlog-dir` option
+- tquic_tools: change the `dump-path` option to the `dump-dir` option
+- tquic_tools: update default pto linear factor
+- tquic_client: change the `local_addresses` option to allow the os to choose available ports
+- tquic_client: use `local_addresses` option to specify the addresses to bind in both singlepath and multipath mode.
+
+### Fixed
+- Fix record separator of qlog in json-seq format
+
+
+## [v0.6.0] - 2024-01-17
 
 ### Added
 - Support the latest version of qlog (v0.4)
@@ -117,6 +142,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Provide example clients and servers.
 
 
+[v0.7.0]: https://github.com/tencent/tquic/compare/v0.6.0...v0.7.0
 [v0.6.0]: https://github.com/tencent/tquic/compare/v0.5.0...v0.6.0
 [v0.5.0]: https://github.com/tencent/tquic/compare/v0.4.0...v0.5.0
 [v0.4.0]: https://github.com/tencent/tquic/compare/v0.3.0...v0.4.0

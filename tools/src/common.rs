@@ -13,14 +13,12 @@
 // limitations under the License.
 
 use std::io::ErrorKind;
-use std::net::IpAddr;
-use std::net::Ipv4Addr;
-use std::net::Ipv6Addr;
 use std::net::SocketAddr;
 
 use clap::builder::PossibleValue;
 use clap::ValueEnum;
-use log::debug;
+use env_logger::Target;
+use log::*;
 use mio::net::UdpSocket;
 use mio::Interest;
 use mio::Registry;
@@ -122,21 +120,13 @@ impl QuicSocket {
         })
     }
 
-    pub fn new_client_socket(is_ipv4: bool, registry: &Registry) -> Result<Self> {
-        let local = match is_ipv4 {
-            true => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-            false => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
-        };
-        QuicSocket::new(&SocketAddr::new(local, 0), registry)
-    }
-
     /// Return the local address of the initial socket.
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
     }
 
     /// Add additional socket binding with given local address.
-    pub fn add(&mut self, local: &SocketAddr, registry: &Registry) -> Result<()> {
+    pub fn add(&mut self, local: &SocketAddr, registry: &Registry) -> Result<SocketAddr> {
         let socket = UdpSocket::bind(*local)?;
         let local_addr = socket.local_addr()?;
         let sid = self.socks.insert(socket);
@@ -144,7 +134,7 @@ impl QuicSocket {
 
         let socket = self.socks.get_mut(sid).unwrap();
         registry.register(socket, Token(sid), Interest::READABLE)?;
-        Ok(())
+        Ok(local_addr)
     }
 
     /// Delete socket binding with given local address.
@@ -221,4 +211,20 @@ impl PacketSendHandler for QuicSocket {
         }
         Ok(count)
     }
+}
+
+/// Get the target for the log output.
+pub fn log_target(log_file: &Option<String>) -> Result<Target> {
+    if let Some(log_file) = log_file {
+        if let Ok(file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_file)
+        {
+            return Ok(Target::Pipe(Box::new(file)));
+        }
+        return Err(format!("create log file {:?} failed", log_file).into());
+    }
+
+    Ok(Target::Stderr)
 }

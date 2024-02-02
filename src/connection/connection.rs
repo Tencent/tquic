@@ -39,6 +39,8 @@ use self::ConnectionFlags::*;
 use crate::codec;
 use crate::codec::Decoder;
 use crate::codec::Encoder;
+use crate::connection::space::BufferFlags;
+use crate::connection::space::BufferType;
 use crate::connection::space::RateSamplePacketState;
 use crate::error::ConnectionError;
 use crate::error::Error;
@@ -65,6 +67,7 @@ use crate::FourTuple;
 use crate::FourTupleIter;
 use crate::MultipathConfig;
 use crate::PacketInfo;
+use crate::PathEvent;
 use crate::RecoveryConfig;
 use crate::Result;
 use crate::Shutdown;
@@ -203,7 +206,7 @@ impl Connection {
 
         let mut path = path::Path::new(local, remote, true, &conf.recovery, &trace_id);
         if is_server {
-            // The server connection is created upon receiving a Initial packet
+            // The server connection is created upon receiving an Initial packet
             // with a valid token sent by the client.
             path.verified_peer_address = addr_token.is_some();
             // The server connection assumes the peer has validate the server's
@@ -388,7 +391,7 @@ impl Connection {
     /// Process an incoming UDP datagram from the peer.
     ///
     /// On success the number of bytes processed is returned. On error the
-    /// connection will be closed with a error code.
+    /// connection will be closed with an error code.
     #[doc(hidden)]
     pub fn recv(&mut self, buf: &mut [u8], info: &PacketInfo) -> Result<usize> {
         let len = buf.len();
@@ -583,6 +586,7 @@ impl Connection {
         // Process each QUIC frame in the QUIC packet
         let mut ack_eliciting_pkt = false;
         let mut probing_pkt = true;
+        let mut qframes = vec![];
 
         while !payload.is_empty() {
             let (frame, len) = Frame::from_bytes(&mut payload, hdr.pkt_type)?;
@@ -592,14 +596,23 @@ impl Connection {
             if !frame.probing() {
                 probing_pkt = false;
             }
+            if self.qlog.is_some() {
+                qframes.push(frame.to_qlog());
+            }
 
             self.recv_frame(frame, &hdr, pid, space_id, info.time)?;
             let _ = payload.split_to(len);
         }
 
-        // Write TransportPacketReceived event to qlog.
+        // Write events to qlog.
         if let Some(qlog) = &mut self.qlog {
-            Self::qlog_quic_packet_received(qlog, &hdr, pkt_num, read, payload_len);
+            // Write TransportPacketReceived event to qlog.
+            Self::qlog_quic_packet_received(qlog, &hdr, pkt_num, read, payload_len, qframes);
+
+            // Write RecoveryMetricsUpdate event to qlog.
+            if let Ok(path) = self.paths.get_mut(pid) {
+                path.recovery.qlog_recovery_metrics_updated(qlog);
+            }
         }
 
         // Process acknowledged frames.
@@ -634,8 +647,10 @@ impl Connection {
         // Update statistic metrics
         self.stats.recv_count += 1;
         self.stats.recv_bytes += read as u64;
-        self.paths.get_mut(pid)?.stats.recv_count += 1;
-        self.paths.get_mut(pid)?.stats.recv_bytes += read as u64;
+        self.paths
+            .get_mut(pid)?
+            .recovery
+            .stat_recv_event(1, read as u64);
 
         // The successful use of Handshake packets indicates that no more
         // Initial packets need to be exchanged, as these keys can only be
@@ -715,10 +730,11 @@ impl Connection {
                     space_id,
                     &mut self.spaces,
                     handshake_status,
+                    self.qlog.as_mut(),
                     now,
                 )?;
                 self.stats.lost_count += lost_pkts;
-                self.stats.lost_bytes += lost_bytes as u64;
+                self.stats.lost_bytes += lost_bytes;
 
                 // An endpoint MUST discard its Handshake keys when the TLS
                 // handshake is confirmed.
@@ -833,7 +849,12 @@ impl Connection {
             }
 
             Frame::PathResponse { data } => {
-                self.paths.on_path_resp_received(path_id, data);
+                if self.paths.on_path_resp_received(path_id, data) {
+                    // Notify the path event to the multipath scheduler
+                    if let Some(ref mut scheduler) = self.multipath_scheduler {
+                        scheduler.on_path_updated(&mut self.paths, PathEvent::Validated(path_id));
+                    }
+                }
             }
 
             frame::Frame::PathAbandon {
@@ -1557,6 +1578,7 @@ impl Connection {
         )?;
 
         let sent_pkt = space::SentPacket {
+            pkt_type,
             pkt_num,
             time_sent: now,
             time_acked: None,
@@ -1567,7 +1589,7 @@ impl Connection {
             has_data: write_status.has_data,
             frames: write_status.frames,
             rate_sample_state: Default::default(),
-            reinjected: write_status.reinjected,
+            buffer_flags: write_status.buffer_flags,
         };
         debug!(
             "{} sent packet {:?} {:?} {:?}",
@@ -1577,9 +1599,19 @@ impl Connection {
             self.paths.get(path_id)?
         );
 
-        // Write TransportPacketSent event to qlog.
+        // Write events to qlog.
         if let Some(qlog) = &mut self.qlog {
-            Self::qlog_quic_packet_sent(qlog, &hdr, pkt_num, written, payload_len);
+            // Write TransportPacketSent event to qlog.
+            let mut qframes = Vec::with_capacity(sent_pkt.frames.len());
+            for frame in &sent_pkt.frames {
+                qframes.push(frame.to_qlog());
+            }
+            Self::qlog_quic_packet_sent(qlog, &hdr, pkt_num, written, payload_len, qframes);
+
+            // Write RecoveryMetricsUpdate event to qlog.
+            if let Ok(path) = self.paths.get_mut(path_id) {
+                path.recovery.qlog_recovery_metrics_updated(qlog);
+            }
         }
 
         // Notify the packet sent event to the multipath scheduler
@@ -1614,8 +1646,10 @@ impl Connection {
         // Update connection state and statistic metrics
         self.stats.sent_count += 1;
         self.stats.sent_bytes += written as u64;
-        self.paths.get_mut(path_id)?.stats.sent_count += 1;
-        self.paths.get_mut(path_id)?.stats.sent_bytes += written as u64;
+        self.paths
+            .get_mut(path_id)?
+            .recovery
+            .stat_sent_event(1, written as u64);
         {
             let space = self.spaces.get_mut(space_id).ok_or(Error::InternalError)?;
             space.next_pkt_num += 1;
@@ -1662,18 +1696,21 @@ impl Connection {
         path_id: usize,
         has_initial: bool,
     ) -> Result<()> {
-        // Write a ACK frame
+        // Write an ACK frame
         self.try_write_ack_frame(out, st, pkt_type, path_id)?;
 
         // Write a CONNECTION_CLOSE frame
         self.try_write_close_frame(out, st, pkt_type, path_id)?;
+
+        let path = self.paths.get_mut(path_id)?;
+        path.recovery.stat_cwnd_limited();
 
         // Check the congestion window
         // - Packets containing frames besides ACK or CONNECTION_CLOSE frames
         // count toward congestion control limits. (RFC 9002 Section 3)
         // - Probe packets are allowed to temporarily exceed the congestion
         // window. (RFC 9002 Section 4.7)
-        if !st.is_probe && !self.paths.get(path_id)?.recovery.can_send() {
+        if !st.is_probe && !path.recovery.can_send() {
             return Err(Error::Done);
         }
 
@@ -1702,8 +1739,8 @@ impl Connection {
         // Write a CRYPTO frame
         self.try_write_crypto_frame(out, st, pkt_type, path_id)?;
 
-        // Write reinjected frames
-        self.try_write_reinjected_frames(out, st, pkt_type, path_id)?;
+        // Write buffered frames
+        self.try_write_buffered_frames(out, st, pkt_type, path_id)?;
 
         // Write STREAM frames
         self.try_write_stream_frames(out, st, pkt_type, path_id)?;
@@ -2199,9 +2236,9 @@ impl Connection {
             // Read stream data and write into the packet buffer directly.
             let (frame_data_len, fin) = stream.send.read(&mut out[len + frame_hdr_len..])?;
 
-            // Retain stream data for reinjection if needed.
+            // Retain stream data if needed.
             let data = if self.flags.contains(EnableMultipath)
-                && reinjection_required(self.multipath_conf.multipath_algorithm)
+                && buffer_required(self.multipath_conf.multipath_algorithm)
             {
                 let start = len + frame_hdr_len;
                 Bytes::copy_from_slice(&out[start..start + frame_data_len])
@@ -2277,8 +2314,8 @@ impl Connection {
         Ok(())
     }
 
-    /// Populate reinjected frame to packet payload buffer.
-    fn try_write_reinjected_frames(
+    /// Populate buffered frame to packet payload buffer.
+    fn try_write_buffered_frames(
         &mut self,
         out: &mut [u8],
         st: &mut FrameWriteStatus,
@@ -2289,33 +2326,31 @@ impl Connection {
             return Ok(());
         }
 
-        let out = &mut out[st.written..];
         let path = self.paths.get(path_id)?;
         if pkt_type != PacketType::OneRTT
             || self.is_closing()
-            || out.len() <= frame::MAX_STREAM_OVERHEAD
+            || out.len() - st.written <= frame::MAX_STREAM_OVERHEAD
             || !path.active()
         {
             return Ok(());
         }
 
-        // Get reinjected frames on the path.
+        // Get buffered frames on the path.
         let space = self
             .spaces
             .get_mut(path.space_id)
             .ok_or(Error::InternalError)?;
-        let frames = &mut space.reinject.frames;
-        debug!(
-            "{} try to write reinjected frames: path_id={} reinjected_frames={}",
-            self.trace_id,
-            path_id,
-            frames.len()
-        );
-        if frames.is_empty() {
+        if space.buffered.is_empty() {
             return Ok(());
         }
+        debug!(
+            "{} try to write buffered frames: path_id={} frames={}",
+            self.trace_id,
+            path_id,
+            space.buffered.len()
+        );
 
-        while let Some(frame) = frames.pop_front() {
+        while let Some((frame, buffer_type)) = space.buffered.pop_front() {
             match frame {
                 Frame::Stream {
                     stream_id,
@@ -2329,65 +2364,74 @@ impl Connection {
                         _ => continue,
                     };
 
-                    // Check acked range and injected the first non-acked subrange
+                    // Check acked range and write the first non-acked subrange
                     let range = offset..offset + length as u64;
                     if let Some(r) = stream.send.filter_acked(range) {
-                        let data_len = (r.end - r.start) as usize;
-                        let frame_len = Self::reinjected_stream_frame_to_packet(
+                        let data_len = Self::write_buffered_stream_frame_to_packet(
                             stream_id,
                             r.start,
-                            data_len,
-                            fin && data_len == length,
+                            fin && r.end == offset + length as u64,
                             data.slice((r.start - offset) as usize..(r.end - offset) as usize),
                             out,
+                            buffer_type,
                             st,
                         )?;
 
                         // Processing the following subrange.
-                        if r.end < offset + length as u64 {
+                        if r.start + (data_len as u64) < offset + length as u64 {
                             let frame = Frame::Stream {
                                 stream_id,
-                                offset: r.end,
-                                length: length - (r.end - offset) as usize,
+                                offset: r.start + data_len as u64,
+                                length: length - data_len,
                                 fin,
-                                data: data.slice((r.end - offset) as usize..),
+                                data: data.slice(data_len..),
                             };
-                            frames.push_front(frame);
+                            space.buffered.push_front(frame, buffer_type);
+                        }
+
+                        if data_len == 0 {
+                            break;
                         }
                     }
                 }
 
-                // Ignore other reinjected frames.
+                // Ignore other buffered frames.
                 _ => continue,
-            }
-
-            let out = &mut out[st.written..];
-            if out.len() <= frame::MAX_STREAM_OVERHEAD {
-                break;
             }
         }
 
         Ok(())
     }
 
-    fn reinjected_stream_frame_to_packet(
+    fn write_buffered_stream_frame_to_packet(
         stream_id: u64,
         offset: u64,
-        length: usize,
-        fin: bool,
-        data: Bytes,
+        mut fin: bool,
+        mut data: Bytes,
         out: &mut [u8],
+        buffer_type: BufferType,
         st: &mut FrameWriteStatus,
     ) -> Result<usize> {
-        let len = frame::encode_stream_header(stream_id, offset, length as u64, fin, out)?;
-        out[len..len + data.len()].copy_from_slice(&data);
+        let out = &mut out[st.written..];
+        if out.len() <= frame::MAX_STREAM_OVERHEAD {
+            return Ok(0);
+        }
 
-        let frame_len = len + data.len();
-        st.written += frame_len;
+        let hdr_len = frame::stream_header_wire_len(stream_id, offset);
+        let data_len = cmp::min(data.len(), out.len() - hdr_len);
+        if data_len < data.len() {
+            data.truncate(data_len);
+            fin = false;
+        }
+
+        frame::encode_stream_header(stream_id, offset, data_len as u64, fin, out)?;
+        out[hdr_len..hdr_len + data.len()].copy_from_slice(&data);
+
+        st.written += hdr_len + data_len;
         st.ack_eliciting = true;
         st.in_flight = true;
         st.has_data = true;
-        st.reinjected = true;
+        st.buffer_flags.mark(buffer_type);
         st.frames.push(Frame::Stream {
             stream_id,
             offset,
@@ -2395,7 +2439,7 @@ impl Connection {
             fin,
             data,
         });
-        Ok(frame_len)
+        Ok(data_len)
     }
 
     /// Populate a QUIC frame to the give buffer.
@@ -2561,12 +2605,12 @@ impl Connection {
         }
     }
 
-    /// Select a available path for sending packet
+    /// Select an available path for sending packet
     ///
     /// The selected path should have a packet that can be sent out, unless none
     /// of the paths are feasible.
     fn select_send_path(&mut self) -> Result<usize> {
-        // Select a unvalidated path with path probing packets to send
+        // Select an unvalidated path with path probing packets to send
         if self.is_established() {
             let mut probing = self
                 .paths
@@ -2594,7 +2638,7 @@ impl Connection {
                 }
             }
 
-            // Select a validated path with ACK/PTO/Reinjected packets to send.
+            // Select a validated path with ACK/PTO/Buffered packets to send.
             for (pid, path) in self.paths.iter_mut() {
                 if !path.active() {
                     continue;
@@ -2607,7 +2651,7 @@ impl Connection {
                         if space.loss_probes > 0 {
                             return Ok(pid);
                         }
-                        if space.need_send_reinjected_frames() && path.recovery.can_send() {
+                        if space.need_send_buffered_frames() && path.recovery.can_send() {
                             return Ok(pid);
                         }
                         continue;
@@ -2703,7 +2747,7 @@ impl Connection {
                 || path.need_send_validation_frames()
                 || self.cids.need_send_cid_control_frames()
                 || self.streams.need_send_stream_frames()
-                || self.spaces.need_send_reinjected_frames())
+                || self.spaces.need_send_buffered_frames())
         {
             if !self.is_server && self.tls_session.is_in_early_data() {
                 return Ok(PacketType::ZeroRTT);
@@ -2858,12 +2902,20 @@ impl Connection {
                             if timer > now {
                                 continue;
                             }
-                            path.recovery.on_loss_detection_timeout(
+                            let (lost_pkts, lost_bytes) = path.recovery.on_loss_detection_timeout(
                                 SpaceId::Data, // TODO: update for multipath
                                 &mut self.spaces,
                                 handshake_status,
+                                self.qlog.as_mut(),
                                 now,
                             );
+                            self.stats.lost_count += lost_pkts;
+                            self.stats.lost_bytes += lost_bytes;
+
+                            // Write RecoveryMetricsUpdate event to qlog.
+                            if let Some(qlog) = &mut self.qlog {
+                                path.recovery.qlog_recovery_metrics_updated(qlog);
+                            }
                         }
                     }
                 }
@@ -2878,7 +2930,7 @@ impl Connection {
 
                 Timer::KeyDiscard => (), // TODO: support key discarding
 
-                Timer::KeepAlive => (), // TODO: schedule a outgoing Ping
+                Timer::KeepAlive => (), // TODO: schedule an outgoing Ping
 
                 Timer::PathChallenge => self.paths.on_path_chal_timeout(now),
 
@@ -3530,7 +3582,7 @@ impl Connection {
         }
     }
 
-    /// Return a endpoint-facing event.
+    /// Return an endpoint-facing event.
     pub(crate) fn poll(&mut self) -> Option<Event> {
         if let Some(event) = self.events.poll() {
             return Some(event);
@@ -3637,6 +3689,7 @@ impl Connection {
         pkt_num: u64,
         pkt_len: usize,
         payload_len: usize,
+        qlog_frames: Vec<qlog::events::QuicFrame>,
     ) {
         let qlog_pkt_hdr = events::PacketHeader::new_with_type(
             hdr.pkt_type.to_qlog(),
@@ -3652,6 +3705,7 @@ impl Connection {
         };
         let ev_data = events::EventData::QuicPacketReceived {
             header: qlog_pkt_hdr,
+            frames: Some(qlog_frames.into()),
             is_coalesced: None,
             retry_token: None,
             stateless_reset_token: None,
@@ -3670,6 +3724,7 @@ impl Connection {
         pkt_num: u64,
         pkt_len: usize,
         payload_len: usize,
+        qlog_frames: Vec<qlog::events::QuicFrame>,
     ) {
         let qlog_pkt_hdr = events::PacketHeader::new_with_type(
             hdr.pkt_type.to_qlog(),
@@ -3687,6 +3742,7 @@ impl Connection {
 
         let ev_data = events::EventData::QuicPacketSent {
             header: qlog_pkt_hdr,
+            frames: Some(qlog_frames.into()),
             is_coalesced: None,
             retry_token: None,
             stateless_reset_token: None,
@@ -3884,19 +3940,19 @@ enum ConnectionFlags {
 #[derive(Default)]
 pub struct ConnectionStats {
     /// Total number of received packets.
-    pub recv_count: usize,
-
-    /// Total number of sent packets.
-    pub sent_count: usize,
-
-    /// Total number of lost packets.
-    pub lost_count: usize,
+    pub recv_count: u64,
 
     /// Total number of bytes received on the connection.
     pub recv_bytes: u64,
 
+    /// Total number of sent packets.
+    pub sent_count: u64,
+
     /// Total number of bytes sent on the connection.
     pub sent_bytes: u64,
+
+    /// Total number of lost packets.
+    pub lost_count: u64,
 
     /// Total number of bytes lost on the connection.
     pub lost_bytes: u64,
@@ -3915,7 +3971,7 @@ struct FrameWriteStatus {
     /// Whether it contains frames other than ACK, PADDING, and CONNECTION_CLOSE
     ack_eliciting: bool,
 
-    /// Whether it is a in-flight packet (ack-eliciting packet or contain a
+    /// Whether it is an in-flight packet (ack-eliciting packet or contain a
     /// PADDING frame)
     in_flight: bool,
 
@@ -3931,8 +3987,8 @@ struct FrameWriteStatus {
     /// Whether the congestion window should be ignored.
     is_probe: bool,
 
-    /// Whether it is a reinjected packet.
-    reinjected: bool,
+    /// Status about buffered frames written to the packet.
+    buffer_flags: BufferFlags,
 }
 
 /// Handshake status for loss recovery
@@ -6568,7 +6624,7 @@ pub(crate) mod tests {
 
         conn_multipath_transfer(&mut test_pair, blocks)?;
 
-        for (i, path) in test_pair.server.paths.iter() {
+        for (i, path) in test_pair.server.paths.iter_mut() {
             let s = path.stats();
             assert!(s.sent_count > 3);
             assert!(s.recv_count > 3);
@@ -6595,7 +6651,7 @@ pub(crate) mod tests {
         }
         conn_multipath_transfer(&mut test_pair, blocks)?;
 
-        for (i, path) in test_pair.server.paths.iter() {
+        for (i, path) in test_pair.server.paths.iter_mut() {
             let s = path.stats();
             assert!(s.sent_count > 50);
             assert!(s.recv_count > 50);
@@ -6611,28 +6667,37 @@ pub(crate) mod tests {
         let mut sfile = slog.reopen().unwrap();
 
         let mut test_pair = TestPair::new_with_test_config()?;
-        assert_eq!(test_pair.handshake(), Ok(()));
         test_pair
             .client
             .set_qlog(Box::new(clog), "title".into(), "desc".into());
         test_pair
             .server
             .set_qlog(Box::new(slog), "title".into(), "desc".into());
+        assert_eq!(test_pair.handshake(), Ok(()));
 
         // Client create a stream and send data
         let data = Bytes::from_static(b"test data over quic");
-        test_pair.client.stream_set_priority(0, 0, false)?;
-        test_pair.client.stream_write(0, data.clone(), true)?;
-        test_pair.client.stream_shutdown(0, Shutdown::Read, 0)?;
+        test_pair.client.stream_write(0, data.clone(), false)?;
         let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+        TestPair::conn_packets_in(&mut test_pair.server, packets)?;
+
+        // Client lost some packets
+        test_pair.client.stream_write(0, data.clone(), false)?;
+        let _ = TestPair::conn_packets_out(&mut test_pair.client)?;
+        test_pair.client.stream_write(0, data.clone(), false)?;
+        let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+        TestPair::conn_packets_in(&mut test_pair.server, packets)?;
 
         // Server read data from the stream
-        TestPair::conn_packets_in(&mut test_pair.server, packets)?;
         let mut buf = vec![0; data.len()];
         test_pair.server.stream_read(0, &mut buf)?;
-
         let packets = TestPair::conn_packets_out(&mut test_pair.server)?;
         TestPair::conn_packets_in(&mut test_pair.client, packets)?;
+
+        // Advance ticks until loss timeout
+        assert!(test_pair.client.timeout().is_some());
+        let timeout = test_pair.client.timers.get(Timer::LossDetection);
+        test_pair.client.on_timeout(timeout.unwrap());
 
         // Check client qlog
         let mut clog_content = String::new();
@@ -6641,6 +6706,8 @@ pub(crate) mod tests {
         assert_eq!(clog_content.contains("quic:parameters_set"), true);
         assert_eq!(clog_content.contains("quic:stream_data_moved"), true);
         assert_eq!(clog_content.contains("quic:packet_sent"), true);
+        assert_eq!(clog_content.contains("recovery:metrics_updated"), true);
+        assert_eq!(clog_content.contains("recovery:packet_lost"), true);
 
         // Check server qlog
         let mut slog_content = String::new();
@@ -6649,6 +6716,7 @@ pub(crate) mod tests {
         assert_eq!(slog_content.contains("quic:parameters_set"), true);
         assert_eq!(slog_content.contains("quic:stream_data_moved"), true);
         assert_eq!(slog_content.contains("quic:packet_received"), true);
+        assert_eq!(slog_content.contains("recovery:metrics_updated"), true);
 
         Ok(())
     }

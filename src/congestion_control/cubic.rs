@@ -579,7 +579,7 @@ mod tests {
                 has_data: false,
                 sent_size: pkt_size as usize,
                 rate_sample_state: Default::default(),
-                reinjected: false,
+                ..SentPacket::default()
             });
         }
 
@@ -644,7 +644,7 @@ mod tests {
                 has_data: false,
                 sent_size: pkt_size as usize,
                 rate_sample_state: Default::default(),
-                reinjected: false,
+                ..SentPacket::default()
             });
         }
 

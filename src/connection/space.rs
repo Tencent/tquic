@@ -20,6 +20,7 @@ use std::time::Instant;
 use rustc_hash::FxHashMap;
 
 use crate::frame;
+use crate::packet;
 use crate::ranges::RangeSet;
 use crate::tls::Level;
 use crate::window::SeqNumWindow;
@@ -101,6 +102,9 @@ pub struct PacketNumSpace {
     /// Acknowledged frames.
     pub acked: Vec<frame::Frame>,
 
+    /// Buffered frames to be sent in multipath mode.
+    pub buffered: BufferQueue,
+
     /// The time the most recent ack-eliciting packet was sent.
     pub time_of_last_sent_ack_eliciting_pkt: Option<Instant>,
 
@@ -123,9 +127,6 @@ pub struct PacketNumSpace {
 
     /// Packet number space for application data
     pub is_data: bool,
-
-    /// Reinjected frames to be sent.
-    pub reinject: ReinjectQueue,
 }
 
 impl PacketNumSpace {
@@ -144,6 +145,7 @@ impl PacketNumSpace {
             sent: VecDeque::new(),
             lost: Vec::new(),
             acked: Vec::new(),
+            buffered: BufferQueue::default(),
             time_of_last_sent_ack_eliciting_pkt: None,
             loss_time: None,
             largest_acked_pkt: std::u64::MAX,
@@ -151,7 +153,6 @@ impl PacketNumSpace {
             bytes_in_flight: 0,
             ack_eliciting_in_flight: 0,
             is_data: id != SpaceId::Initial && id != SpaceId::Handshake,
-            reinject: ReinjectQueue::default(),
         }
     }
 
@@ -186,9 +187,9 @@ impl PacketNumSpace {
         self.loss_probes > 0
     }
 
-    /// Return whether the space should send a reinjection packet.
-    pub fn need_send_reinjected_frames(&self) -> bool {
-        !self.reinject.frames.is_empty()
+    /// Return whether the space should send a buffered packet.
+    pub fn need_send_buffered_frames(&self) -> bool {
+        !self.buffered.is_empty()
     }
 }
 
@@ -258,10 +259,10 @@ impl PacketNumSpaceMap {
         };
     }
 
-    /// Return whether the connection should send a reinjection packet.
-    pub fn need_send_reinjected_frames(&self) -> bool {
+    /// Return whether the connection should send a buffered packet.
+    pub fn need_send_buffered_frames(&self) -> bool {
         for space in self.spaces.values() {
-            if space.need_send_reinjected_frames() {
+            if space.need_send_buffered_frames() {
                 return true;
             }
         }
@@ -296,13 +297,14 @@ pub struct RateSamplePacketState {
 
     /// packet.lost: The volume of data that was declared lost on transmission.
     pub lost: u64,
-    // P.sent_time: The time when the packet was sent. (Use time_sent in SentPacket)
-    // sent_time: Instant,
 }
 
 /// Metadata of sent packet
 #[derive(Clone)]
 pub struct SentPacket {
+    /// The packet type of the sent packet.
+    pub pkt_type: packet::PacketType,
+
     /// The packet number of the sent packet.
     pub pkt_num: u64,
 
@@ -337,8 +339,27 @@ pub struct SentPacket {
     /// Snapshot of the current delivery information.
     pub rate_sample_state: RateSamplePacketState,
 
-    /// Whether it is a reinjected packet.
-    pub reinjected: bool,
+    /// Status about buffered frames written into the packet.
+    pub buffer_flags: BufferFlags,
+}
+
+impl Default for SentPacket {
+    fn default() -> Self {
+        SentPacket {
+            pkt_type: packet::PacketType::OneRTT,
+            pkt_num: 0,
+            frames: vec![],
+            time_sent: Instant::now(),
+            time_acked: None,
+            time_lost: None,
+            ack_eliciting: false,
+            in_flight: false,
+            has_data: false,
+            sent_size: 0,
+            rate_sample_state: RateSamplePacketState::default(),
+            buffer_flags: BufferFlags::default(),
+        }
+    }
 }
 
 impl std::fmt::Debug for SentPacket {
@@ -363,16 +384,96 @@ pub struct AckedPacket {
     pub rtt: Duration,
 }
 
-/// Metadata of packets to be reinjected
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BufferType {
+    High = 0,
+    Mid = 1,
+    Low = 2,
+}
+
+impl From<usize> for BufferType {
+    fn from(index: usize) -> BufferType {
+        match index {
+            0 => BufferType::High,
+            1 => BufferType::Mid,
+            _ => BufferType::Low,
+        }
+    }
+}
+
+/// Metadata of buffered packets to be sent
 #[derive(Default)]
-pub struct ReinjectQueue {
-    /// The reinjected frames to be sent.
-    pub frames: VecDeque<frame::Frame>,
+pub struct BufferQueue {
+    queues: [VecDeque<frame::Frame>; 3],
+    count: usize,
+}
+
+impl BufferQueue {
+    /// Remove the first frame and returns it
+    pub fn pop_front(&mut self) -> Option<(frame::Frame, BufferType)> {
+        for (i, queue) in self.queues.iter_mut().enumerate() {
+            if !queue.is_empty() {
+                self.count -= 1;
+                return Some((queue.pop_front().unwrap(), BufferType::from(i)));
+            }
+        }
+        None
+    }
+
+    /// Prepend a frame to the specified queue.
+    pub fn push_front(&mut self, frame: frame::Frame, queue_type: BufferType) {
+        self.count += 1;
+        self.queues[queue_type as usize].push_front(frame)
+    }
+
+    /// Append a frame to the back of the queue.
+    pub fn push_back(&mut self, frame: frame::Frame, queue_type: BufferType) {
+        self.count += 1;
+        self.queues[queue_type as usize].push_back(frame)
+    }
+
+    /// Move all the frames into self.
+    pub fn append(&mut self, frames: &mut VecDeque<frame::Frame>, queue_type: BufferType) {
+        self.count += frames.len();
+        self.queues[queue_type as usize].append(frames)
+    }
+
+    /// Return the number of frames in the queue.
+    pub fn len(&self) -> usize {
+        self.count
+    }
+
+    /// Return true if the queue is empty.
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+}
+
+#[derive(Clone, Default, Debug)]
+pub struct BufferFlags {
+    pub from_high: bool,
+    pub from_mid: bool,
+    pub from_low: bool,
+}
+
+impl BufferFlags {
+    pub fn has_buffered(&self) -> bool {
+        self.from_high || self.from_mid || self.from_low
+    }
+
+    pub fn mark(&mut self, queue_type: BufferType) {
+        match queue_type {
+            BufferType::High => self.from_high = true,
+            BufferType::Mid => self.from_mid = true,
+            BufferType::Low => self.from_low = true,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frame::Frame;
 
     #[test]
     fn initial_spaces() {
@@ -444,11 +545,77 @@ mod tests {
             has_data: false,
             sent_size: 240,
             rate_sample_state: Default::default(),
-            reinjected: false,
+            ..SentPacket::default()
         };
         assert_eq!(
             format!("{:?}", sent_pkt),
             "pn=9 frames=[PING, PADDINGS len=200] sent_size=240"
         );
+    }
+
+    #[test]
+    fn buffer_queue() {
+        // initial queue
+        let mut queue = BufferQueue::default();
+        assert_eq!(queue.len(), 0);
+        assert_eq!(queue.is_empty(), true);
+
+        // push back/push front
+        let f1 = Frame::MaxStreamData {
+            stream_id: 4,
+            max: 10240,
+        };
+        queue.push_back(f1.clone(), BufferType::High);
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.is_empty(), false);
+
+        let f2 = Frame::MaxStreamData {
+            stream_id: 8,
+            max: 24000,
+        };
+        queue.push_front(f2.clone(), BufferType::High);
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue.is_empty(), false);
+
+        let f3 = Frame::Ping;
+        queue.push_back(f3.clone(), BufferType::Low);
+
+        assert_eq!(queue.pop_front(), Some((f2.clone(), BufferType::High)));
+        assert_eq!(queue.pop_front(), Some((f1.clone(), BufferType::High)));
+        assert_eq!(queue.pop_front(), Some((f3.clone(), BufferType::Low)));
+        assert_eq!(queue.pop_front(), None);
+        assert_eq!(queue.is_empty(), true);
+
+        // append
+        let mut fs = VecDeque::new();
+        fs.push_back(f1.clone());
+        fs.push_back(f2.clone());
+        queue.append(&mut fs, BufferType::Mid);
+        assert_eq!(queue.len(), 2);
+        assert_eq!(fs.len(), 0);
+        assert_eq!(queue.pop_front(), Some((f1.clone(), BufferType::Mid)));
+        assert_eq!(queue.pop_front(), Some((f2.clone(), BufferType::Mid)));
+    }
+
+    #[test]
+    fn buffer_flags() {
+        use BufferType::*;
+        let cases = [
+            (vec![], false),
+            (vec![High], true),
+            (vec![Mid], true),
+            (vec![Low], true),
+            (vec![Low, High], true),
+            (vec![Low, Mid], true),
+            (vec![High, Mid], true),
+            (vec![High, Mid, Low], true),
+        ];
+        for case in cases {
+            let mut flags = BufferFlags::default();
+            for flag in case.0 {
+                flags.mark(flag);
+            }
+            assert_eq!(flags.has_buffered(), case.1);
+        }
     }
 }

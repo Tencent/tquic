@@ -1281,7 +1281,7 @@ fn sock_addr_to_c(addr: &SocketAddr, out: &mut sockaddr_storage) -> socklen_t {
             *out_in = sockaddr_in {
                 sin_family: AF_INET as sa_family_t,
                 sin_addr,
-                #[cfg(any(target_os = "macos", target_os = "ios",))]
+                #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
                 sin_len: sa_len as u8,
                 sin_port,
                 sin_zero: std::mem::zeroed(),
@@ -1298,7 +1298,7 @@ fn sock_addr_to_c(addr: &SocketAddr, out: &mut sockaddr_storage) -> socklen_t {
             *out_in6 = sockaddr_in6 {
                 sin6_family: AF_INET6 as sa_family_t,
                 sin6_addr,
-                #[cfg(any(target_os = "macos", target_os = "ios",))]
+                #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
                 sin6_len: sa_len as u8,
                 sin6_port: sin_port,
                 sin6_flowinfo: addr.flowinfo(),
@@ -1309,7 +1309,7 @@ fn sock_addr_to_c(addr: &SocketAddr, out: &mut sockaddr_storage) -> socklen_t {
     }
 }
 
-/// Meta information of a incoming packet.
+/// Meta information of an incoming packet.
 #[repr(C)]
 pub struct PacketInfo<'a> {
     src: &'a sockaddr,
@@ -1328,7 +1328,7 @@ impl<'a> From<&PacketInfo<'a>> for crate::PacketInfo {
     }
 }
 
-/// Data and meta information of a outgoing packet.
+/// Data and meta information of an outgoing packet.
 #[repr(C)]
 pub struct PacketOutSpec {
     iov: *const iovec,
