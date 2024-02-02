@@ -26,6 +26,7 @@ use crate::connection::space::SentPacket;
 use crate::connection::stream::StreamMap;
 use crate::Error;
 use crate::MultipathConfig;
+use crate::PathEvent;
 use crate::Result;
 
 /// MultipathScheduler is a packet scheduler that decides the path over which
@@ -53,6 +54,9 @@ pub(crate) trait MultipathScheduler {
         streams: &mut StreamMap,
     ) {
     }
+
+    /// Process a path event.
+    fn on_path_updated(&mut self, paths: &mut PathMap, event: PathEvent) {}
 }
 
 /// Available multipath scheduling algorithms.
@@ -106,7 +110,7 @@ pub(crate) fn build_multipath_scheduler(conf: &MultipathConfig) -> Box<dyn Multi
     }
 }
 
-pub(crate) fn reinjection_required(algor: MultipathAlgorithm) -> bool {
+pub(crate) fn buffer_required(algor: MultipathAlgorithm) -> bool {
     match algor {
         MultipathAlgorithm::MinRtt => false,
         MultipathAlgorithm::Redundant => true,

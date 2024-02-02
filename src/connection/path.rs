@@ -35,25 +35,6 @@ pub(crate) const INITIAL_CHAL_TIMEOUT: u64 = 25;
 
 pub(crate) const MAX_PROBING_TIMEOUTS: usize = 8;
 
-/// The states about the path validation.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum PathState {
-    /// The path validation failed
-    Failed,
-
-    /// No path validation has been performed.
-    Unknown,
-
-    /// The path is under validation.
-    Validating,
-
-    /// The remote address has been validated, but not the path MTU.
-    ValidatingMTU,
-
-    /// The path has been validated.
-    Validated,
-}
-
 /// A network path on which QUIC packets can be sent.
 pub struct Path {
     /// The local address.
@@ -173,9 +154,10 @@ impl Path {
     }
 
     /// Handle incoming PATH_RESPONSE data.
-    pub(super) fn on_path_resp_received(&mut self, data: [u8; 8], multipath: bool) {
+    /// Return true if the path status changes to `Validated`.
+    pub(super) fn on_path_resp_received(&mut self, data: [u8; 8], multipath: bool) -> bool {
         if self.state == PathState::Validated {
-            return;
+            return false;
         }
 
         self.verified_peer_address = true;
@@ -199,11 +181,12 @@ impl Path {
             self.promote_to(PathState::Validated);
             self.set_active(multipath);
             self.sent_chals.clear();
-            return;
+            return true;
         }
 
         // If the MTU was not validated, probe again.
         self.need_send_challenge = true;
+        false
     }
 
     /// Fetch a received challenge data item.
@@ -316,6 +299,25 @@ impl std::fmt::Debug for Path {
         write!(f, "remote={:?}", self.remote_addr)?;
         Ok(())
     }
+}
+
+/// The states about the path validation.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PathState {
+    /// The path validation failed
+    Failed,
+
+    /// No path validation has been performed.
+    Unknown,
+
+    /// The path is under validation.
+    Validating,
+
+    /// The remote address has been validated, but not the path MTU.
+    ValidatingMTU,
+
+    /// The path has been validated.
+    Validated,
 }
 
 /// Path manager for a QUIC connection
@@ -451,10 +453,11 @@ impl PathMap {
     }
 
     /// Process a PATH_RESPONSE frame on the give path
-    pub fn on_path_resp_received(&mut self, path_id: usize, data: [u8; 8]) {
+    pub fn on_path_resp_received(&mut self, path_id: usize, data: [u8; 8]) -> bool {
         if let Some(path) = self.paths.get_mut(path_id) {
-            path.on_path_resp_received(data, self.is_multipath);
+            return path.on_path_resp_received(data, self.is_multipath);
         }
+        false
     }
 
     /// Handle the sent event of PATH_CHALLENGE.
@@ -600,11 +603,11 @@ mod tests {
         assert_eq!(path_mgr.get_mut(pid)?.state, PathState::Validating);
 
         // Fake receiving of unmatched PATH_RESPONSE
-        path_mgr.on_path_resp_received(pid, [0xab; 8]);
+        assert_eq!(path_mgr.on_path_resp_received(pid, [0xab; 8]), false);
         assert_eq!(path_mgr.get_mut(pid)?.state, PathState::ValidatingMTU);
 
         // Fake receiving of PATH_RESPONSE
-        path_mgr.on_path_resp_received(pid, data);
+        assert_eq!(path_mgr.on_path_resp_received(pid, data), false);
         assert_eq!(path_mgr.get_mut(pid)?.path_chal_initiated(), true);
         assert_eq!(path_mgr.get_mut(pid)?.validated(), false);
         assert_eq!(path_mgr.get_mut(pid)?.state, PathState::ValidatingMTU);
@@ -613,14 +616,14 @@ mod tests {
         path_mgr.on_path_chal_sent(pid, data, 1300, now)?;
 
         // Fake receiving of PATH_RESPONSE
-        path_mgr.on_path_resp_received(pid, data);
+        assert_eq!(path_mgr.on_path_resp_received(pid, data), true);
         assert_eq!(path_mgr.get_mut(pid)?.path_chal_initiated(), false);
         assert_eq!(path_mgr.get_mut(pid)?.validated(), true);
         assert_eq!(path_mgr.get_mut(pid)?.state, PathState::Validated);
         assert_eq!(path_mgr.get_mut(pid)?.sent_chals.len(), 0);
 
         // Fake receiving of depulicated PATH_RESPONSE
-        path_mgr.on_path_resp_received(pid, data);
+        assert_eq!(path_mgr.on_path_resp_received(pid, data), false);
         assert_eq!(path_mgr.get_mut(pid)?.validated(), true);
 
         // Timeout event
