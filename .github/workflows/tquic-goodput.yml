@@ -43,7 +43,7 @@ jobs:
     - name: Store measurement results
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ matrix.case }}-${{ matrix.impl }}
+        name: ${{ matrix.impl }}-${{ matrix.case }}-${{ matrix.cc }}
         path: quic-interop-runner/goodput*.json 
     
   result:
