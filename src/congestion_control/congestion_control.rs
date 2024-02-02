@@ -40,7 +40,7 @@ pub use hystart_plus_plus::HystartPlusPlus;
 pub enum CongestionControlAlgorithm {
     /// CUBIC uses a cubic function instead of a linear window increase function
     /// of the current TCP standards to improve scalability and stability under
-    /// fast and long-distance networks..
+    /// fast and long-distance networks.
     Cubic,
 
     /// BBR uses recent measurements of a transport connection's delivery rate,
