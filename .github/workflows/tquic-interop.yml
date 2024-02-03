@@ -55,7 +55,7 @@ jobs:
       if: ${{ failure() }}
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ matrix.client }}-${{ matrix.server }}
+        name: ${{ matrix.server }}-${{ matrix.client }}
         path: |
           quic-interop-runner/*logs/*
           !quic-interop-runner/*logs/**/crosstraffic/
