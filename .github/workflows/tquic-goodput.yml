@@ -19,6 +19,9 @@ jobs:
         case: [goodput100k,goodput1m,goodput10m]
         cc: [cubic, bbr]
 
+    # The scheduled workflow only runs for the main repository.
+    # You can manually trigger it if necessary.
+    if: ${{ ( github.event_name == 'schedule' && github.repository == 'tencent/tquic' ) || github.event_name == 'workflow_dispatch' }}
     steps:
     - name: Install quic-interop-runner
       run: |

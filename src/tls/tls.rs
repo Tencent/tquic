@@ -84,6 +84,7 @@ impl TlsConfig {
 
     /// Create a new TlsConfig with SSL_CTX.
     /// The caller is responsible for the memory of SSL_CTX when use this function.
+    #[doc(hidden)]
     pub fn new_with_ssl_ctx(ssl_ctx: *mut boringssl::tls::SslCtx) -> TlsConfig {
         Self {
             tls_ctx: boringssl::tls::Context::new_with_ssl_ctx(ssl_ctx),

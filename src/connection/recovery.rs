@@ -976,6 +976,7 @@ impl Recovery {
     }
 }
 
+/// Statistics about a QUIC path.
 #[derive(Default)]
 pub struct PathStats {
     /// The number of QUIC packets received.

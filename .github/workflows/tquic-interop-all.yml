@@ -78,6 +78,9 @@ jobs:
           - server: haproxy
             client: tquic
 
+    # The scheduled workflow only runs for the main repository.
+    # You can manually trigger it if necessary.
+    if: ${{ ( github.event_name == 'schedule' && github.repository == 'tencent/tquic' ) || github.event_name == 'workflow_dispatch' }}
     steps:
     - uses: actions/checkout@v4
       with:
@@ -101,9 +104,15 @@ jobs:
     - name: Run the interop tests
       run: |
         cd quic-interop-runner
-        python3 run.py -s ${{ matrix.server }} -c ${{ matrix.client }} -t handshake,handshakeloss,handshakecorruption,retry,resumption,zerortt,http3,ipv6,transfer,multiplexing,longrtt,blackhole,transferloss,transfercorruption,goodput,crosstraffic -d -r tquic=tquic_interop:v1 -l ${{ matrix.client }}-${{ matrix.server }}-logs
+        python3 run.py -s ${{ matrix.server }} -c ${{ matrix.client }} -t handshake,handshakeloss,handshakecorruption,retry,resumption,zerortt,http3,ipv6,transfer,multiplexing,longrtt,blackhole,transferloss,transfercorruption,goodput,crosstraffic -d -r tquic=tquic_interop:v1 -l ${{ matrix.server }}-${{ matrix.client }}-logs -j ${{ matrix.server }}-${{ matrix.client }}-logs/interop.json
 
-    - name: Store run logs
+    - name: Dump the interop result
+      if: ${{ always() }}
+      run: |
+        cd quic-interop-runner
+        python3 -m json.tool ${{ matrix.server }}-${{ matrix.client }}-logs/interop.json
+
+    - name: Store interop logs
       if: ${{ failure() }}
       uses: actions/upload-artifact@v4
       with:

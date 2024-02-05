@@ -952,8 +952,8 @@ pub use crate::connection::Connection;
 pub use crate::endpoint::Endpoint;
 pub use crate::error::Error;
 pub use crate::multipath_scheduler::MultipathAlgorithm;
-#[doc(hidden)]
 pub use crate::tls::TlsConfig;
+pub use crate::tls::TlsConfigSelector;
 
 #[path = "connection/connection.rs"]
 pub mod connection;

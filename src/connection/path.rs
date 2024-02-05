@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use slab::Slab;
 
-use super::recovery::PathStats;
+pub use super::recovery::PathStats;
 use super::recovery::Recovery;
 use super::timer;
 use crate::connection::SpaceId;
