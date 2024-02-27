@@ -18,12 +18,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        server: [tquic]
-        client: [tquic]
         include:
+          - server: tquic
+            client: tquic
           - server: tquic
             client: lsquic
           - server: lsquic
+            client: tquic
+          - server: tquic
+            client: msquic
+          - server: msquic
+            client: tquic
+          - server: tquic
+            client: ngtcp2
+          - server: ngtcp2
             client: tquic
 
     steps:
