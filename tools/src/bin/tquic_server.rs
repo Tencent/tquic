@@ -163,6 +163,10 @@ pub struct ServerOpt {
     #[clap(long, default_value = "8", value_name = "NUM")]
     pub cid_len: usize,
 
+    /// Anti amplification factor.
+    #[clap(long, default_value = "3", value_name = "NUM")]
+    pub anti_amplification_factor: usize,
+
     /// Batch size for sending packets.
     #[clap(long, default_value = "16", value_name = "NUM")]
     pub send_batch_size: usize,
@@ -199,6 +203,7 @@ impl Server {
         config.set_pto_linear_factor(option.pto_linear_factor);
         config.set_max_pto(option.max_pto);
         config.set_cid_len(option.cid_len);
+        config.set_anti_amplification_factor(option.anti_amplification_factor);
         config.set_send_batch_size(option.send_batch_size);
         config.set_congestion_control_algorithm(option.congestion_control_algor);
         config.set_initial_congestion_window(option.initial_congestion_window);

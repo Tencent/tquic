@@ -342,6 +342,9 @@ pub struct Config {
     /// Length of source cid.
     cid_len: usize,
 
+    /// Anti-amplification factor.
+    anti_amplification_factor: usize,
+
     /// Maximum numbers of packets sent in a batch.
     send_batch_size: usize,
 
@@ -396,6 +399,7 @@ impl Config {
             address_token_key: Self::rand_address_token_key()?,
             reset_token_key,
             cid_len: 8,
+            anti_amplification_factor: ANTI_AMPLIFICATION_FACTOR,
             send_batch_size: 64,
             recovery: RecoveryConfig::default(),
             multipath: MultipathConfig::default(),
@@ -610,6 +614,14 @@ impl Config {
     /// Applicable to Endpoint only.
     pub fn set_cid_len(&mut self, v: usize) {
         self.cid_len = cmp::min(v, MAX_CID_LEN);
+    }
+
+    /// Set the anti-amplification factor.
+    ///
+    /// The server limits the data sent to an unvalidated address to
+    /// `anti_amplification_factor` times the received data.
+    pub fn set_anti_amplification_factor(&mut self, v: usize) {
+        self.anti_amplification_factor = cmp::max(v, ANTI_AMPLIFICATION_FACTOR);
     }
 
     /// Set the batch size for sending packets.
