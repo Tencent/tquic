@@ -35,6 +35,8 @@ pub(crate) const INITIAL_CHAL_TIMEOUT: u64 = 25;
 
 pub(crate) const MAX_PROBING_TIMEOUTS: usize = 8;
 
+pub(crate) const MAX_PATH_CHALS_RECV: usize = 8;
+
 /// A network path on which QUIC packets can be sent.
 pub struct Path {
     /// The local address.
@@ -149,6 +151,10 @@ impl Path {
 
     /// Handle incoming PATH_CHALLENGE data.
     pub(super) fn on_path_chal_received(&mut self, data: [u8; 8]) {
+        if self.recv_chals.len() >= MAX_PATH_CHALS_RECV {
+            let _ = self.recv_chals.pop_front();
+        }
+
         self.recv_chals.push_back(data);
         self.peer_verified_local_address = true;
     }
@@ -772,6 +778,31 @@ mod tests {
         // Fake receiving of PATH_RESPONSE on the first path.
         path_mgr.on_path_resp_received(pid1, data);
         assert_eq!(path_mgr.min_path_chal_timer(), Some(timeout2));
+
+        Ok(())
+    }
+
+    #[test]
+    fn path_chals_flood() -> Result<()> {
+        let client_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 9443);
+        let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 443);
+        let conf = new_test_recovery_config();
+        let initial_path = Path::new(server_addr, client_addr, true, &conf, "");
+        let mut path_mgr = PathMap::new(initial_path, 2, false);
+
+        // Fake receiving of a packet on a new path
+        let client_addr1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 9444);
+        let new_path = Path::new(server_addr, client_addr1, false, &conf, "");
+        let pid = path_mgr.insert_path(new_path)?;
+        assert_eq!(path_mgr.len(), 2);
+        assert_eq!(pid, 1);
+
+        // Fake receiving of PATH_CHALLENGE
+        for i in 0..1000 {
+            let data = rand::random::<[u8; 8]>();
+            path_mgr.on_path_chal_received(pid, data);
+            assert!(path_mgr.get_mut(pid)?.recv_chals.len() <= MAX_PATH_CHALS_RECV);
+        }
 
         Ok(())
     }
