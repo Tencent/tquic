@@ -724,12 +724,33 @@ void quic_conn_set_context(struct quic_conn_t *conn, void *data);
 void *quic_conn_context(struct quic_conn_t *conn);
 
 /**
- * Set keylog file
+ * Set the callback of keylog output.
+ * `cb` is a callback function that will be called for each keylog.
+ * `data` is a keylog message and `argp` is user-defined data that will be passed to the callback.
+ */
+void quic_conn_set_keylog(struct quic_conn_t *conn, void (*cb)(const uint8_t *data,
+                                                               size_t data_len,
+                                                               void *argp), void *argp);
+
+/**
+ * Set keylog file.
  */
 void quic_conn_set_keylog_fd(struct quic_conn_t *conn, int fd);
 
 /**
- * Set qlog file
+ * Set the callback of qlog output.
+ * `cb` is a callback function that will be called for each qlog.
+ * `data` is a qlog message and `argp` is user-defined data that will be passed to the callback.
+ * `title` and `desc` respectively refer to the "title" and "description" sections of qlog.
+ */
+void quic_conn_set_qlog(struct quic_conn_t *conn,
+                        void (*cb)(const uint8_t *data, size_t data_len, void *argp),
+                        void *argp,
+                        const char *title,
+                        const char *desc);
+
+/**
+ * Set qlog file.
  */
 void quic_conn_set_qlog_fd(struct quic_conn_t *conn, int fd, const char *title, const char *desc);
 
@@ -1013,7 +1034,9 @@ typedef enum quic_log_level {
  * the callback.
  * `level` represents the log level.
  */
-void quic_set_logger(void (*cb)(const uint8_t *line, void *argp), void *argp, quic_log_level level);
+void quic_set_logger(void (*cb)(const uint8_t *data, size_t data_len, void *argp),
+                     void *argp,
+                     quic_log_level level);
 
 typedef enum http3_error {
     HTTP3_NO_ERROR = 0,
