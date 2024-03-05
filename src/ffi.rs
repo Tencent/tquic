@@ -15,6 +15,7 @@
 // Note: The API is not stable and may change in future versions.
 
 use std::ffi;
+use std::io::Write;
 use std::mem;
 use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
@@ -70,19 +71,38 @@ pub extern "C" fn quic_version_is_supported(version: u32) -> bool {
     crate::version_is_supported(version)
 }
 
-struct Logger {
-    cb: extern "C" fn(line: *const u8, argp: *mut c_void),
+struct LogWriter {
+    cb: extern "C" fn(data: *const u8, data_len: size_t, argp: *mut c_void),
     argp: std::sync::atomic::AtomicPtr<c_void>,
 }
 
-impl log::Log for Logger {
+impl Write for LogWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        (self.cb)(
+            buf.as_ptr(),
+            buf.len(),
+            self.argp.load(atomic::Ordering::Relaxed),
+        );
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl log::Log for LogWriter {
     fn enabled(&self, _metadata: &log::Metadata) -> bool {
         true
     }
 
     fn log(&self, record: &log::Record) {
-        let line = format!("{}: {}\0", record.target(), record.args());
-        (self.cb)(line.as_ptr(), self.argp.load(atomic::Ordering::Relaxed));
+        let line = format!("{}: {}\n", record.target(), record.args());
+        (self.cb)(
+            line.as_ptr(),
+            line.len(),
+            self.argp.load(atomic::Ordering::Relaxed),
+        );
     }
 
     fn flush(&self) {}
@@ -823,7 +843,21 @@ pub extern "C" fn quic_conn_context(conn: &mut Connection) -> *mut c_void {
     }
 }
 
-/// Set keylog file
+/// Set the callback of keylog output.
+/// `cb` is a callback function that will be called for each keylog.
+/// `data` is a keylog message and `argp` is user-defined data that will be passed to the callback.
+#[no_mangle]
+pub extern "C" fn quic_conn_set_keylog(
+    conn: &mut Connection,
+    cb: extern "C" fn(data: *const u8, data_len: size_t, argp: *mut c_void),
+    argp: *mut c_void,
+) {
+    let argp = atomic::AtomicPtr::new(argp);
+    let writer = Box::new(LogWriter { cb, argp });
+    conn.set_keylog(Box::new(writer));
+}
+
+/// Set keylog file.
 #[no_mangle]
 pub extern "C" fn quic_conn_set_keylog_fd(conn: &mut Connection, fd: c_int) {
     let file = unsafe { std::fs::File::from_raw_fd(fd) };
@@ -831,7 +865,31 @@ pub extern "C" fn quic_conn_set_keylog_fd(conn: &mut Connection, fd: c_int) {
     conn.set_keylog(Box::new(writer));
 }
 
-/// Set qlog file
+/// Set the callback of qlog output.
+/// `cb` is a callback function that will be called for each qlog.
+/// `data` is a qlog message and `argp` is user-defined data that will be passed to the callback.
+/// `title` and `desc` respectively refer to the "title" and "description" sections of qlog.
+#[no_mangle]
+pub extern "C" fn quic_conn_set_qlog(
+    conn: &mut Connection,
+    cb: extern "C" fn(data: *const u8, data_len: size_t, argp: *mut c_void),
+    argp: *mut c_void,
+    title: *const c_char,
+    desc: *const c_char,
+) {
+    let argp = atomic::AtomicPtr::new(argp);
+    let writer = Box::new(LogWriter { cb, argp });
+    let title = unsafe { ffi::CStr::from_ptr(title).to_str().unwrap() };
+    let description = unsafe { ffi::CStr::from_ptr(desc).to_str().unwrap() };
+
+    conn.set_qlog(
+        Box::new(writer),
+        title.to_string(),
+        format!("{} id={}", description, conn.trace_id()),
+    );
+}
+
+/// Set qlog file.
 #[no_mangle]
 pub extern "C" fn quic_conn_set_qlog_fd(
     conn: &mut Connection,
@@ -1689,17 +1747,17 @@ fn headers_from_ptr<'a>(ptr: *const Header, len: size_t) -> Vec<h3::HeaderRef<'a
 
 /// Set logger.
 /// `cb` is a callback function that will be called for each log message.
-/// `line` is a null-terminated log message and `argp` is user-defined data that will be passed to
+/// `data` is a '\n' terminated log message and `argp` is user-defined data that will be passed to
 /// the callback.
 /// `level` represents the log level.
 #[no_mangle]
 pub extern "C" fn quic_set_logger(
-    cb: extern "C" fn(line: *const u8, argp: *mut c_void),
+    cb: extern "C" fn(data: *const u8, data_len: size_t, argp: *mut c_void),
     argp: *mut c_void,
     level: log::LevelFilter,
 ) {
     let argp = atomic::AtomicPtr::new(argp);
-    let logger = Box::new(Logger { cb, argp });
+    let logger = Box::new(LogWriter { cb, argp });
     let _ = log::set_boxed_logger(logger);
     log::set_max_level(level);
 }
