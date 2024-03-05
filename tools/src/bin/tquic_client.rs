@@ -620,6 +620,7 @@ impl Worker {
                 self.option.urls[0].domain(),
                 worker_ctx.session.as_deref(),
                 None,
+                None,
             ) {
                 Ok(_) => {
                     worker_ctx.concurrent_conns += 1;

@@ -443,24 +443,22 @@ void quic_config_set_max_concurrent_conns(struct quic_config_t *config, uint32_t
 /**
  * Set the key for reset token generation. The token_key_len should be not less
  * than 64.
+ * Applicable to Server only.
  */
 int quic_config_set_reset_token_key(struct quic_config_t *config,
                                     const uint8_t *token_key,
                                     size_t token_key_len);
 
 /**
- * Set whether stateless reset is allowed.
- */
-void quic_config_enable_stateless_reset(struct quic_config_t *config, bool enabled);
-
-/**
  * Set the lifetime of address token.
+ * Applicable to Server only.
  */
 void quic_config_set_address_token_lifetime(struct quic_config_t *config, uint64_t seconds);
 
 /**
- * Set the key for address token generation.
+ * Set the key for address token generation. It also enables retry.
  * The token_key_len should be a multiple of 16.
+ * Applicable to Server only.
  */
 int quic_config_set_address_token_key(struct quic_config_t *config,
                                       const uint8_t *token_keys,
@@ -468,16 +466,25 @@ int quic_config_set_address_token_key(struct quic_config_t *config,
 
 /**
  * Set whether stateless retry is allowed. Default is not allowed.
+ * Applicable to Server only.
  */
 void quic_config_enable_retry(struct quic_config_t *config, bool enabled);
 
 /**
+ * Set whether stateless reset is allowed.
+ * Applicable to Endpoint only.
+ */
+void quic_config_enable_stateless_reset(struct quic_config_t *config, bool enabled);
+
+/**
  * Set the length of source cid. The length should not be greater than 20.
+ * Applicable to Endpoint only.
  */
 void quic_config_set_cid_len(struct quic_config_t *config, uint8_t v);
 
 /**
  * Set the batch size for sending packets.
+ * Applicable to Endpoint only.
  */
 void quic_config_set_send_batch_size(struct quic_config_t *config, uint16_t v);
 
@@ -519,6 +526,7 @@ void quic_endpoint_free(struct quic_endpoint_t *endpoint);
 /**
  * Create a client connection.
  * If success, the output parameter `index` carrys the index of the connection.
+ * Note: The `config` specific to the endpoint or server is irrelevant and will be disregarded.
  */
 int quic_endpoint_connect(struct quic_endpoint_t *endpoint,
                           const struct sockaddr *local,
@@ -530,6 +538,7 @@ int quic_endpoint_connect(struct quic_endpoint_t *endpoint,
                           size_t session_len,
                           const uint8_t *token,
                           size_t token_len,
+                          const struct quic_config_t *config,
                           uint64_t *index);
 
 /**
