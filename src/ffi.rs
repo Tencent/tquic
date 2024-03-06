@@ -295,6 +295,7 @@ pub extern "C" fn quic_config_set_max_concurrent_conns(config: &mut Config, v: u
 
 /// Set the key for reset token generation. The token_key_len should be not less
 /// than 64.
+/// Applicable to Server only.
 #[no_mangle]
 pub extern "C" fn quic_config_set_reset_token_key(
     config: &mut Config,
@@ -314,20 +315,16 @@ pub extern "C" fn quic_config_set_reset_token_key(
     0
 }
 
-/// Set whether stateless reset is allowed.
-#[no_mangle]
-pub extern "C" fn quic_config_enable_stateless_reset(config: &mut Config, enabled: bool) {
-    config.enable_stateless_reset(enabled);
-}
-
 /// Set the lifetime of address token.
+/// Applicable to Server only.
 #[no_mangle]
 pub extern "C" fn quic_config_set_address_token_lifetime(config: &mut Config, seconds: u64) {
     config.set_address_token_lifetime(seconds);
 }
 
-/// Set the key for address token generation.
+/// Set the key for address token generation. It also enables retry.
 /// The token_key_len should be a multiple of 16.
+/// Applicable to Server only.
 #[no_mangle]
 pub extern "C" fn quic_config_set_address_token_key(
     config: &mut Config,
@@ -356,18 +353,28 @@ pub extern "C" fn quic_config_set_address_token_key(
 }
 
 /// Set whether stateless retry is allowed. Default is not allowed.
+/// Applicable to Server only.
 #[no_mangle]
 pub extern "C" fn quic_config_enable_retry(config: &mut Config, enabled: bool) {
     config.enable_retry(enabled);
 }
 
+/// Set whether stateless reset is allowed.
+/// Applicable to Endpoint only.
+#[no_mangle]
+pub extern "C" fn quic_config_enable_stateless_reset(config: &mut Config, enabled: bool) {
+    config.enable_stateless_reset(enabled);
+}
+
 /// Set the length of source cid. The length should not be greater than 20.
+/// Applicable to Endpoint only.
 #[no_mangle]
 pub extern "C" fn quic_config_set_cid_len(config: &mut Config, v: u8) {
     config.set_cid_len(v as usize);
 }
 
 /// Set the batch size for sending packets.
+/// Applicable to Endpoint only.
 #[no_mangle]
 pub extern "C" fn quic_config_set_send_batch_size(config: &mut Config, v: u16) {
     config.set_send_batch_size(v as usize);
@@ -436,6 +443,7 @@ pub extern "C" fn quic_endpoint_free(endpoint: *mut Endpoint) {
 
 /// Create a client connection.
 /// If success, the output parameter `index` carrys the index of the connection.
+/// Note: The `config` specific to the endpoint or server is irrelevant and will be disregarded.
 #[no_mangle]
 pub extern "C" fn quic_endpoint_connect(
     endpoint: &mut Endpoint,
@@ -448,6 +456,7 @@ pub extern "C" fn quic_endpoint_connect(
     session_len: size_t,
     token: *const u8,
     token_len: size_t,
+    config: *const Config,
     index: *mut u64,
 ) -> c_int {
     let local = sock_addr_from_c(local, local_len);
@@ -473,8 +482,13 @@ pub extern "C" fn quic_endpoint_connect(
     } else {
         None
     };
+    let config = if !config.is_null() {
+        Some(unsafe { &(*config) })
+    } else {
+        None
+    };
 
-    match endpoint.connect(local, remote, server_name, session, token) {
+    match endpoint.connect(local, remote, server_name, session, token, config) {
         Ok(idx) => {
             if !index.is_null() {
                 unsafe {

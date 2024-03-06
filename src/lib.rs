@@ -562,23 +562,21 @@ impl Config {
         self.max_concurrent_conns = v;
     }
 
-    /// Set whether stateless reset is allowed.
-    pub fn enable_stateless_reset(&mut self, enable_stateless_reset: bool) {
-        self.stateless_reset = enable_stateless_reset;
-    }
-
-    /// Set the key for reset token generation
+    /// Set the key for reset token generation.
+    /// Applicable to Server only.
     pub fn set_reset_token_key(&mut self, v: [u8; 64]) {
         // HMAC-SHA256 use a 512-bit block length
         self.reset_token_key = hmac::Key::new(hmac::HMAC_SHA256, &v);
     }
 
-    /// Set whether stateless retry is allowed. Default is not allowed.
-    pub fn enable_retry(&mut self, enable_retry: bool) {
-        self.retry = enable_retry;
+    /// Set the lifetime of address token.
+    /// Applicable to Server only.
+    pub fn set_address_token_lifetime(&mut self, seconds: u64) {
+        self.address_token_lifetime = Duration::from_secs(seconds);
     }
 
     /// Set the key for address token generation.
+    /// Applicable to Server only.
     pub fn set_address_token_key(&mut self, keys: Vec<[u8; 16]>) -> Result<()> {
         if keys.is_empty() {
             return Err(Error::InvalidConfig("address token key empty".into()));
@@ -596,17 +594,26 @@ impl Config {
         Ok(())
     }
 
-    /// Set the lifetime of address token
-    pub fn set_address_token_lifetime(&mut self, seconds: u64) {
-        self.address_token_lifetime = Duration::from_secs(seconds);
+    /// Set whether stateless retry is allowed. Default is not allowed.
+    /// Applicable to Server only.
+    pub fn enable_retry(&mut self, enable_retry: bool) {
+        self.retry = enable_retry;
+    }
+
+    /// Set whether stateless reset is allowed.
+    /// Applicable to Endpoint only.
+    pub fn enable_stateless_reset(&mut self, enable_stateless_reset: bool) {
+        self.stateless_reset = enable_stateless_reset;
     }
 
     /// Set the length of source cid.
+    /// Applicable to Endpoint only.
     pub fn set_cid_len(&mut self, v: usize) {
         self.cid_len = cmp::min(v, MAX_CID_LEN);
     }
 
     /// Set the batch size for sending packets.
+    /// Applicable to Endpoint only.
     pub fn set_send_batch_size(&mut self, v: usize) {
         self.send_batch_size = cmp::max(v, 1);
     }
