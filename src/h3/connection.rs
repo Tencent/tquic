@@ -14,7 +14,6 @@
 
 use std::collections::hash_map;
 use std::collections::VecDeque;
-#[cfg(feature = "sfv")]
 use std::convert::TryFrom;
 use std::mem::MaybeUninit;
 use std::sync::Arc;
@@ -2106,8 +2105,6 @@ impl Http3Priority {
     }
 }
 
-#[cfg(feature = "sfv")]
-#[cfg_attr(docsrs, doc(cfg(feature = "sfv")))]
 impl TryFrom<&[u8]> for Http3Priority {
     type Error = crate::h3::Http3Error;
 
@@ -4414,17 +4411,14 @@ mod tests {
 
         assert_eq!(s.server_poll(), Ok((stream_id, Http3Event::PriorityUpdate)));
 
-        #[cfg(feature = "sfv")]
-        {
-            let priority_value = s.server.take_priority_update(stream_id).unwrap();
-            assert_eq!(
-                Http3Priority::try_from(priority_value.as_slice()),
-                Ok(Http3Priority {
-                    urgency: 3,
-                    incremental: false
-                })
-            );
-        }
+        let priority_value = s.server.take_priority_update(stream_id).unwrap();
+        assert_eq!(
+            Http3Priority::try_from(priority_value.as_slice()),
+            Ok(Http3Priority {
+                urgency: 3,
+                incremental: false
+            })
+        );
 
         // Subcase3: Client send priority update for request stream, incremental.
         s.client
@@ -4442,17 +4436,14 @@ mod tests {
 
         assert_eq!(s.server_poll(), Ok((stream_id, Http3Event::PriorityUpdate)));
 
-        #[cfg(feature = "sfv")]
-        {
-            let priority_value = s.server.take_priority_update(stream_id).unwrap();
-            assert_eq!(
-                Http3Priority::try_from(priority_value.as_slice()),
-                Ok(Http3Priority {
-                    urgency: 3,
-                    incremental: true
-                })
-            );
-        }
+        let priority_value = s.server.take_priority_update(stream_id).unwrap();
+        assert_eq!(
+            Http3Priority::try_from(priority_value.as_slice()),
+            Ok(Http3Priority {
+                urgency: 3,
+                incremental: true
+            })
+        );
 
         assert_eq!(s.server_poll(), Err(Http3Error::Done));
     }
@@ -4480,17 +4471,14 @@ mod tests {
         // 2. Server receive priority update.
         assert_eq!(s.server_poll(), Ok((stream_id, Http3Event::PriorityUpdate)));
 
-        #[cfg(feature = "sfv")]
-        {
-            let priority_value = s.server.take_priority_update(stream_id).unwrap();
-            assert_eq!(
-                Http3Priority::try_from(priority_value.as_slice()),
-                Ok(Http3Priority {
-                    urgency: 3,
-                    incremental: false
-                })
-            );
-        }
+        let priority_value = s.server.take_priority_update(stream_id).unwrap();
+        assert_eq!(
+            Http3Priority::try_from(priority_value.as_slice()),
+            Ok(Http3Priority {
+                urgency: 3,
+                incremental: false
+            })
+        );
 
         // Stream's priority is not initialized, the underlying quic stream is not opened, in server side.
         let stream = s.server.streams.get(&stream_id).unwrap();
@@ -4576,17 +4564,14 @@ mod tests {
         assert_eq!(s.server_poll(), Ok((stream_id, Http3Event::PriorityUpdate)));
         assert_eq!(s.server_poll(), Err(Http3Error::Done));
 
-        #[cfg(feature = "sfv")]
-        {
-            let priority_value = s.server.take_priority_update(stream_id).unwrap();
-            assert_eq!(
-                Http3Priority::try_from(priority_value.as_slice()),
-                Ok(Http3Priority {
-                    urgency: 5,
-                    incremental: false
-                })
-            );
-        }
+        let priority_value = s.server.take_priority_update(stream_id).unwrap();
+        assert_eq!(
+            Http3Priority::try_from(priority_value.as_slice()),
+            Ok(Http3Priority {
+                urgency: 5,
+                incremental: false
+            })
+        );
 
         assert_eq!(s.server_poll(), Err(Http3Error::Done));
     }
@@ -4818,7 +4803,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "sfv")]
     fn parse_extensible_priority() {
         for (priority, urgency, incremental) in [
             ("", PRIORITY_URGENCY_DEFAULT, PRIORITY_INCREMENTAL_DEFAULT),
