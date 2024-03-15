@@ -2929,7 +2929,7 @@ impl Connection {
                                 continue;
                             }
                             let (lost_pkts, lost_bytes) = path.recovery.on_loss_detection_timeout(
-                                SpaceId::Data, // TODO: update for multipath
+                                path.space_id,
                                 &mut self.spaces,
                                 handshake_status,
                                 self.qlog.as_mut(),
