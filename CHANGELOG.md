@@ -11,6 +11,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [v0.8.0] - 2024-03-15
+
+### Added
+
+- Support anti-amplification limit for server
+- Support customized config when initiating a connection
+- Add callback based FFI for writing the keylog and qlog
+- Support compiling dynamic library for C language
+- Update the processing of LossDetection timeout in multipath mode
+- Update crate docs about PathStats/TlsConfig/TlsConfigSelector
+
+### Security
+- Discard old Path Challenges received if needed
+
+
 ## [v0.7.0] - 2024-02-02
 
 ### Added
