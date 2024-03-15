@@ -215,7 +215,7 @@ impl Connection {
         }
 
         let cid_limit = conf.local_transport_params.active_conn_id_limit as usize;
-        let paths = path::PathMap::new(path, cid_limit, is_server);
+        let paths = path::PathMap::new(path, cid_limit, conf.anti_amplification_factor, is_server);
 
         let active_pid = paths.get_active_path_id()?;
         let reset_token = if is_server && conf.stateless_reset {
@@ -411,8 +411,9 @@ impl Connection {
             );
             return Ok(len);
         }
-        if let Some(p) = pid {
-            // TODO: server: limit bytes sent before address validation
+        if let Some(pid) = pid {
+            // Update send limit before address validation for server
+            self.paths.inc_anti_ampl_limit(pid, len);
         }
 
         // Process each QUIC packet in the UDP datagram
@@ -1376,8 +1377,10 @@ impl Connection {
         // Select a path for sending a packet
         let pid = self.select_send_path()?;
 
-        // TODO: limit bytes sent before address validation
+        // Limit bytes sent by path MTU limit and server send limit before address validation
         let mut left = cmp::min(out.len(), self.max_datagram_size(pid));
+        left = self.paths.cmp_anti_ampl_limit(pid, left);
+
         let out = &mut out[..left];
         let mut done = 0;
 
@@ -1650,6 +1653,7 @@ impl Connection {
             .get_mut(path_id)?
             .recovery
             .stat_sent_event(1, written as u64);
+        self.paths.dec_anti_ampl_limit(path_id, written);
         {
             let space = self.spaces.get_mut(space_id).ok_or(Error::InternalError)?;
             space.next_pkt_num += 1;
@@ -1763,7 +1767,26 @@ impl Connection {
         }
 
         // Write PADDING frames
-        if (has_initial || !self.paths.get(path_id)?.validated()) && (out.len() - st.written >= 1) {
+        if (out.len() - st.written >= 1)
+            && (
+                // Expand the payload of all UDP datagrams carrying Initial packets to
+                // at least the smallest allowed maximum datagram size. Sending UDP
+                // datagrams of this size ensures that the network path supports a
+                // reasonable Path Maximum Transmission Unit (PMTU), in both directions.
+                has_initial
+                // To prevent deadlock when the server reaches its anti-amplification
+                // limit, clients MUST send a packet on a Probe Timeout (PTO).
+                // Specifically, the client MUST send an Initial packet in a UDP datagram
+                // that contains at least 1200 bytes if it does not have Handshake keys,
+                // and otherwise send a Handshake packet.
+                || (st.is_probe && !self.is_server && pkt_type == PacketType::Handshake)
+                // An endpoint MUST expand datagrams that contain a PATH_CHALLENGE or
+                // PATH_RESPONSE frame to at least the smallest allowed maximum datagram
+                // size. This verifies that the path is able to carry datagrams of this
+                // size in both directions.
+                || self.paths.get(path_id)?.need_expand_padding_frames(self.is_server)
+            )
+        {
             let frame = Frame::Paddings {
                 len: out.len() - st.written,
             };
@@ -2616,7 +2639,7 @@ impl Connection {
                 .paths
                 .iter_mut()
                 .filter(|(_, p)| p.dcid_seq.is_some())
-                .filter(|(_, p)| p.need_send_validation_frames())
+                .filter(|(_, p)| p.need_send_validation_frames(self.is_server))
                 .map(|(pid, _)| pid);
 
             if let Some(pid) = probing.next() {
@@ -2744,7 +2767,7 @@ impl Connection {
             && (self.need_send_handshake_done_frame()
                 || self.need_send_new_token_frame()
                 || self.local_error.as_ref().map_or(false, |e| e.is_app)
-                || path.need_send_validation_frames()
+                || path.need_send_validation_frames(self.is_server)
                 || self.cids.need_send_cid_control_frames()
                 || self.streams.need_send_stream_frames()
                 || self.spaces.need_send_buffered_frames())
@@ -2818,7 +2841,10 @@ impl Connection {
             &self.recovery_conf,
             &self.trace_id,
         );
-        path.max_send_bytes = buf_len * crate::ANTI_AMPLIFICATION_FACTOR;
+        if self.is_server {
+            path.anti_ampl_limit = buf_len * self.paths.anti_ampl_factor;
+        }
+
         path.scid_seq = Some(cid_seq);
         path.initiate_path_chal();
 
@@ -2903,7 +2929,7 @@ impl Connection {
                                 continue;
                             }
                             let (lost_pkts, lost_bytes) = path.recovery.on_loss_detection_timeout(
-                                SpaceId::Data, // TODO: update for multipath
+                                path.space_id,
                                 &mut self.spaces,
                                 handshake_status,
                                 self.qlog.as_mut(),
@@ -4633,22 +4659,22 @@ pub(crate) mod tests {
         assert!(packets.len() > 0);
 
         // Inject a Version Negotiation packet to client
-        let (initial_pkt, info) = packets.pop().unwrap();
+        let (initial_pkt, initial_info) = packets.pop().unwrap();
         let hdr = PacketHeader::from_bytes(&initial_pkt, 20)?.0;
         let mut buf = vec![0; 256];
         let len = packet::version_negotiation(&hdr.dcid, &hdr.scid, &mut buf)?;
         buf.truncate(len);
         let info = PacketInfo {
-            src: info.dst,
-            dst: info.src,
-            time: info.time,
+            src: initial_info.dst,
+            dst: initial_info.src,
+            time: initial_info.time,
         };
 
         // Client drop the Version Negotiation packet with the same version.
         TestPair::conn_packets_in(&mut test_pair.client, vec![(buf, info)])?;
 
         // Client/Server continue the handshake
-        TestPair::conn_packets_in(&mut test_pair.server, vec![(initial_pkt, info)])?;
+        TestPair::conn_packets_in(&mut test_pair.server, vec![(initial_pkt, initial_info)])?;
         assert_eq!(test_pair.handshake(), Ok(()));
         assert_eq!(test_pair.client.is_established(), true);
         assert_eq!(test_pair.server.is_established(), true);
@@ -4936,7 +4962,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn handshake_with_antiamplification_deadlock() -> Result<()> {
+    fn handshake_with_anti_amplification_deadlock() -> Result<()> {
         let mut test_pair = TestPair::new_with_test_config()?;
 
         // Client send Initial.
@@ -4946,7 +4972,7 @@ pub(crate) mod tests {
         // Server send Initial and Handshake.
         let mut packets = TestPair::conn_packets_out(&mut test_pair.server)?;
 
-        // Fake dropping the second packet.
+        // Fake dropping the second Handshake packet.
         packets.truncate(1);
 
         // Client recv Initial and the first Handshake.
@@ -4956,11 +4982,46 @@ pub(crate) mod tests {
         // Client send ACK and PADDING and wait for retransmission of the second packet.
         let _ = TestPair::conn_packets_out(&mut test_pair.client)?;
 
-        // `LossDetection` timer should not be None to avoid deadlock.
+        // Client must set LossDetection timer to avoid deadlock
         assert!(test_pair.client.timeout().is_some());
         assert!(test_pair.client.timers.get(Timer::LossDetection).is_some());
 
-        // TODO: complete the remaining part after supporting anti-amplification in server side.
+        // Server retransmit Handshake but lost again
+        for i in 0..3 {
+            let dur = test_pair.server.timeout().unwrap();
+            test_pair.server.on_timeout(time::Instant::now() + dur);
+            let _ = TestPair::conn_packets_out(&mut test_pair.server)?;
+        }
+
+        // Server is blocked by anti-amplification limit
+        {
+            let path = test_pair.server.paths.get_active().unwrap();
+            assert_eq!(path.anti_ampl_limit, 0);
+        }
+
+        // A deadlock could occur when the server reaches its anti-amplification limit
+        // and the client has received acknowledgments for all the data it has sent.
+        // In this case, when the client has no reason to send additional packets, the
+        // server will be unable to send more data because it has not validated the
+        // client's address. To prevent this deadlock, clients MUST send a packet on a
+        // Probe Timeout (PTO).
+        let dur = test_pair.client.timeout().unwrap();
+        test_pair.client.on_timeout(time::Instant::now() + dur);
+        let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+        assert!(!packets.is_empty());
+
+        // Server and client continue the handshake.
+        TestPair::conn_packets_in(&mut test_pair.server, packets)?;
+        {
+            let path = test_pair.server.paths.get_active().unwrap();
+            assert!(path.anti_ampl_limit > 0);
+        }
+        let dur = test_pair.server.timeout().unwrap();
+        test_pair.server.on_timeout(time::Instant::now() + dur);
+
+        assert_eq!(test_pair.handshake(), Ok(()));
+        assert_eq!(test_pair.client.is_established(), true);
+        assert_eq!(test_pair.server.is_established(), true);
 
         Ok(())
     }
@@ -5465,7 +5526,7 @@ pub(crate) mod tests {
             .client
             .paths
             .get(pid)?
-            .need_send_validation_frames());
+            .need_send_validation_frames(false));
         let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
         TestPair::conn_packets_in(&mut test_pair.server, packets)?;
 
@@ -5521,6 +5582,42 @@ pub(crate) mod tests {
 
         assert!(test_pair.client.scid().is_err());
         assert!(test_pair.client.dcid().is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn path_anti_ampl_limit() -> Result<()> {
+        let mut test_pair = TestPair::new_with_test_config()?;
+        {
+            let path = test_pair.server.paths.get_active().unwrap();
+            assert_eq!(path.anti_ampl_limit, 0);
+        }
+
+        // Client send Initial.
+        let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+        let len_in: usize = packets.iter().map(|p| p.0.len()).sum();
+
+        // Server recv Initial.
+        TestPair::conn_packets_in(&mut test_pair.server, packets)?;
+        {
+            let path = test_pair.server.paths.get_active().unwrap();
+            assert_eq!(
+                path.anti_ampl_limit,
+                len_in * test_pair.server.paths.anti_ampl_factor
+            );
+        }
+
+        // Server send Initial and Handshake.
+        let packets = TestPair::conn_packets_out(&mut test_pair.server)?;
+        let len_out: usize = packets.iter().map(|p| p.0.len()).sum();
+        {
+            let path = test_pair.server.paths.get_active().unwrap();
+            assert_eq!(
+                path.anti_ampl_limit,
+                len_in * test_pair.server.paths.anti_ampl_factor - len_out
+            );
+        }
 
         Ok(())
     }

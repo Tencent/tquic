@@ -137,7 +137,7 @@ pub(crate) mod tests {
         /// Create context for multipath scheduler.
         pub(crate) fn new() -> Result<MultipathTester> {
             let path = new_test_path("127.0.0.1:443", "127.0.0.1:8443", true, 200);
-            let mut paths = PathMap::new(path, 8, true);
+            let mut paths = PathMap::new(path, 8, crate::ANTI_AMPLIFICATION_FACTOR, true);
             paths.enable_multipath();
 
             let spaces = PacketNumSpaceMap::new();

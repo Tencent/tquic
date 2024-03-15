@@ -130,6 +130,7 @@ impl Endpoint {
     }
 
     /// Create a client connection.
+    /// Note: The `config` specific to the endpoint or server is irrelevant and will be disregarded.
     ///
     /// The caller should call `process_connections()` after one or more connect().
     pub fn connect(
@@ -139,6 +140,7 @@ impl Endpoint {
         server_name: Option<&str>,
         session: Option<&[u8]>,
         token: Option<&[u8]>,
+        config: Option<&crate::Config>,
     ) -> Result<u64> {
         if self.is_server {
             return Err(Error::InvalidOperation("not a client".into()));
@@ -149,7 +151,12 @@ impl Endpoint {
 
         // Create a client connection.
         let scid = self.cid_gen.generate();
-        let conn = Connection::new_client(&scid, local, remote, server_name, &self.config)?;
+        let config = if let Some(config) = config {
+            config
+        } else {
+            &self.config
+        };
+        let conn = Connection::new_client(&scid, local, remote, server_name, config)?;
         let idx = self.conns.insert(conn);
         if let Some(conn) = self.conns.get_mut(idx) {
             conn.set_index(idx);
@@ -1108,7 +1115,7 @@ mod tests {
                     Endpoint::new(Box::new(cli_conf), false, cli_hdl, cli_sock.clone());
 
                 endpoint
-                    .connect(cli_addr, srv_addr, host, session, token)
+                    .connect(cli_addr, srv_addr, host, session, token, None)
                     .unwrap();
                 endpoint.process_connections().unwrap();
                 TestPair::event_loop(&mut endpoint, &mut cli_poll, &cli_sock, &cli_stop).unwrap();
@@ -2069,13 +2076,17 @@ mod tests {
             )),
             Rc::new(MockSocket::new()),
         );
-        assert!(e.connect(cli_addr, srv_addr, host, None, None).is_ok());
+        assert!(e
+            .connect(cli_addr, srv_addr, host, None, None, None)
+            .is_ok());
         assert_eq!(e.conns.len(), 1);
 
         // gracefully close client endpoint
         e.close(false);
         assert_eq!(e.conns.len(), 1);
-        assert!(e.connect(cli_addr, srv_addr, host, None, None).is_err());
+        assert!(e
+            .connect(cli_addr, srv_addr, host, None, None, None)
+            .is_err());
         assert_eq!(e.conns.len(), 1);
 
         // forcibly close client endpoint
@@ -2092,7 +2103,9 @@ mod tests {
             )),
             Rc::new(MockSocket::new()),
         );
-        assert!(e.connect(cli_addr, srv_addr, host, None, None).is_err());
+        assert!(e
+            .connect(cli_addr, srv_addr, host, None, None, None)
+            .is_err());
         assert!(e.conns.is_empty());
 
         Ok(())
@@ -2196,7 +2209,7 @@ mod tests {
         let cli_addr: SocketAddr = "127.8.8.8:8888".parse().unwrap();
         let srv_addr: SocketAddr = "127.8.8.8:8443".parse().unwrap();
         let host = Some("example.org");
-        let cli_conn = client.connect(cli_addr, srv_addr, host, None, None)?;
+        let cli_conn = client.connect(cli_addr, srv_addr, host, None, None, None)?;
         client.process_connections()?;
         assert!(client_sock.transfer(&mut server)? > 0);
         server.process_connections()?;
@@ -2300,14 +2313,18 @@ mod tests {
         );
 
         // Insert connection 0
-        assert!(e.connect(cli_addr, srv_addr, host, None, None).is_ok());
+        assert!(e
+            .connect(cli_addr, srv_addr, host, None, None, None)
+            .is_ok());
         assert_eq!(e.conns.len(), 1);
         let raw_ptr = e.conn_get_mut(0).unwrap() as *const Connection;
 
         // Insert more connections and cause reallocation
         let capacity = e.conns.conns.capacity();
         for i in 0..capacity {
-            assert!(e.connect(cli_addr, srv_addr, host, None, None).is_ok());
+            assert!(e
+                .connect(cli_addr, srv_addr, host, None, None, None)
+                .is_ok());
         }
         assert_ne!(e.conns.conns.capacity(), capacity);
 

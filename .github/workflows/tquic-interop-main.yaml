@@ -18,12 +18,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        server: [tquic]
-        client: [tquic]
         include:
+          - server: tquic
+            client: tquic
           - server: tquic
             client: lsquic
           - server: lsquic
+            client: tquic
+          - server: tquic
+            client: ngtcp2
+          - server: ngtcp2
             client: tquic
 
     steps:
@@ -49,13 +53,19 @@ jobs:
     - name: Run the interop tests 
       run: |
         cd quic-interop-runner   
-        python3 run.py -s ${{ matrix.server }} -c ${{ matrix.client }} -t handshake,handshakeloss,handshakecorruption,retry,resumption,zerortt,http3,ipv6,transfer,multiplexing,longrtt,blackhole,transferloss,transfercorruption,goodput,crosstraffic -d -r tquic=tquic_interop:v1 -l ${{ matrix.client }}-${{ matrix.server }}-logs
+        python3 run.py -s ${{ matrix.server }} -c ${{ matrix.client }} -t handshake,handshakeloss,handshakecorruption,retry,resumption,zerortt,amplificationlimit,http3,ipv6,transfer,multiplexing,longrtt,blackhole,transferloss,transfercorruption,goodput,crosstraffic -d -r tquic=tquic_interop:v1 -l ${{ matrix.server }}-${{ matrix.client }}-logs -j ${{ matrix.server }}-${{ matrix.client }}-logs/interop.json
 
-    - name: Store run logs
+    - name: Dump the interop result
+      if: ${{ always() }}
+      run: |
+        cd quic-interop-runner
+        python3 -m json.tool ${{ matrix.server }}-${{ matrix.client }}-logs/interop.json
+
+    - name: Store interop logs
       if: ${{ failure() }}
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ matrix.client }}-${{ matrix.server }}
+        name: ${{ matrix.server }}-${{ matrix.client }}
         path: |
           quic-interop-runner/*logs/*
           !quic-interop-runner/*logs/**/crosstraffic/

@@ -180,7 +180,7 @@ impl PacketHeader {
     ///
     /// The Length/Packet Number field are intentionally not written to the
     /// buffer for the moment.
-    /// See RFC 9002 Section 17 Packet Formats
+    /// See RFC 9000 Section 17 Packet Formats
     pub fn to_bytes(&self, mut buf: &mut [u8]) -> Result<usize> {
         let len = buf.len();
 
@@ -267,7 +267,7 @@ impl PacketHeader {
     /// The Length/Packet Number field in packet header are intentionally not
     /// read from the buffer for the moment.
     ///
-    /// See RFC 9002 Section 17 Packet Formats
+    /// See RFC 9000 Section 17 Packet Formats
     pub fn from_bytes(mut buf: &[u8], dcid_len: usize) -> Result<(PacketHeader, usize)> {
         let len = buf.len();
         let first = buf.read_u8()?;
