@@ -1344,10 +1344,12 @@ impl Connection {
     /// Write coalesced multiple QUIC packets to the given buffer which will
     /// then be sent to the peer.
     ///
+    /// The size of `out` should be at least 1200 bytes, ideally matching or
+    /// exceeding the maximum possible MTU.
+    ///
     /// Return Error::Done if no packet can be sent.
     pub(crate) fn send(&mut self, out: &mut [u8]) -> Result<(usize, PacketInfo)> {
-        if out.is_empty() {
-            // TODO: use more strict condition
+        if out.len() < crate::MIN_CLIENT_INITIAL_LEN {
             return Err(Error::BufferTooShort);
         }
 
@@ -6381,8 +6383,8 @@ pub(crate) mod tests {
     #[test]
     fn conn_multi_incremental_streams_send_round_robin() -> Result<()> {
         let server_transport_params = TransportParams {
-            initial_max_data: 2000,
-            initial_max_stream_data_bidi_remote: 2000,
+            initial_max_data: 20000,
+            initial_max_stream_data_bidi_remote: 20000,
             initial_max_streams_bidi: 4,
             ..TransportParams::default()
         };
@@ -6395,7 +6397,7 @@ pub(crate) mod tests {
         assert_eq!(test_pair.handshake(), Ok(()));
 
         // 1. Client create four bidi streams [0, 4, 8, 12], and write data on them
-        let data = TestPair::new_test_data(500);
+        let data = TestPair::new_test_data(1000);
         for i in 0..4 {
             assert_eq!(
                 test_pair.client.stream_write(i * 4, data.clone(), true)?,
@@ -6406,7 +6408,7 @@ pub(crate) mod tests {
         // 2. Try to send stream data in round-robin order
         let mut packets = Vec::new();
         for i in 0..4 {
-            let mut out = vec![0u8; 100];
+            let mut out = vec![0u8; 1500];
             let info = match test_pair.client.send(&mut out) {
                 Ok((written, info)) => {
                     out.truncate(written);
