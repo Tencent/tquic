@@ -6793,10 +6793,12 @@ pub(crate) mod tests {
         let packets = TestPair::conn_packets_out(&mut test_pair.server)?;
         TestPair::conn_packets_in(&mut test_pair.client, packets)?;
 
-        // Advance ticks until loss timeout
-        assert!(test_pair.client.timeout().is_some());
-        let timeout = test_pair.client.timers.get(Timer::LossDetection);
-        test_pair.client.on_timeout(timeout.unwrap());
+        // The dropped packets may be declared as lost based on the time threshold.
+        // If not, advance ticks until loss timeout.
+        if test_pair.client.timeout().is_some() {
+            let timeout = test_pair.client.timers.get(Timer::LossDetection);
+            test_pair.client.on_timeout(timeout.unwrap());
+        }
 
         // Check client qlog
         let mut clog_content = String::new();
