@@ -27,8 +27,6 @@ jobs:
             client: tquic
           - server: tquic
             client: ngtcp2
-          - server: ngtcp2
-            client: tquic
 
     steps:
     - uses: actions/checkout@v4
