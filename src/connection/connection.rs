@@ -3053,6 +3053,11 @@ impl Connection {
         self.tls_session.session()
     }
 
+    /// Return details why 0-RTT was accepted or rejected.
+    pub fn early_data_reason(&self) -> Result<Option<&str>> {
+        self.tls_session.early_data_reason()
+    }
+
     /// Check whether the connection is draining.
     ///
     /// If true, the connection object can not yet be dropped, but no data can
