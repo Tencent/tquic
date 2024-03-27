@@ -85,6 +85,39 @@ struct SslQuicMethod {
     send_alert: extern "C" fn(ssl: *mut Ssl, level: tls::Level, alert: u8) -> c_int,
 }
 
+#[repr(C)]
+enum SslEarlyDataReason {
+    // The handshake has not progressed far enough for the 0-RTT status to be known.
+    Unknown = 0,
+    // 0-RTT is disabled for this connection.
+    Disabled = 1,
+    // 0-RTT was accepted.
+    Accepted = 2,
+    // The negotiated protocol version does not support 0-RTT.
+    ProtocolVersion = 3,
+    // The peer declined to offer or accept 0-RTT for an unknown reason.
+    PeerDeclined = 4,
+    // The client did not offer a session.
+    NoSessionOffered = 5,
+    // The server declined to resume the session.
+    SessionNotResumed = 6,
+    // The session does not support 0-RTT.
+    UnsupportedForSession = 7,
+    // The server sent a HelloRetryRequest.
+    HelloRetryRequest = 8,
+    // The negotiated ALPN protocol did not match the session.
+    AlpnMismatch = 9,
+    // The connection negotiated Channel ID, which is incompatible with 0-RTT.
+    ChannelId = 10,
+    // Value 11 is reserved. (It has historically |ssl_early_data_token_binding|.)
+    // The client and server ticket age were too far apart.
+    TicketAgeSkew = 12,
+    // QUIC parameters differ between this connection and the original.
+    QuicParameterMismatch = 13,
+    // The application settings did not match the session.
+    AlpsMismatch = 14,
+}
+
 /// Called when TLS context is being destroyed.
 /// See https://commondatastorage.googleapis.com/chromium-boringssl-docs/ex_data.h.html
 extern "C" fn context_data_free(
@@ -127,7 +160,7 @@ static SSL_QUIC_METHOD: SslQuicMethod = SslQuicMethod {
 
 /// Rust wrapper of SSL_CTX which holds various configuration and data relevant
 /// to SSL/TLS session establishment.
-pub struct Context {
+pub(crate) struct Context {
     ctx_raw: *mut SslCtx,
     owned: bool,
 }
@@ -167,12 +200,12 @@ impl Context {
     }
 
     /// Return the mutable pointer of the inner SSL_CTX.
-    fn as_mut_ptr(&mut self) -> *mut SslCtx {
+    pub fn as_mut_ptr(&mut self) -> *mut SslCtx {
         self.ctx_raw
     }
 
     /// Return the const pointer of the inner SSL_CTX.
-    fn as_ptr(&self) -> *const SslCtx {
+    pub fn as_ptr(&self) -> *const SslCtx {
         self.ctx_raw
     }
 
@@ -254,7 +287,7 @@ impl Context {
     }
 
     /// Set the callback function that is called whenever a new session was negotiated.
-    fn set_session_callback(&mut self) {
+    pub fn set_session_callback(&mut self) {
         unsafe {
             SSL_CTX_set_session_cache_mode(
                 self.as_mut_ptr(),
@@ -629,7 +662,6 @@ impl Session {
             let sigalg_name = SSL_get_signature_algorithm_name(sigalg_id, 1);
             match ffi::CStr::from_ptr(sigalg_name).to_str() {
                 Ok(v) => v,
-
                 Err(_) => return None,
             }
         };
@@ -684,6 +716,23 @@ impl Session {
         };
 
         Some(peer_cert)
+    }
+
+    pub fn early_data_reason(&self) -> Result<Option<&str>> {
+        let reason = unsafe {
+            let reason = SSL_early_data_reason_string(SSL_get_early_data_reason(self.as_ptr()));
+            match ffi::CStr::from_ptr(reason).to_str() {
+                Ok(v) => v,
+                Err(e) => {
+                    return Err(Error::TlsFail(format!(
+                        "early data reason format error {:?}",
+                        e
+                    )))
+                }
+            }
+        };
+
+        Ok(Some(reason))
     }
 
     /// Return true if ssl has a completed handshake.
@@ -1419,6 +1468,12 @@ extern "C" {
 
     /// For a server, return the hostname supplied by the client.
     fn SSL_get_servername(ssl: *const Ssl, ty: c_int) -> *const c_char;
+
+    /// Return details why 0-RTT was accepted or rejected on ssl.
+    fn SSL_get_early_data_reason(ssl: *const Ssl) -> SslEarlyDataReason;
+
+    /// Return a string representation for reason, or NULL if reason is unknown.
+    fn SSL_early_data_reason_string(reason: SslEarlyDataReason) -> *const c_char;
 
     /// Reset ssl to allow another connection.
     fn SSL_clear(ssl: *mut Ssl) -> c_int;

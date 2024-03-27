@@ -137,9 +137,11 @@ typedef struct http3_conn_t http3_conn_t;
  */
 typedef struct http3_headers_t http3_headers_t;
 
+typedef struct quic_tls_config_t quic_tls_config_t;
+
 typedef struct quic_tls_config_select_methods_t {
-  SSL_CTX *(*get_default)(void *ctx);
-  SSL_CTX *(*select)(void *ctx, const uint8_t *server_name, size_t server_name_len);
+  struct quic_tls_config_t *(*get_default)(void *ctx);
+  struct quic_tls_config_t *(*select)(void *ctx, const uint8_t *server_name, size_t server_name_len);
 } quic_tls_config_select_methods_t;
 
 typedef void *quic_tls_config_select_context_t;
@@ -317,8 +319,9 @@ void quic_config_set_max_handshake_timeout(struct quic_config_t *config, uint64_
 void quic_config_set_recv_udp_payload_size(struct quic_config_t *config, uint16_t v);
 
 /**
- * Set the maximum outgoing UDP payload size.
+ * Set the initial maximum outgoing UDP payload size.
  * The default and minimum value is `1200`.
+ *
  * The configuration should be changed with caution. The connection may
  * not work properly if an inappropriate value is set.
  */
@@ -489,6 +492,86 @@ void quic_config_set_cid_len(struct quic_config_t *config, uint8_t v);
 void quic_config_set_send_batch_size(struct quic_config_t *config, uint16_t v);
 
 /**
+ * Create a new TlsConfig.
+ * The caller is responsible for the memory of the TlsConfig and should properly
+ * destroy it by calling `quic_tls_config_free`.
+ */
+struct quic_tls_config_t *quic_tls_config_new(void);
+
+/**
+ * Create a new TlsConfig with SSL_CTX.
+ * When using raw SSL_CTX, TlsSession::session() and TlsSession::set_keylog() won't take effect.
+ * The caller is responsible for the memory of TlsConfig and SSL_CTX when use this function.
+ */
+struct quic_tls_config_t *quic_tls_config_new_with_ssl_ctx(SSL_CTX *ssl_ctx);
+
+/**
+ * Create a new client side TlsConfig.
+ * The caller is responsible for the memory of the TlsConfig and should properly
+ * destroy it by calling `quic_tls_config_free`.
+ */
+struct quic_tls_config_t *quic_tls_config_new_client_config(const char *const *protos,
+                                                            intptr_t proto_num,
+                                                            bool enable_early_data);
+
+/**
+ * Create a new server side TlsConfig.
+ * The caller is responsible for the memory of the TlsConfig and should properly
+ * destroy it by calling `quic_tls_config_free`.
+ */
+struct quic_tls_config_t *quic_tls_config_new_server_config(const char *cert_file,
+                                                            const char *key_file,
+                                                            const char *const *protos,
+                                                            intptr_t proto_num,
+                                                            bool enable_early_data);
+
+/**
+ * Destroy a TlsConfig instance.
+ */
+void quic_tls_config_free(struct quic_tls_config_t *tls_config);
+
+/**
+ * Set whether early data is allowed.
+ */
+void quic_tls_config_set_early_data_enabled(struct quic_tls_config_t *tls_config, bool enable);
+
+/**
+ * Set the list of supported application protocols.
+ */
+int quic_tls_config_set_application_protos(struct quic_tls_config_t *tls_config,
+                                           const char *const *protos,
+                                           intptr_t proto_num);
+
+/**
+ * Set session ticket key for server.
+ */
+int quic_tls_config_set_ticket_key(struct quic_tls_config_t *tls_config,
+                                   const uint8_t *ticket_key,
+                                   size_t ticket_key_len);
+
+/**
+ * Set the certificate verification behavior.
+ */
+void quic_tls_config_set_verify(struct quic_tls_config_t *tls_config, bool verify);
+
+/**
+ * Set the PEM-encoded certificate file.
+ */
+int quic_tls_config_set_certificate_file(struct quic_tls_config_t *tls_config,
+                                         const char *cert_file);
+
+/**
+ * Set the PEM-encoded private key file.
+ */
+int quic_tls_config_set_private_key_file(struct quic_tls_config_t *tls_config,
+                                         const char *key_file);
+
+/**
+ * Set CA certificates.
+ */
+int quic_tls_config_set_ca_certs(struct quic_tls_config_t *tls_config, const char *ca_path);
+
+/**
  * Set TLS config selector.
  */
 void quic_config_set_tls_selector(struct quic_config_t *config,
@@ -497,9 +580,11 @@ void quic_config_set_tls_selector(struct quic_config_t *config,
 
 /**
  * Set TLS config.
- * The caller is responsible for the memory of SSL_CTX when use this function.
+ *
+ * Note: Config doesn't own the TlsConfig when using this function.
+ * It is the responsibility of the caller to release it.
  */
-void quic_config_set_tls_config(struct quic_config_t *config, SSL_CTX *ssl_ctx);
+void quic_config_set_tls_config(struct quic_config_t *config, struct quic_tls_config_t *tls_config);
 
 /**
  * Create a QUIC endpoint.
@@ -629,6 +714,11 @@ void quic_conn_server_name(struct quic_conn_t *conn, const uint8_t **out, size_t
  * Return the session data used by resumption.
  */
 void quic_conn_session(struct quic_conn_t *conn, const uint8_t **out, size_t *out_len);
+
+/**
+ * Return details why 0-RTT was accepted or rejected.
+ */
+int quic_conn_early_data_reason(struct quic_conn_t *conn, const uint8_t **out, size_t *out_len);
 
 /**
  * Add a new path on the client connection.

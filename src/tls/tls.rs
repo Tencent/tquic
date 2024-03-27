@@ -75,28 +75,28 @@ pub struct TlsConfig {
 
 impl TlsConfig {
     /// Create a new TlsConfig.
-    pub fn new() -> Result<TlsConfig> {
+    pub fn new() -> Result<Self> {
         let mut tls_ctx = boringssl::tls::Context::new()?;
         tls_ctx.enable_keylog();
 
-        Ok(TlsConfig { tls_ctx })
+        Ok(Self { tls_ctx })
     }
 
     /// Create a new TlsConfig with SSL_CTX.
+    /// When using raw SSL_CTX, TlsSession::session() and TlsSession::set_keylog() won't take effect.
     /// The caller is responsible for the memory of SSL_CTX when use this function.
-    #[doc(hidden)]
-    pub fn new_with_ssl_ctx(ssl_ctx: *mut boringssl::tls::SslCtx) -> TlsConfig {
-        Self {
-            tls_ctx: boringssl::tls::Context::new_with_ssl_ctx(ssl_ctx),
-        }
+    pub fn new_with_ssl_ctx(ssl_ctx: *mut boringssl::tls::SslCtx) -> Self {
+        let tls_ctx = boringssl::tls::Context::new_with_ssl_ctx(ssl_ctx);
+
+        Self { tls_ctx }
     }
 
     /// Create a new client side TlsConfig.
     pub fn new_client_config(
         application_protos: Vec<Vec<u8>>,
         enable_early_data: bool,
-    ) -> Result<TlsConfig> {
-        let mut tls_config = TlsConfig::new()?;
+    ) -> Result<Self> {
+        let mut tls_config = Self::new()?;
         tls_config.set_application_protos(application_protos)?;
         tls_config.set_early_data_enabled(enable_early_data);
 
@@ -109,8 +109,8 @@ impl TlsConfig {
         key_file: &str,
         application_protos: Vec<Vec<u8>>,
         enable_early_data: bool,
-    ) -> Result<TlsConfig> {
-        let mut tls_config = TlsConfig::new()?;
+    ) -> Result<Self> {
+        let mut tls_config = Self::new()?;
         tls_config.set_certificate_file(cert_file)?;
         tls_config.set_private_key_file(key_file)?;
         tls_config.set_application_protos(application_protos)?;
@@ -159,6 +159,11 @@ impl TlsConfig {
         }
 
         Ok(())
+    }
+
+    /// Get the underlying SSL_CTX.
+    pub(crate) fn ssl_ctx(&mut self) -> *mut boringssl::tls::SslCtx {
+        self.tls_ctx.as_mut_ptr()
     }
 }
 
@@ -212,6 +217,7 @@ impl TlsConfigSelector for DefaultTlsConfigSelector {
     }
 }
 
+/// Used for selecting TLS config according to SNI.
 pub trait TlsConfigSelector: Send + Sync {
     /// Get default TLS config.
     fn get_default(&self) -> Option<Arc<TlsConfig>>;
@@ -398,6 +404,10 @@ impl TlsSession {
 
     pub fn peer_sign_algor(&self) -> Option<String> {
         self.session.peer_sign_algor()
+    }
+
+    pub fn early_data_reason(&self) -> Result<Option<&str>> {
+        self.session.early_data_reason()
     }
 }
 
