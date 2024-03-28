@@ -130,13 +130,17 @@ impl ConnectionIdDeque {
 /// ConnectionIdMgr maintains all the Connection IDs on a QUIC connection
 #[derive(Default)]
 pub struct ConnectionIdMgr {
-    /// All the Destination Connection IDs provided by our peer.
+    /// All the destination connection IDs provided by our peer.
     dcids: ConnectionIdDeque,
 
-    /// All the Source Connection IDs we provide to our peer.
+    /// All the source connection IDs we provide to our peer.
     scids: ConnectionIdDeque,
 
-    /// The maximum number of source Connection IDs our peer allows us.
+    /// The maximum number of destination connection IDs from peer that this
+    /// endpoint is willing to store.
+    dcid_limit: usize,
+
+    /// The maximum number of source connection IDs our peer allows us.
     scid_limit: usize,
 
     /// Whether the host use zero-length Source Connection ID.
@@ -185,6 +189,7 @@ impl ConnectionIdMgr {
         ConnectionIdMgr {
             scids,
             dcids,
+            dcid_limit,
             scid_limit,
             zero_length_scid: initial_scid.is_empty(),
             next_scid_seq: 1,
@@ -386,6 +391,7 @@ impl ConnectionIdMgr {
         // (RFC 9000 Section 19.15)
         if seq < self.largest_peer_retire_prior_to && !self.dcids_to_retire.contains(&seq) {
             self.dcids_to_retire.push_back(seq);
+            self.check_dcids_to_retire()?;
             return Ok(retired_path_ids);
         }
 
@@ -407,6 +413,7 @@ impl ConnectionIdMgr {
                 }
             });
             self.largest_peer_retire_prior_to = retire_prior_to;
+            self.check_dcids_to_retire()?;
         }
 
         // After processing a NEW_CONNECTION_ID frame and adding and retiring
@@ -417,6 +424,22 @@ impl ConnectionIdMgr {
         self.dcids.insert(cid_item)?;
 
         Ok(retired_path_ids)
+    }
+
+    /// Check and limit the total number of dcids to be retried.
+    fn check_dcids_to_retire(&self) -> Result<()> {
+        // An attacker might flood the server with NEW_CONNECTION_ID frames, and
+        // force it to respond with numerous RETIRE_CONNECTION_ID frames. If the
+        // attacker ignores these responses, a large queue of unacknowledged
+        // RETIRE_CONNECTION_ID frames will accumulate on the server. Over time,
+        // this could exhaust the server's memory.
+        //
+        // The endpoint should limit the number of queued RETIRE_CONNECTION)ID
+        // frames and break the connection if the peer exceeds this limit.
+        if self.dcids_to_retire.len() > self.dcid_limit * 4 {
+            return Err(Error::ProtocolViolation);
+        }
+        Ok(())
     }
 
     /// Retire the Source CID from a RETIRE_CONNECTION_ID frame
@@ -815,6 +838,28 @@ mod tests {
 
         // Fake receiving of RETIRE_CONNECTION_ID that use an unexpected path
         assert_eq!(cids.retire_scid(0, &scid0), Err(Error::ProtocolViolation));
+
+        Ok(())
+    }
+
+    #[test]
+    fn new_connection_id_flood() -> Result<()> {
+        let dcid_limit = 8;
+        let scid0 = ConnectionId::random();
+        let dcid0 = ConnectionId::random();
+        let mut cids = ConnectionIdMgr::new(dcid_limit, &scid0, 0, None);
+        cids.set_initial_dcid(dcid0, Some(0), Some(0));
+
+        let max_dcids_to_retire = dcid_limit * 4;
+        for i in 1..50 {
+            // Fake receiving of NEW_CONNECTION_ID that retries a previously issued CID
+            let dcid = ConnectionId::random();
+            let ret = cids.add_dcid(dcid, i, i as u128, i);
+            if cids.dcids_to_retire.len() > max_dcids_to_retire {
+                assert_eq!(ret, Err(Error::ProtocolViolation));
+            }
+        }
+        assert!(cids.dcids_to_retire.len() <= max_dcids_to_retire + 1);
 
         Ok(())
     }
