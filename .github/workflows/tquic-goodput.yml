@@ -23,6 +23,13 @@ jobs:
     # You can manually trigger it if necessary.
     if: ${{ ( github.event_name == 'schedule' && github.repository == 'tencent/tquic' ) || github.event_name == 'workflow_dispatch' }}
     steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: 'recursive'
+
+    - name: Build docker image
+      run: docker build -t tquic_interop:v1 -f interop/Dockerfile .
+
     - name: Install quic-interop-runner
       run: |
         git clone https://github.com/tquic-group/quic-interop-runner.git
@@ -38,15 +45,15 @@ jobs:
     - name: Run the interop tests 
       run: |
         cd quic-interop-runner   
-        python3 run.py -r $QUIC_IMAGES -s ${{ matrix.impl }} -c ${{ matrix.impl }} -t ${{ matrix.case }} -a ${{ matrix.cc }} -d -n "drop-rate --delay=15ms --bandwidth=10Mbps --queue=25 --rate_to_server=0 --rate_to_client=0" -j ${{ matrix.case }}-0-${{ matrix.cc }}-${{ matrix.impl }}.json
-        python3 run.py -r $QUIC_IMAGES -s ${{ matrix.impl }} -c ${{ matrix.impl }} -t ${{ matrix.case }} -a ${{ matrix.cc }} -d -n "drop-rate --delay=15ms --bandwidth=10Mbps --queue=25 --rate_to_server=1 --rate_to_client=1" -j ${{ matrix.case }}-1-${{ matrix.cc }}-${{ matrix.impl }}.json
-        python3 run.py -r $QUIC_IMAGES -s ${{ matrix.impl }} -c ${{ matrix.impl }} -t ${{ matrix.case }} -a ${{ matrix.cc }} -d -n "drop-rate --delay=15ms --bandwidth=10Mbps --queue=25 --rate_to_server=3 --rate_to_client=3" -j ${{ matrix.case }}-3-${{ matrix.cc }}-${{ matrix.impl }}.json
-        python3 run.py -r $QUIC_IMAGES -s ${{ matrix.impl }} -c ${{ matrix.impl }} -t ${{ matrix.case }} -a ${{ matrix.cc }} -d -n "drop-rate --delay=15ms --bandwidth=10Mbps --queue=25 --rate_to_server=5 --rate_to_client=5" -j ${{ matrix.case }}-5-${{ matrix.cc }}-${{ matrix.impl }}.json
+        python3 run.py -r "$QUIC_IMAGES,tquic=tquic_interop:v1" -s ${{ matrix.impl }} -c ${{ matrix.impl }} -t ${{ matrix.case }} -a ${{ matrix.cc }} -d -n "drop-rate --delay=15ms --bandwidth=10Mbps --queue=25 --rate_to_server=0 --rate_to_client=0" -j ${{ matrix.case }}-0-${{ matrix.cc }}-${{ matrix.impl }}.json
+        python3 run.py -r "$QUIC_IMAGES,tquic=tquic_interop:v1" -s ${{ matrix.impl }} -c ${{ matrix.impl }} -t ${{ matrix.case }} -a ${{ matrix.cc }} -d -n "drop-rate --delay=15ms --bandwidth=10Mbps --queue=25 --rate_to_server=1 --rate_to_client=1" -j ${{ matrix.case }}-1-${{ matrix.cc }}-${{ matrix.impl }}.json
+        python3 run.py -r "$QUIC_IMAGES,tquic=tquic_interop:v1" -s ${{ matrix.impl }} -c ${{ matrix.impl }} -t ${{ matrix.case }} -a ${{ matrix.cc }} -d -n "drop-rate --delay=15ms --bandwidth=10Mbps --queue=25 --rate_to_server=3 --rate_to_client=3" -j ${{ matrix.case }}-3-${{ matrix.cc }}-${{ matrix.impl }}.json
+        python3 run.py -r "$QUIC_IMAGES,tquic=tquic_interop:v1" -s ${{ matrix.impl }} -c ${{ matrix.impl }} -t ${{ matrix.case }} -a ${{ matrix.cc }} -d -n "drop-rate --delay=15ms --bandwidth=10Mbps --queue=25 --rate_to_server=5 --rate_to_client=5" -j ${{ matrix.case }}-5-${{ matrix.cc }}-${{ matrix.impl }}.json
 
     - name: Store measurement results
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ matrix.impl }}-${{ matrix.case }}-${{ matrix.cc }}
+        name: ${{ matrix.case }}-${{ matrix.cc }}-${{ matrix.impl }}
         path: quic-interop-runner/goodput*.json 
     
   result:
@@ -57,6 +64,8 @@ jobs:
       uses: actions/download-artifact@v4
     - name: Display structure of downloaded files
       run: ls -R
+    - name: Display all measurement details
+      run: grep "details.*" . -Ro
     - name: Store all measurement results
       uses: actions/upload-artifact@v4
       with:
