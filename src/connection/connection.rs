@@ -4994,7 +4994,7 @@ pub(crate) mod tests {
         assert!(test_pair.client.timers.get(Timer::LossDetection).is_some());
 
         // Server retransmit Handshake but lost again
-        for i in 0..3 {
+        for i in 0..5 {
             let dur = test_pair.server.timeout().unwrap();
             test_pair.server.on_timeout(time::Instant::now() + dur);
             let _ = TestPair::conn_packets_out(&mut test_pair.server)?;
