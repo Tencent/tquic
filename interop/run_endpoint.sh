@@ -59,7 +59,11 @@ COPA)
     ;;
 esac
 
-COMMON_ARGS="--keylog-file $SSLKEYLOGFILE --qlog-dir $QLOG_DIR --log-level TRACE --log-file $LOG_DIR/$ROLE.log --idle-timeout 30000 --handshake-timeout 30000 --initial-rtt 100 --congestion-control-algor $CC_ALGOR"
+COMMON_ARGS="--keylog-file $SSLKEYLOGFILE --log-level DEBUG --log-file $LOG_DIR/$ROLE.log --idle-timeout 30000 --handshake-timeout 30000 --initial-rtt 100 --congestion-control-algor $CC_ALGOR"
+
+if [ "$TESTCASE" != "transfer" ]; then
+    COMMON_ARGS="$COMMON_ARGS --qlog-dir $QLOG_DIR"
+fi
 
 if [ "$ROLE" == "client" ]; then
     # Wait for the simulator to start up.
