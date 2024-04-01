@@ -62,10 +62,25 @@ jobs:
     steps:
     - name: Download all workflow run artifacts
       uses: actions/download-artifact@v4
+
     - name: Display structure of downloaded files
       run: ls -R
+
     - name: Display all measurement details
       run: grep "details.*" . -Ro
+
+    - name: Download plot tools
+      uses: actions/checkout@v4
+      with:
+        path: tools
+
+    - name: Install dependences
+      run: |
+        sudo apt install python3-matplotlib
+
+    - name: Plot all measurement results
+      run: python3 tools/.github/workflows/plot-goodput.py .
+
     - name: Store all measurement results
       uses: actions/upload-artifact@v4
       with:
