@@ -9,6 +9,10 @@ StatuS = "StatuS"
 [default.extend-words]
 # ECN Capable Transport
 ect = "ect"
+# Packet Number
+pn = "pn"
+# Retransmission Timeout
+RTO = "RTO"
 
 [files]
 extend-exclude = [

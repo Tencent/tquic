@@ -113,7 +113,7 @@ jobs:
         python3 -m json.tool ${{ matrix.server }}-${{ matrix.client }}-logs/interop.json
 
     - name: Store interop logs
-      if: ${{ failure() }}
+      if: ${{ always() }}
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.server }}-${{ matrix.client }}
@@ -121,3 +121,38 @@ jobs:
           quic-interop-runner/*logs/*
           !quic-interop-runner/*logs/**/crosstraffic/
           !quic-interop-runner/*logs/**/goodput/
+
+  result:
+    runs-on: ubuntu-latest
+    needs: tquic_interop_testing
+    if: always()
+    steps:
+    - name: Download all workflow run artifacts
+      uses: actions/download-artifact@v4
+
+    - name: Display structure of downloaded files
+      run: ls -R
+
+    - name: Display failed interop tests
+      run: grep -Ho "{[^{]*failed" */*/*.json
+
+    - name: Download plot tools
+      uses: actions/checkout@v4
+      with:
+        path: tools
+
+    - name: Install dependences
+      run: |
+        sudo apt install python3-matplotlib
+
+    - name: Plot all interop results
+      run: python3 tools/.github/workflows/plot-interop.py ./
+
+    - name: Store all interop results
+      uses: actions/upload-artifact@v4
+      with:
+        name: tquic-interop-all-result
+        path: |
+          interop*.png
+          */*logs/*
+          !*/*logs/**/**/sim/

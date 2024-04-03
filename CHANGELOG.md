@@ -88,7 +88,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - tquic_client: output the stats first and then exit when it receives an SIGINT signal.
 
 ### Changed
-- Simplify FFI quic_set_logger() to avoid from return unnessary errors
+- Simplify FFI quic_set_logger() to avoid from return unnecessary errors
 - Rename set_multipath() in Config to enable_multipath()
 - Rename set_multipath_algor() in Config to set_multipath_algorithm()
 - Change default congestion control algorithm to BBR
