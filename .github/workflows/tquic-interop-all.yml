@@ -125,7 +125,7 @@ jobs:
   result:
     runs-on: ubuntu-latest
     needs: tquic_interop_testing
-    if: always()
+    if: ${{ (( github.event_name == 'schedule' && github.repository == 'tencent/tquic' ) || github.event_name == 'workflow_dispatch') && !cancelled() }}
     steps:
     - name: Download all workflow run artifacts
       uses: actions/download-artifact@v4
