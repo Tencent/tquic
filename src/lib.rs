@@ -69,6 +69,7 @@ use ring::aead::UnboundKey;
 use ring::hmac;
 use rustc_hash::FxHashSet;
 
+use crate::codec::VINT_MAX;
 use crate::connection::stream;
 use crate::tls::TlsSession;
 use crate::token::ResetToken;
@@ -410,7 +411,7 @@ impl Config {
     /// Set the `max_idle_timeout` transport parameter in milliseconds.
     /// Idle timeout is disabled by default.
     pub fn set_max_idle_timeout(&mut self, v: u64) {
-        self.local_transport_params.max_idle_timeout = v;
+        self.local_transport_params.max_idle_timeout = cmp::min(v, VINT_MAX);
     }
 
     /// Set handshake timeout in milliseconds. Zero turns the timeout off.
@@ -422,7 +423,7 @@ impl Config {
     /// the size of UDP payloads that the endpoint is willing to receive. The
     /// default value is `65527`.
     pub fn set_recv_udp_payload_size(&mut self, v: u16) {
-        self.local_transport_params.max_udp_payload_size = v as u64;
+        self.local_transport_params.max_udp_payload_size = cmp::min(v as u64, VINT_MAX);
     }
 
     /// Set the initial maximum outgoing UDP payload size.
@@ -438,51 +439,51 @@ impl Config {
     /// value for the maximum amount of data that can be sent on the connection.
     /// The default value is `10485760`.
     pub fn set_initial_max_data(&mut self, v: u64) {
-        self.local_transport_params.initial_max_data = v;
+        self.local_transport_params.initial_max_data = cmp::min(v, VINT_MAX);
     }
 
     /// Set the `initial_max_stream_data_bidi_local` transport parameter.
     /// The default value is `5242880`.
     pub fn set_initial_max_stream_data_bidi_local(&mut self, v: u64) {
         self.local_transport_params
-            .initial_max_stream_data_bidi_local = v;
+            .initial_max_stream_data_bidi_local = cmp::min(v, VINT_MAX);
     }
 
     /// Set the `initial_max_stream_data_bidi_remote` transport parameter.
     /// The default value is `2097152`.
     pub fn set_initial_max_stream_data_bidi_remote(&mut self, v: u64) {
         self.local_transport_params
-            .initial_max_stream_data_bidi_remote = v;
+            .initial_max_stream_data_bidi_remote = cmp::min(v, VINT_MAX);
     }
 
     /// Set the `initial_max_stream_data_uni` transport parameter.
     /// The default value is `1048576`.
     pub fn set_initial_max_stream_data_uni(&mut self, v: u64) {
-        self.local_transport_params.initial_max_stream_data_uni = v;
+        self.local_transport_params.initial_max_stream_data_uni = cmp::min(v, VINT_MAX);
     }
 
     /// Set the `initial_max_streams_bidi` transport parameter.
     /// The default value is `200`.
     pub fn set_initial_max_streams_bidi(&mut self, v: u64) {
-        self.local_transport_params.initial_max_streams_bidi = v;
+        self.local_transport_params.initial_max_streams_bidi = cmp::min(v, VINT_MAX);
     }
 
     /// Set the `initial_max_streams_uni` transport parameter.
     /// The default value is `100`.
     pub fn set_initial_max_streams_uni(&mut self, v: u64) {
-        self.local_transport_params.initial_max_streams_uni = v;
+        self.local_transport_params.initial_max_streams_uni = cmp::min(v, VINT_MAX);
     }
 
     /// Set the `ack_delay_exponent` transport parameter.
     /// The default value is `3`.
     pub fn set_ack_delay_exponent(&mut self, v: u64) {
-        self.local_transport_params.ack_delay_exponent = v;
+        self.local_transport_params.ack_delay_exponent = cmp::min(v, VINT_MAX);
     }
 
     /// Set the `max_ack_delay` transport parameter.
     /// The default value is `25`.
     pub fn set_max_ack_delay(&mut self, v: u64) {
-        self.local_transport_params.max_ack_delay = v;
+        self.local_transport_params.max_ack_delay = cmp::min(v, VINT_MAX);
     }
 
     /// Set congestion control algorithm that the connection would use.
@@ -532,7 +533,7 @@ impl Config {
     /// The default value is `2`. Lower values will be ignored.
     pub fn set_active_connection_id_limit(&mut self, v: u64) {
         if v >= 2 {
-            self.local_transport_params.active_conn_id_limit = v;
+            self.local_transport_params.active_conn_id_limit = cmp::min(v, VINT_MAX);
         }
     }
 
@@ -960,6 +961,18 @@ mod tests {
 
         config.set_max_pto(300000);
         assert_eq!(config.recovery.max_pto, Duration::from_millis(300000));
+
+        Ok(())
+    }
+
+    #[test]
+    fn initial_max_streams_bidi() -> Result<()> {
+        let mut config = Config::new()?;
+        config.set_initial_max_streams_bidi(u64::MAX);
+        assert_eq!(
+            config.local_transport_params.initial_max_streams_bidi,
+            VINT_MAX
+        );
 
         Ok(())
     }
