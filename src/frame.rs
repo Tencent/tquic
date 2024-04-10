@@ -823,7 +823,7 @@ impl Frame {
 
             Frame::NewToken { .. } => QuicFrame::NewToken {
                 token: qlog::events::Token {
-                    token_type: Some(qlog::events::TokenType::Retry),
+                    token_type: Some(qlog::events::TokenType::Resumption),
                     raw: None,
                     details: None,
                 },

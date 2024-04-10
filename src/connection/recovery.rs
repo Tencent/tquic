@@ -573,7 +573,7 @@ impl Recovery {
             return (lost_packets, lost_bytes);
         }
 
-        // PTO timer mode (REVISIT)
+        // PTO timer mode
         let sid = if self.ack_eliciting_in_flight > 0 {
             // Send new data if available, else retransmit old data. If neither
             // is available, send a single PING frame.
@@ -595,31 +595,27 @@ impl Recovery {
         };
         self.pto_count += 1;
 
-        space.loss_probes = cmp::min(self.pto_count, MAX_PTO_PROBES_COUNT);
+        space.loss_probes = match sid {
+            Initial | Handshake => 1,
+            _ => cmp::min(self.pto_count, MAX_PTO_PROBES_COUNT),
+        };
 
+        // An endpoint SHOULD include new data in packets that are sent on PTO
+        // expiration. Previously sent data MAY be sent if no new data can be
+        // sent. However, we only try to retransmit the oldest unacked data.
         let unacked_iter = space
             .sent
             .iter_mut()
-            // Skip packets that have already been acked or lost, and packets
-            // that don't contain either CRYPTO or STREAM frames.
             .filter(|p| p.has_data && p.time_acked.is_none() && p.time_lost.is_none())
-            // Only return as many packets as the number of probe packets that
-            // will be sent.
             .take(space.loss_probes);
 
-        // Retransmit the frames from the oldest sent packets on PTO. However
-        // the packets are not actually declared lost (so there is no effect to
-        // congestion control), we just reschedule the data they carried.
-        //
-        // This will also trigger sending an ACK and retransmitting frames like
-        // HANDSHAKE_DONE and MAX_DATA / MAX_STREAM_DATA as well, in addition
-        // to CRYPTO and STREAM, if the original packet carried them.
         for unacked in unacked_iter {
+            // A PTO timer expiration event does not indicate packet loss and
+            // MUST NOT cause prior unacknowledged packets to be marked as lost.
             space.lost.extend_from_slice(&unacked.frames);
         }
 
         self.set_loss_detection_timer(space_id, spaces, handshake_status, now);
-
         (0, 0)
     }
 

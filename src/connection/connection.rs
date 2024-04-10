@@ -1344,10 +1344,12 @@ impl Connection {
     /// Write coalesced multiple QUIC packets to the given buffer which will
     /// then be sent to the peer.
     ///
+    /// The size of `out` should be at least 1200 bytes, ideally matching or
+    /// exceeding the maximum possible MTU.
+    ///
     /// Return Error::Done if no packet can be sent.
     pub(crate) fn send(&mut self, out: &mut [u8]) -> Result<(usize, PacketInfo)> {
-        if out.is_empty() {
-            // TODO: use more strict condition
+        if out.len() < crate::MIN_CLIENT_INITIAL_LEN {
             return Err(Error::BufferTooShort);
         }
 
@@ -3049,6 +3051,11 @@ impl Connection {
     /// Return the session data used by resumption.
     pub fn session(&self) -> Option<&[u8]> {
         self.tls_session.session()
+    }
+
+    /// Return details why 0-RTT was accepted or rejected.
+    pub fn early_data_reason(&self) -> Result<Option<&str>> {
+        self.tls_session.early_data_reason()
     }
 
     /// Check whether the connection is draining.
@@ -4987,7 +4994,7 @@ pub(crate) mod tests {
         assert!(test_pair.client.timers.get(Timer::LossDetection).is_some());
 
         // Server retransmit Handshake but lost again
-        for i in 0..3 {
+        for i in 0..5 {
             let dur = test_pair.server.timeout().unwrap();
             test_pair.server.on_timeout(time::Instant::now() + dur);
             let _ = TestPair::conn_packets_out(&mut test_pair.server)?;
@@ -6381,8 +6388,8 @@ pub(crate) mod tests {
     #[test]
     fn conn_multi_incremental_streams_send_round_robin() -> Result<()> {
         let server_transport_params = TransportParams {
-            initial_max_data: 2000,
-            initial_max_stream_data_bidi_remote: 2000,
+            initial_max_data: 20000,
+            initial_max_stream_data_bidi_remote: 20000,
             initial_max_streams_bidi: 4,
             ..TransportParams::default()
         };
@@ -6395,7 +6402,7 @@ pub(crate) mod tests {
         assert_eq!(test_pair.handshake(), Ok(()));
 
         // 1. Client create four bidi streams [0, 4, 8, 12], and write data on them
-        let data = TestPair::new_test_data(500);
+        let data = TestPair::new_test_data(1000);
         for i in 0..4 {
             assert_eq!(
                 test_pair.client.stream_write(i * 4, data.clone(), true)?,
@@ -6406,7 +6413,7 @@ pub(crate) mod tests {
         // 2. Try to send stream data in round-robin order
         let mut packets = Vec::new();
         for i in 0..4 {
-            let mut out = vec![0u8; 100];
+            let mut out = vec![0u8; 1500];
             let info = match test_pair.client.send(&mut out) {
                 Ok((written, info)) => {
                     out.truncate(written);
@@ -6791,10 +6798,12 @@ pub(crate) mod tests {
         let packets = TestPair::conn_packets_out(&mut test_pair.server)?;
         TestPair::conn_packets_in(&mut test_pair.client, packets)?;
 
-        // Advance ticks until loss timeout
-        assert!(test_pair.client.timeout().is_some());
-        let timeout = test_pair.client.timers.get(Timer::LossDetection);
-        test_pair.client.on_timeout(timeout.unwrap());
+        // The dropped packets may be declared as lost based on the time threshold.
+        // If not, advance ticks until loss timeout.
+        if test_pair.client.timeout().is_some() {
+            let timeout = test_pair.client.timers.get(Timer::LossDetection);
+            test_pair.client.on_timeout(timeout.unwrap());
+        }
 
         // Check client qlog
         let mut clog_content = String::new();

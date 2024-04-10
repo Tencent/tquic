@@ -59,7 +59,11 @@ COPA)
     ;;
 esac
 
-COMMON_ARGS="--keylog-file $SSLKEYLOGFILE --qlog-dir $QLOG_DIR --log-level TRACE --log-file $LOG_DIR/$ROLE.log --idle-timeout 30000 --handshake-timeout 30000 --congestion-control-algor $CC_ALGOR"
+COMMON_ARGS="--keylog-file $SSLKEYLOGFILE --log-level DEBUG --log-file $LOG_DIR/$ROLE.log --idle-timeout 30000 --handshake-timeout 30000 --initial-rtt 100 --congestion-control-algor $CC_ALGOR"
+
+if [ "$TESTCASE" != "transfer" ]; then
+    COMMON_ARGS="$COMMON_ARGS --qlog-dir $QLOG_DIR"
+fi
 
 if [ "$ROLE" == "client" ]; then
     # Wait for the simulator to start up.
@@ -89,7 +93,6 @@ if [ "$ROLE" == "client" ]; then
 
     case $TESTCASE in
     multiconnect|resumption)
-        CLIENT_ARGS="$CLIENT_ARGS --initial-rtt 100"
         for REQ in $REQUESTS
         do
             $TQUIC_DIR/$TQUIC_CLIENT $CLIENT_ARGS $REQ
@@ -108,9 +111,6 @@ elif [ "$ROLE" == "server" ]; then
     case $TESTCASE in
     retry)
         SERVER_ARGS="$SERVER_ARGS --enable-retry"
-        ;;
-    multiconnect)
-        SERVER_ARGS="$SERVER_ARGS --initial-rtt 100"
         ;;
     transfer)
         SERVER_ARGS="$SERVER_ARGS --send-udp-payload-size 1400"
