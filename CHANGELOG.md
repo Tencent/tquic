@@ -11,17 +11,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [v0.9.0] - 2024-04-10
+
+### Added
+- Improve FFI for quic_tls_config_t
+- Update the handling of probe timeout to conform with RFC 9002
+- Update limit of the output buffer for Connection::send()
+- Add plot tools for goodput and interop testing
+
+### Changed
+- Change `quic_config_set_tls_config()` in FFI
+- Change `quic_tls_config_select_methods_t` in FFI
+
+### Fixed
+- Fix NewToken frame in qlog
+- Fix the unit test case `conn_write_qlog` that fails with low probability
+
+### Security
+- limit the number of queued RETIRE_CONNECTION_ID frames
+
+
 ## [v0.8.1] - 2024-03-18
 
 ### Removed
-
 - Remove the sfv feature flag from h3 (to resolve a build issue at docs.rs)
 
 
 ## [v0.8.0] - 2024-03-15
 
 ### Added
-
 - Support anti-amplification limit for server
 - Support customized config when initiating a connection
 - Add callback based FFI for writing the keylog and qlog
@@ -164,6 +182,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Provide example clients and servers.
 
 
+[v0.9.0]: https://github.com/tencent/tquic/compare/v0.8.1...v0.9.0
 [v0.8.1]: https://github.com/tencent/tquic/compare/v0.8.0...v0.8.1
 [v0.8.0]: https://github.com/tencent/tquic/compare/v0.7.0...v0.8.0
 [v0.7.0]: https://github.com/tencent/tquic/compare/v0.6.0...v0.7.0
