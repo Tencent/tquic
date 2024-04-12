@@ -891,12 +891,33 @@ ssize_t quic_stream_write(struct quic_conn_t *conn,
                           bool fin);
 
 /**
- * Create a new quic transport stream with the given id and priority.
+ * Create a new quic stream with the given id and priority.
+ * This is a low-level API for stream creation. It is recommended to use
+ * `quic_stream_bidi_new` for bidirectional streams or `quic_stream_uni_new`
+ * for unidrectional streams.
  */
 int quic_stream_new(struct quic_conn_t *conn,
                     uint64_t stream_id,
                     uint8_t urgency,
                     bool incremental);
+
+/**
+ * Create a new quic bidiectional stream with the given id and priority.
+ * If success, the output parameter `stream_id` carrys the id of the created stream.
+ */
+int quic_stream_bidi_new(struct quic_conn_t *conn,
+                         uint8_t urgency,
+                         bool incremental,
+                         uint64_t *stream_id);
+
+/**
+ * Create a new quic uniectional stream with the given id and priority.
+ * If success, the output parameter `stream_id` carrys the id of the created stream.
+ */
+int quic_stream_uni_new(struct quic_conn_t *conn,
+                        uint8_t urgency,
+                        bool incremental,
+                        uint64_t *stream_id);
 
 /**
  * Shutdown stream reading or writing.

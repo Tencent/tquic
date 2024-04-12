@@ -132,6 +132,12 @@ pub struct StreamMap {
     /// frame to the peer.
     pub rx_almost_full: bool,
 
+    /// Stream id for next bidirectional stream.
+    next_stream_id_bidi: u64,
+
+    /// Stream id for next unidirectional stream.
+    next_stream_id_uni: u64,
+
     /// Peer transport parameters.
     peer_transport_params: StreamTransportParams,
 
@@ -175,6 +181,9 @@ impl StreamMap {
             max_stream_window,
             rx_almost_full: false,
 
+            next_stream_id_bidi: if is_server { 1 } else { 0 },
+            next_stream_id_uni: if is_server { 3 } else { 2 },
+
             local_transport_params: local_params,
             peer_transport_params: StreamTransportParams::default(),
 
@@ -196,6 +205,26 @@ impl StreamMap {
     /// or `None`.
     pub fn get_mut(&mut self, id: u64) -> Option<&mut Stream> {
         self.streams.get_mut(&id)
+    }
+
+    /// Create a new bidirectional stream with given stream priority.
+    /// Return id of the created stream upon success.
+    pub fn stream_bidi_new(&mut self, urgency: u8, incremental: bool) -> Result<u64> {
+        let stream_id = self.next_stream_id_bidi;
+        match self.stream_set_priority(stream_id, urgency, incremental) {
+            Ok(_) => Ok(stream_id),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Create a new unidrectional stream with given stream priority.
+    /// Return id of the created stream upon success.
+    pub fn stream_uni_new(&mut self, urgency: u8, incremental: bool) -> Result<u64> {
+        let stream_id = self.next_stream_id_uni;
+        match self.stream_set_priority(stream_id, urgency, incremental) {
+            Ok(_) => Ok(stream_id),
+            Err(e) => Err(e),
+        }
     }
 
     /// Get the lowest offset of data to be read.
@@ -612,6 +641,12 @@ impl StreamMap {
     /// Return a mutable reference to the stream with the given ID if it exists,
     /// or create a new one with given paras otherwise if it is allowed.
     fn get_or_create(&mut self, id: u64, local: bool) -> Result<&mut Stream> {
+        // A stream ID is a 62-bit integer (0 to 262-1) that is unique for all
+        // streams on a connection.
+        if id > crate::codec::VINT_MAX {
+            return Err(Error::ProtocolViolation);
+        }
+
         match self.streams.entry(id) {
             // 1.Can not find any stream with the given stream ID.
             // It may not be created yet or it has been closed.
@@ -654,6 +689,15 @@ impl StreamMap {
                 // Stream might already be writable due to initial flow control credit.
                 if new_stream.is_writable() {
                     self.writable.insert(id);
+                }
+
+                // Update stream id for next bidirectional/unidirectional stream.
+                if bidi {
+                    self.next_stream_id_bidi = cmp::max(self.next_stream_id_bidi, id);
+                    self.next_stream_id_bidi = self.next_stream_id_bidi.saturating_add(4);
+                } else {
+                    self.next_stream_id_uni = cmp::max(self.next_stream_id_uni, id);
+                    self.next_stream_id_uni = self.next_stream_id_uni.saturating_add(4);
                 }
 
                 self.events.add(Event::StreamCreated(id));
@@ -3097,7 +3141,7 @@ impl ConcurrencyControl {
                 let n = std::cmp::max(self.local_opened_streams_bidi, stream_sequence);
 
                 if n > self.peer_max_streams_bidi {
-                    // Can't open more bididirectional streams than the peer allows, send
+                    // Can't open more bidirectional streams than the peer allows, send
                     // a STREAMS_BLOCKED(type: 0x16) frame to notify the peer update the
                     // max_streams_bidi limit.
                     self.update_streams_blocked_at(true, Some(self.peer_max_streams_bidi));
@@ -3220,6 +3264,84 @@ mod tests {
     use super::*;
 
     // StreamMap unit tests
+    #[test]
+    fn streams_new_client() {
+        let peer_tp = StreamTransportParams {
+            initial_max_streams_bidi: crate::codec::VINT_MAX,
+            initial_max_streams_uni: crate::codec::VINT_MAX,
+            ..StreamTransportParams::default()
+        };
+        let mut map = StreamMap::new(false, 50, 50, StreamTransportParams::default());
+        map.update_peer_stream_transport_params(peer_tp);
+
+        // client initiated bidirectional streams
+        let id = map.stream_bidi_new(0, false);
+        assert_eq!(id, Ok(0));
+        let id = map.stream_bidi_new(0, false);
+        assert_eq!(id, Ok(4));
+
+        assert_eq!(map.stream_set_priority(20, 0, false), Ok(()));
+        assert_eq!(map.stream_bidi_new(0, false), Ok(24));
+        assert_eq!(
+            map.stream_set_priority(crate::codec::VINT_MAX - 3, 0, false),
+            Ok(())
+        );
+        assert_eq!(map.stream_bidi_new(0, false), Err(Error::ProtocolViolation));
+
+        // client initiated unidirectional streams
+        let id = map.stream_uni_new(0, false);
+        assert_eq!(id, Ok(2));
+        let id = map.stream_uni_new(0, false);
+        assert_eq!(id, Ok(6));
+
+        assert_eq!(map.stream_set_priority(22, 0, false), Ok(()));
+        assert_eq!(map.stream_uni_new(0, false), Ok(26));
+        assert_eq!(
+            map.stream_set_priority(crate::codec::VINT_MAX - 1, 0, false),
+            Ok(())
+        );
+        assert_eq!(map.stream_uni_new(0, false), Err(Error::ProtocolViolation));
+    }
+
+    #[test]
+    fn streams_new_server() {
+        let peer_tp = StreamTransportParams {
+            initial_max_streams_bidi: crate::codec::VINT_MAX,
+            initial_max_streams_uni: crate::codec::VINT_MAX,
+            ..StreamTransportParams::default()
+        };
+        let mut map = StreamMap::new(true, 50, 50, StreamTransportParams::default());
+        map.update_peer_stream_transport_params(peer_tp);
+
+        // server initiated bidirectional streams
+        let id = map.stream_bidi_new(1, false);
+        assert_eq!(id, Ok(1));
+        let id = map.stream_bidi_new(5, false);
+        assert_eq!(id, Ok(5));
+
+        assert_eq!(map.stream_set_priority(21, 0, false), Ok(()));
+        assert_eq!(map.stream_bidi_new(0, false), Ok(25));
+        assert_eq!(
+            map.stream_set_priority(crate::codec::VINT_MAX - 2, 0, false),
+            Ok(())
+        );
+        assert_eq!(map.stream_bidi_new(0, false), Err(Error::ProtocolViolation));
+
+        // server initiated unidirectional streams
+        let id = map.stream_uni_new(0, false);
+        assert_eq!(id, Ok(3));
+        let id = map.stream_uni_new(0, false);
+        assert_eq!(id, Ok(7));
+
+        assert_eq!(map.stream_set_priority(23, 0, false), Ok(()));
+        assert_eq!(map.stream_uni_new(0, false), Ok(27));
+        assert_eq!(
+            map.stream_set_priority(crate::codec::VINT_MAX, 0, false),
+            Ok(())
+        );
+        assert_eq!(map.stream_uni_new(0, false), Err(Error::ProtocolViolation));
+    }
+
     // Test StreamMap::write
     #[test]
     fn stream_write_invalid_sid() {
