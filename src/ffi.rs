@@ -1248,7 +1248,7 @@ pub extern "C" fn quic_stream_new(
     }
 }
 
-/// Create a new quic bidiectional stream with the given id and priority.
+/// Create a new quic bidiectional stream with the given priority.
 /// If success, the output parameter `stream_id` carrys the id of the created stream.
 #[no_mangle]
 pub extern "C" fn quic_stream_bidi_new(
@@ -1266,7 +1266,7 @@ pub extern "C" fn quic_stream_bidi_new(
     }
 }
 
-/// Create a new quic uniectional stream with the given id and priority.
+/// Create a new quic uniectional stream with the given priority.
 /// If success, the output parameter `stream_id` carrys the id of the created stream.
 #[no_mangle]
 pub extern "C" fn quic_stream_uni_new(

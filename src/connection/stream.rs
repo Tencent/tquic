@@ -641,7 +641,7 @@ impl StreamMap {
     /// Return a mutable reference to the stream with the given ID if it exists,
     /// or create a new one with given paras otherwise if it is allowed.
     fn get_or_create(&mut self, id: u64, local: bool) -> Result<&mut Stream> {
-        // A stream ID is a 62-bit integer (0 to 262-1) that is unique for all
+        // A stream ID is a 62-bit integer (0 to 2^62-1) that is unique for all
         // streams on a connection.
         if id > crate::codec::VINT_MAX {
             return Err(Error::ProtocolViolation);
