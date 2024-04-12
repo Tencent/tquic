@@ -21,6 +21,10 @@ use bytes::BufMut;
 use crate::error::Error;
 use crate::Result;
 
+/// The maximum value for QUIC variable-length integer encoding
+/// See RFC 9000 Section 16
+pub const VINT_MAX: u64 = 4_611_686_018_427_387_903;
+
 /// Encoder for QUIC wire data
 pub trait Encoder {
     /// Write an unsigned 8 bit integer to self.
