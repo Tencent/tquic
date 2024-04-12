@@ -3515,8 +3515,23 @@ impl Connection {
     }
 
     /// Create a new stream with given stream id and priority.
+    /// This is a low-level API for stream creation. It is recommended to use
+    /// `stream_bidi_new` for bidirectional streams or `stream_uni_new` for
+    /// unidrectional streams.
     pub fn stream_new(&mut self, stream_id: u64, urgency: u8, incremental: bool) -> Result<()> {
         self.stream_set_priority(stream_id, urgency, incremental)
+    }
+
+    /// Create a new bidirectional stream with given stream priority.
+    /// Return id of the created stream upon success.
+    pub fn stream_bidi_new(&mut self, urgency: u8, incremental: bool) -> Result<u64> {
+        self.streams.stream_bidi_new(urgency, incremental)
+    }
+
+    /// Create a new unidrectional stream with given stream priority.
+    /// Return id of the created stream upon success.
+    pub fn stream_uni_new(&mut self, urgency: u8, incremental: bool) -> Result<u64> {
+        self.streams.stream_uni_new(urgency, incremental)
     }
 
     /// Shutdown stream reading or writing.
@@ -6440,15 +6455,16 @@ pub(crate) mod tests {
 
         // Client create bidi streams
         let data = TestPair::new_test_data(5);
-        for i in 0..3 {
+        for _ in 0..3 {
+            let sid = test_pair.client.stream_bidi_new(0, false)?;
             assert_eq!(
-                test_pair.client.stream_write(i * 4, data.clone(), true)?,
+                test_pair.client.stream_write(sid, data.clone(), true)?,
                 data.len()
             );
         }
         // Client fail to create more streams
         assert_eq!(
-            test_pair.client.stream_write(16, data.clone(), true),
+            test_pair.client.stream_bidi_new(0, false),
             Err(Error::StreamLimitError)
         );
         let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
@@ -6489,17 +6505,16 @@ pub(crate) mod tests {
 
         // Client create uni streams
         let data = TestPair::new_test_data(5);
-        for i in 0..2 {
+        for _ in 0..2 {
+            let sid = test_pair.client.stream_uni_new(0, false)?;
             assert_eq!(
-                test_pair
-                    .client
-                    .stream_write(2 + i * 4, data.clone(), true)?,
+                test_pair.client.stream_write(sid, data.clone(), true)?,
                 data.len()
             );
         }
         // Client fail to create more streams
         assert_eq!(
-            test_pair.client.stream_write(10, data.clone(), true),
+            test_pair.client.stream_uni_new(0, false),
             Err(Error::StreamLimitError)
         );
         let packets = TestPair::conn_packets_out(&mut test_pair.client)?;

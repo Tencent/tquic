@@ -1231,7 +1231,10 @@ pub extern "C" fn quic_stream_write(
     }
 }
 
-/// Create a new quic transport stream with the given id and priority.
+/// Create a new quic stream with the given id and priority.
+/// This is a low-level API for stream creation. It is recommended to use
+/// `quic_stream_bidi_new` for bidirectional streams or `quic_stream_uni_new`
+/// for unidrectional streams.
 #[no_mangle]
 pub extern "C" fn quic_stream_new(
     conn: &mut Connection,
@@ -1241,6 +1244,42 @@ pub extern "C" fn quic_stream_new(
 ) -> c_int {
     match conn.stream_new(stream_id, urgency, incremental) {
         Ok(_) => 0,
+        Err(e) => e.to_errno() as c_int,
+    }
+}
+
+/// Create a new quic bidiectional stream with the given id and priority.
+/// If success, the output parameter `stream_id` carrys the id of the created stream.
+#[no_mangle]
+pub extern "C" fn quic_stream_bidi_new(
+    conn: &mut Connection,
+    urgency: u8,
+    incremental: bool,
+    stream_id: &mut u64,
+) -> c_int {
+    match conn.stream_bidi_new(urgency, incremental) {
+        Ok(id) => {
+            *stream_id = id;
+            0
+        }
+        Err(e) => e.to_errno() as c_int,
+    }
+}
+
+/// Create a new quic uniectional stream with the given id and priority.
+/// If success, the output parameter `stream_id` carrys the id of the created stream.
+#[no_mangle]
+pub extern "C" fn quic_stream_uni_new(
+    conn: &mut Connection,
+    urgency: u8,
+    incremental: bool,
+    stream_id: &mut u64,
+) -> c_int {
+    match conn.stream_uni_new(urgency, incremental) {
+        Ok(id) => {
+            *stream_id = id;
+            0
+        }
         Err(e) => e.to_errno() as c_int,
     }
 }
