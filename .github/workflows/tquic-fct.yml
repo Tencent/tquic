@@ -1,0 +1,90 @@
+name: FCT
+
+on:
+  schedule:
+    - cron: '30 1 * * *'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  QUIC_IMAGES: lsquic=tquicgroup/qirls,picoquic=tquicgroup/qirpq,quiche=tquicgroup/qircq
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        impl: [tquic,lsquic,picoquic]
+        case: [fct1rtt,fct0rtt]
+        cc: [cubic, bbr]
+
+    # The scheduled workflow only runs for the main repository.
+    # You can manually trigger it if necessary.
+    if: ${{ ( github.event_name == 'schedule' && github.repository == 'tencent/tquic' ) || github.event_name == 'workflow_dispatch' }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: 'recursive'
+
+    - name: Build docker image
+      run: docker build -t tquic_interop:v1 -f interop/Dockerfile .
+
+    - name: Install quic-interop-runner
+      run: |
+        git clone https://github.com/iyangsj/quic-interop-runner.git
+        cd quic-interop-runner
+        pip3 install -r requirements.txt
+
+    - name: Install dependences
+      run: |
+        sudo modprobe ip6table_filter
+        sudo add-apt-repository -y ppa:wireshark-dev/stable
+        sudo apt install -y tshark
+
+    - name: Run the interop tests 
+      run: |
+        cd quic-interop-runner   
+        python3 run.py -r "$QUIC_IMAGES,tquic=tquic_interop:v1" -s ${{ matrix.impl }} -c ${{ matrix.impl }} -t ${{ matrix.case }} -a ${{ matrix.cc }} -d -n "drop-rate --delay=15ms --bandwidth=10Mbps --queue=25 --rate_to_server=0 --rate_to_client=0" -j ${{ matrix.case }}-0-${{ matrix.cc }}-${{ matrix.impl }}.json
+        python3 run.py -r "$QUIC_IMAGES,tquic=tquic_interop:v1" -s ${{ matrix.impl }} -c ${{ matrix.impl }} -t ${{ matrix.case }} -a ${{ matrix.cc }} -d -n "drop-rate --delay=15ms --bandwidth=10Mbps --queue=25 --rate_to_server=1 --rate_to_client=1" -j ${{ matrix.case }}-1-${{ matrix.cc }}-${{ matrix.impl }}.json
+        python3 run.py -r "$QUIC_IMAGES,tquic=tquic_interop:v1" -s ${{ matrix.impl }} -c ${{ matrix.impl }} -t ${{ matrix.case }} -a ${{ matrix.cc }} -d -n "drop-rate --delay=15ms --bandwidth=10Mbps --queue=25 --rate_to_server=3 --rate_to_client=3" -j ${{ matrix.case }}-3-${{ matrix.cc }}-${{ matrix.impl }}.json
+        python3 run.py -r "$QUIC_IMAGES,tquic=tquic_interop:v1" -s ${{ matrix.impl }} -c ${{ matrix.impl }} -t ${{ matrix.case }} -a ${{ matrix.cc }} -d -n "drop-rate --delay=15ms --bandwidth=10Mbps --queue=25 --rate_to_server=5 --rate_to_client=5" -j ${{ matrix.case }}-5-${{ matrix.cc }}-${{ matrix.impl }}.json
+
+    - name: Store measurement results
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.case }}-${{ matrix.cc }}-${{ matrix.impl }}
+        path: quic-interop-runner/fct*.json 
+    
+  result:
+    runs-on: ubuntu-latest
+    needs: measure
+    if: ${{ (( github.event_name == 'schedule' && github.repository == 'tencent/tquic' ) || github.event_name == 'workflow_dispatch') && !cancelled() }}
+    steps:
+    - name: Download all workflow run artifacts
+      uses: actions/download-artifact@v4
+
+    - name: Display structure of downloaded files
+      run: ls -R
+
+    - name: Display all measurement details
+      run: grep "details.*" . -Ro
+
+    - name: Download plot tools
+      uses: actions/checkout@v4
+      with:
+        path: tools
+
+    - name: Install dependences
+      run: |
+        sudo apt install python3-matplotlib
+
+    - name: Plot all measurement results
+      run: python3 tools/.github/workflows/plot-fct.py .
+
+    - name: Store all measurement results
+      uses: actions/upload-artifact@v4
+      with:
+        name: fct-all-result
+        path: fct*

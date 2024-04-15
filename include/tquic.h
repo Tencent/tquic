@@ -902,7 +902,7 @@ int quic_stream_new(struct quic_conn_t *conn,
                     bool incremental);
 
 /**
- * Create a new quic bidiectional stream with the given id and priority.
+ * Create a new quic bidiectional stream with the given priority.
  * If success, the output parameter `stream_id` carrys the id of the created stream.
  */
 int quic_stream_bidi_new(struct quic_conn_t *conn,
@@ -911,7 +911,7 @@ int quic_stream_bidi_new(struct quic_conn_t *conn,
                          uint64_t *stream_id);
 
 /**
- * Create a new quic uniectional stream with the given id and priority.
+ * Create a new quic uniectional stream with the given priority.
  * If success, the output parameter `stream_id` carrys the id of the created stream.
  */
 int quic_stream_uni_new(struct quic_conn_t *conn,
