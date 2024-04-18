@@ -36,6 +36,7 @@ use crate::qlog;
 use crate::qlog::events::EventData;
 use crate::ranges::RangeSet;
 use crate::Error;
+use crate::PathStats;
 use crate::RecoveryConfig;
 use crate::Result;
 use crate::TIMER_GRANULARITY;
@@ -878,6 +879,7 @@ impl Recovery {
         self.stats.srtt = self.rtt.smoothed_rtt();
         self.stats.rttvar = self.rtt.rttvar();
         self.stats.in_slow_start = self.congestion.in_slow_start();
+        self.stats.pacing_rate = self.congestion.pacing_rate().unwrap_or_default();
     }
 
     /// Write a qlog RecoveryMetricsUpdated event if any recovery metric is updated.
@@ -970,77 +972,6 @@ impl Recovery {
         };
         qlog.add_event_data(Instant::now(), ev_data).ok();
     }
-}
-
-/// Statistics about a QUIC path.
-#[derive(Default)]
-pub struct PathStats {
-    /// The number of QUIC packets received.
-    pub recv_count: u64,
-
-    /// The number of received bytes.
-    pub recv_bytes: u64,
-
-    /// The number of QUIC packets sent.
-    pub sent_count: u64,
-
-    /// The number of sent bytes.
-    pub sent_bytes: u64,
-
-    /// The number of QUIC packets lost.
-    pub lost_count: u64,
-
-    /// The number of lost bytes.
-    pub lost_bytes: u64,
-
-    /// Total number of bytes acked.
-    pub acked_bytes: u64,
-
-    /// Total number of packets acked.
-    pub acked_count: u64,
-
-    /// Initial congestion window in bytes.
-    pub init_cwnd: u64,
-
-    /// Final congestion window in bytes.
-    pub final_cwnd: u64,
-
-    /// Maximum congestion window in bytes.
-    pub max_cwnd: u64,
-
-    /// Minimum congestion window in bytes.
-    pub min_cwnd: u64,
-
-    /// Maximum inflight data in bytes.
-    pub max_inflight: u64,
-
-    /// Total loss events.
-    pub loss_event_count: u64,
-
-    /// Total congestion window limited events.
-    pub cwnd_limited_count: u64,
-
-    /// Total duration of congestion windowlimited events.
-    pub cwnd_limited_duration: Duration,
-
-    /// The time for last congestion window event
-    last_cwnd_limited_time: Option<Instant>,
-
-    /* Note: the following fields are lazily updated from Recovery */
-    /// Minimum roundtrip time.
-    pub min_rtt: Duration,
-
-    /// Maximum roundtrip time.
-    pub max_rtt: Duration,
-
-    /// Smoothed roundtrip time.
-    pub srtt: Duration,
-
-    /// Roundtrip time variation.
-    pub rttvar: Duration,
-
-    /// Whether the congestion controller is in slow start status.
-    pub in_slow_start: bool,
 }
 
 /// Metrics used for emitting qlog RecoveryMetricsUpdated event.

@@ -21,12 +21,12 @@ use std::time::Duration;
 
 use slab::Slab;
 
-pub use super::recovery::PathStats;
 use super::recovery::Recovery;
 use super::timer;
 use crate::connection::SpaceId;
 use crate::error::Error;
 use crate::multipath_scheduler::MultipathScheduler;
+use crate::PathStats;
 use crate::RecoveryConfig;
 use crate::Result;
 use crate::TIMER_GRANULARITY;
