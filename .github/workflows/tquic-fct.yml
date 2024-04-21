@@ -7,7 +7,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  QUIC_IMAGES: lsquic=tquicgroup/qirls,picoquic=tquicgroup/qirpq,quiche=tquicgroup/qircq
+  QUIC_IMAGES: gquiche=tquicgroup/qirgq,lsquic=tquicgroup/qirls,picoquic=tquicgroup/qirpq,quiche=tquicgroup/qircq
 
 jobs:
   measure:
@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        impl: [tquic,lsquic,picoquic]
+        impl: [tquic,gquiche,lsquic,picoquic]
         case: [fct1rtt,fct0rtt]
         cc: [cubic, bbr]
 
