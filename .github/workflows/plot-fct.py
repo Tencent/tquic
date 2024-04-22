@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # QUIC implementes
-IMPLS = ["tquic", "lsquic", "picoquic", "quiche"]
+IMPLS = ["tquic", "gquiche", "lsquic", "picoquic", "quiche"]
 
 # Different modes
 MODES = ["1rtt", "0rtt"]

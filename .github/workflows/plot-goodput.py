@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # QUIC implementes
-IMPLS = ["tquic", "lsquic", "picoquic", "quiche"]
+IMPLS = ["tquic", "gquiche", "lsquic", "picoquic", "quiche"]
 
 # Different file sizes
 SIZES = ["10m", "1m", "100k"]
@@ -44,7 +44,7 @@ def plot(data_dir, cc):
                 data = read_data(data_dir, impl, cc, SIZES[i], RATES[j])
                 if data is None or len(data) != COUNT:
                     continue
-                axs[i, j].plot(x, data, label=impl, marker="o")
+                axs[i, j].plot(x, data, label=impl, marker=".")
                 axs[i, j].set_xlabel("Run #")
                 axs[i, j].set_ylabel("Goodput")
                 axs[i, j].set_title("%s loss rate %s%%" % (SIZES[i], RATES[j]))
