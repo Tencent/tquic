@@ -1378,7 +1378,7 @@ mod tests {
         b.write(&pkt_hdr_data)?;
         b.write(&pkt_payload)?;
 
-        let aead = Seal::new_with_secret(tls::Algorithm::ChaCha20Poly1305, &secret)?;
+        let aead = Seal::new_with_secret(tls::Algorithm::ChaCha20Poly1305, secret.to_vec())?;
         let written = encrypt_packet(
             out.as_mut_slice(),
             None,
@@ -1409,7 +1409,7 @@ mod tests {
         };
         let pkt_payload = [01, 02, 03, 04];
         let cid_seq = Some(2);
-        let mut secret = [0u8, 32];
+        let mut secret = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut secret);
 
         // encode the packet header and payload
@@ -1419,7 +1419,7 @@ mod tests {
         out[payload_off..payload_end].copy_from_slice(&pkt_payload);
 
         // encrypt the packet header and payload
-        let seal = Seal::new_with_secret(tls::Algorithm::ChaCha20Poly1305, &secret)?;
+        let seal = Seal::new_with_secret(tls::Algorithm::ChaCha20Poly1305, secret.to_vec())?;
         let written = encrypt_packet(
             out.as_mut_slice(),
             cid_seq,
@@ -1438,7 +1438,7 @@ mod tests {
         assert_eq!(hdr.dcid, pkt_hdr.dcid);
         assert_eq!(hdr.key_phase, pkt_hdr.key_phase);
 
-        let open = Open::new_with_secret(tls::Algorithm::ChaCha20Poly1305, &secret)?;
+        let open = Open::new_with_secret(tls::Algorithm::ChaCha20Poly1305, secret.to_vec())?;
         decrypt_header(&mut out, read, &mut hdr, &open)?;
         assert_eq!(hdr.pkt_num_len, pkt_hdr.pkt_num_len);
         assert_eq!(hdr.pkt_num, pkt_hdr.pkt_num);

@@ -69,7 +69,7 @@ pub fn derive_hdr_key(algor: hkdf::Algorithm, secret: &[u8], out: &mut [u8]) -> 
     hkdf_expand_label(&prk, b"quic hp", out)
 }
 
-pub fn derive_updated_pkt_key(algor: hkdf::Algorithm, secret: &[u8], out: &mut [u8]) -> Result<()> {
+pub fn derive_next_packet_key(algor: hkdf::Algorithm, secret: &[u8], out: &mut [u8]) -> Result<()> {
     let prk = hkdf::Prk::new_less_safe(algor, secret);
     hkdf_expand_label(&prk, b"quic ku", out)
 }
@@ -194,7 +194,7 @@ mod tests {
 
         // Update packet key.
         let mut updated_pkt_key = [0; 32];
-        assert!(derive_updated_pkt_key(algor, &secret, &mut updated_pkt_key).is_ok());
+        assert!(derive_next_packet_key(algor, &secret, &mut updated_pkt_key).is_ok());
         let expected_updated_pkt_key = [
             0x12, 0x23, 0x50, 0x47, 0x55, 0x03, 0x6d, 0x55, 0x63, 0x42, 0xee, 0x93, 0x61, 0xd2,
             0x53, 0x42, 0x1a, 0x82, 0x6c, 0x9e, 0xcd, 0xf3, 0xc7, 0x14, 0x86, 0x84, 0xb3, 0x6b,

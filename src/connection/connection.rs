@@ -53,7 +53,9 @@ use crate::packet::PacketType;
 use crate::qlog;
 use crate::qlog::events;
 use crate::tls;
+use crate::tls::Keys;
 use crate::tls::Level;
+use crate::tls::Open;
 use crate::tls::TlsSession;
 use crate::token::AddressToken;
 use crate::token::ResetToken;
@@ -537,6 +539,7 @@ impl Connection {
         packet::decrypt_header(buf, pkt_num_offset, &mut hdr, key).map_err(|_| Error::Done)?;
 
         // Decode packet sequence number
+        let handshake_confirmed = self.is_confirmed();
         let space_id = self.get_space_id(hdr.pkt_type, pid)?;
         let space = self.spaces.get_mut(space_id).ok_or(Error::InternalError)?;
         let largest_rx_pkt_num = space.largest_rx_pkt_num;
@@ -552,7 +555,7 @@ impl Connection {
             return Err(Error::Done);
         }
 
-        // Decrypt packet payload
+        // Select key and decrypt packet payload.
         let payload_offset = pkt_num_offset + hdr.pkt_num_len;
         let payload_len = length.checked_sub(hdr.pkt_num_len).ok_or(Error::Done)?;
         let mut cid_seq = None;
@@ -563,6 +566,13 @@ impl Connection {
                 .ok_or(Error::InvalidState("unknown dcid".into()))?;
             cid_seq = Some(seq as u32)
         }
+
+        let (key, attempt_key_update) = self.tls_session.select_key(
+            handshake_confirmed,
+            self.flags.contains(EnableMultipath),
+            &hdr,
+            space,
+        )?;
         let mut payload =
             packet::decrypt_payload(buf, payload_offset, payload_len, cid_seq, pkt_num, key)
                 .map_err(|_| Error::Done)?;
@@ -580,6 +590,16 @@ impl Connection {
             pkt_num,
             self.paths.get(pid)?
         );
+
+        // Try to update key.
+        self.tls_session.try_update_key(
+            &mut self.timers,
+            space,
+            attempt_key_update,
+            &hdr,
+            now,
+            self.paths.max_pto(),
+        )?;
 
         // Update dcid for initial path
         self.try_set_dcid_for_initial_path(pid, &hdr)?;
@@ -1497,7 +1517,7 @@ impl Connection {
             } else {
                 None
             },
-            key_phase: false,
+            key_phase: self.tls_session.current_key_phase(),
         };
         let hdr_offset = hdr.to_bytes(out)?;
 
@@ -1662,6 +1682,9 @@ impl Connection {
             if pkt_type == PacketType::OneRTT {
                 let lowest_1rtt_pkt_num = space.lowest_1rtt_pkt_num;
                 space.lowest_1rtt_pkt_num = cmp::min(lowest_1rtt_pkt_num, pkt_num);
+                if space.first_pkt_num_sent.is_none() {
+                    space.first_pkt_num_sent = Some(pkt_num);
+                }
             }
         }
 
@@ -2956,7 +2979,7 @@ impl Connection {
 
                 Timer::Draining => self.flags.insert(Closed),
 
-                Timer::KeyDiscard => (), // TODO: support key discarding
+                Timer::KeyDiscard => self.tls_session.discard_prev_key(),
 
                 Timer::KeepAlive => (), // TODO: schedule an outgoing Ping
 
@@ -6841,6 +6864,183 @@ pub(crate) mod tests {
 
         Ok(())
     }
+
+    fn test_pair_for_key_update() -> Result<TestPair> {
+        let mut client_config = TestPair::new_test_config(false)?;
+        client_config.set_cid_len(crate::MAX_CID_LEN);
+        client_config.set_initial_max_data(10000);
+        client_config.set_initial_max_stream_data_bidi_local(10000);
+        client_config.set_initial_max_stream_data_bidi_remote(10000);
+
+        let mut server_config = TestPair::new_test_config(true)?;
+        server_config.set_cid_len(crate::MAX_CID_LEN);
+        server_config.set_initial_max_data(10000);
+        server_config.set_initial_max_stream_data_bidi_local(10000);
+        server_config.set_initial_max_stream_data_bidi_remote(10000);
+
+        let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
+        assert_eq!(test_pair.handshake(), Ok(()));
+
+        // Transfer some data.
+        let data = Bytes::from_static(b"test data over quic");
+        test_pair.client.stream_write(0, data.clone(), false)?;
+        let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+        TestPair::conn_packets_in(&mut test_pair.server, packets)?;
+        let mut buf = vec![0; 2048];
+        assert_eq!(test_pair.server.stream_read(0, &mut buf)?, (19, false));
+        assert_eq!(&buf[..19], &data[..]);
+
+        // Server reply ack.
+        let packets = TestPair::conn_packets_out(&mut test_pair.server)?;
+        TestPair::conn_packets_in(&mut test_pair.client, packets)?;
+        assert!(!test_pair.client.tls_session.current_key_phase());
+        assert!(!test_pair.server.tls_session.current_key_phase());
+
+        Ok(test_pair)
+    }
+
+    #[test]
+    fn key_update() -> Result<()> {
+        let mut test_pair = test_pair_for_key_update()?;
+
+        // Client init key update.
+        let space = test_pair
+            .client
+            .spaces
+            .get_mut(SpaceId::Data)
+            .ok_or(Error::InternalError)?;
+        test_pair
+            .client
+            .tls_session
+            .initiate_key_update(space, false)?;
+
+        // Transfer some data.
+        let data = Bytes::from_static(b"test data over quic");
+        test_pair.client.stream_write(0, data.clone(), false)?;
+        let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+        TestPair::conn_packets_in(&mut test_pair.server, packets)?;
+        let mut buf = vec![0; 2048];
+        assert_eq!(test_pair.server.stream_read(0, &mut buf)?, (19, false));
+        assert_eq!(&buf[..19], &data[..]);
+
+        // Server reply ack.
+        let packets = TestPair::conn_packets_out(&mut test_pair.server)?;
+        TestPair::conn_packets_in(&mut test_pair.client, packets)?;
+        assert!(test_pair.client.tls_session.current_key_phase());
+        assert!(test_pair.server.tls_session.current_key_phase());
+
+        Ok(())
+    }
+
+    #[test]
+    fn key_update_with_packet_reorder() -> Result<()> {
+        let mut test_pair = test_pair_for_key_update()?;
+
+        // Client send data.
+        let data = Bytes::from_static(b"test data over quic");
+        test_pair.client.stream_write(0, data.clone(), false)?;
+        let prev_key_packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+
+        // Client init key update.
+        let space = test_pair
+            .client
+            .spaces
+            .get_mut(SpaceId::Data)
+            .ok_or(Error::InternalError)?;
+        test_pair
+            .client
+            .tls_session
+            .initiate_key_update(space, false)?;
+
+        // Client send with new key.
+        let data = Bytes::from_static(b"test data over quic");
+        test_pair.client.stream_write(0, data.clone(), true)?;
+        let new_key_packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+
+        // Server receive reordered packets.
+        TestPair::conn_packets_in(&mut test_pair.server, new_key_packets)?;
+        TestPair::conn_packets_in(&mut test_pair.server, prev_key_packets)?;
+        let mut buf = vec![0; 2048];
+        assert_eq!(test_pair.server.stream_read(0, &mut buf)?, (38, true));
+
+        // Server reply ack.
+        let packets = TestPair::conn_packets_out(&mut test_pair.server)?;
+        TestPair::conn_packets_in(&mut test_pair.client, packets)?;
+        assert!(test_pair.client.tls_session.current_key_phase());
+        assert!(test_pair.server.tls_session.current_key_phase());
+
+        Ok(())
+    }
+
+    #[test]
+    fn key_update_with_previous_key_discard() -> Result<()> {
+        let mut test_pair = test_pair_for_key_update()?;
+
+        // Client send data.
+        let data = Bytes::from_static(b"test data over quic");
+        test_pair.client.stream_write(0, data.clone(), false)?;
+        let prev_key_packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+
+        // Client init key update.
+        let space = test_pair
+            .client
+            .spaces
+            .get_mut(SpaceId::Data)
+            .ok_or(Error::InternalError)?;
+        test_pair
+            .client
+            .tls_session
+            .initiate_key_update(space, false)?;
+        // Client send with new key.
+        let data = Bytes::from_static(b"test data over quic");
+        test_pair.client.stream_write(0, data.clone(), true)?;
+        let new_key_packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+
+        // Server discard previous key and receive reordered packets.
+        TestPair::conn_packets_in(&mut test_pair.server, new_key_packets)?;
+
+        let timeout = test_pair.server.timers.get(Timer::KeyDiscard);
+        test_pair.server.on_timeout(timeout.unwrap());
+
+        TestPair::conn_packets_in(&mut test_pair.server, prev_key_packets)?;
+        let mut buf = vec![0; 2048];
+        assert_eq!(test_pair.server.stream_read(0, &mut buf), Err(Error::Done));
+
+        // Server reply ack.
+        let packets = TestPair::conn_packets_out(&mut test_pair.server)?;
+        TestPair::conn_packets_in(&mut test_pair.client, packets)?;
+        assert!(test_pair.client.tls_session.current_key_phase());
+        assert!(test_pair.server.tls_session.current_key_phase());
+
+        Ok(())
+    }
+
+    #[test]
+    fn key_update_with_consecutive_update() -> Result<()> {
+        let mut test_pair = test_pair_for_key_update()?;
+
+        // Client init key update.
+        let space = test_pair
+            .client
+            .spaces
+            .get_mut(SpaceId::Data)
+            .ok_or(Error::InternalError)?;
+        test_pair
+            .client
+            .tls_session
+            .initiate_key_update(space, false)?;
+
+        // Client init another key update.
+        assert_eq!(
+            test_pair
+                .client
+                .tls_session
+                .initiate_key_update(space, false),
+            Err(Error::Done)
+        );
+
+        Ok(())
+    }
 }
 
 mod cid;
@@ -6850,4 +7050,4 @@ mod recovery;
 pub(crate) mod rtt;
 pub(crate) mod space;
 pub(crate) mod stream;
-mod timer;
+pub(crate) mod timer;

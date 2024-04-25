@@ -12,17 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::mem;
 use std::ops::Index;
 use std::ops::IndexMut;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
 
+use log::trace;
 use strum::EnumCount;
 use strum::IntoEnumIterator;
 use strum_macros::EnumCount;
 use strum_macros::EnumIter;
 
 use crate::codec::Decoder;
+use crate::connection::space::PacketNumSpace;
+use crate::connection::timer::Timer;
+use crate::connection::timer::TimerTable;
+use crate::packet::PacketHeader;
+use crate::packet::PacketType;
 use crate::ConnectionId;
 use crate::Error;
 use crate::Result;
@@ -169,7 +178,11 @@ impl TlsConfig {
 
 impl TlsConfig {
     /// Create new TlsSession.
-    pub fn new_session(&self, host_name: Option<&str>, is_server: bool) -> Result<TlsSession> {
+    pub(crate) fn new_session(
+        &self,
+        host_name: Option<&str>,
+        is_server: bool,
+    ) -> Result<TlsSession> {
         let mut session = self.tls_ctx.new_session()?;
         session.init(is_server)?;
         if !is_server {
@@ -196,6 +209,9 @@ impl TlsConfig {
                 conf_selector: None,
                 early_data_rejected: false,
             },
+            current_key_phase: false,
+            prev_key: None,
+            next_key: None,
         })
     }
 }
@@ -247,9 +263,21 @@ pub struct TlsSessionData {
     early_data_rejected: bool,
 }
 
-pub struct TlsSession {
+pub(crate) struct TlsSession {
+    /// Boringssl TLS session.
     session: boringssl::tls::Session,
+
+    /// TLS session data.
     data: TlsSessionData,
+
+    /// Current key phase.
+    current_key_phase: bool,
+
+    /// Keys for previous key phase.
+    prev_key: Option<Keys>,
+
+    /// Keys for next key phase.
+    next_key: Option<Keys>,
 }
 
 impl TlsSession {
@@ -303,6 +331,146 @@ impl TlsSession {
     /// Drop the keys for the given encryption level.
     pub fn drop_keys(&mut self, level: Level) {
         self.data.key_collection[level] = Keys::default();
+    }
+
+    /// Derive next keys.
+    fn derive_keys(&self) -> Result<Keys> {
+        let key = &self.data.key_collection[Level::OneRTT];
+        if key.open.is_none() || key.seal.is_none() {
+            return Err(Error::TlsFail("derive not available now".into()));
+        }
+
+        Ok(Keys {
+            open: Some(key.open.as_ref().unwrap().derive_next_packet_key()?),
+            seal: Some(key.seal.as_ref().unwrap().derive_next_packet_key()?),
+        })
+    }
+
+    /// Select decryption key.
+    pub fn select_key(
+        &mut self,
+        confirmed: bool,
+        enable_multipath: bool,
+        hdr: &PacketHeader,
+        space: &PacketNumSpace,
+    ) -> Result<(&Open, bool)> {
+        if !confirmed
+            || hdr.pkt_type != PacketType::OneRTT
+            || self.current_key_phase == hdr.key_phase
+            || enable_multipath
+        {
+            trace!("{} select current key", self.data.trace_id);
+            let key = self.get_keys(hdr.pkt_type.to_level()?);
+            return Ok((key.open.as_ref().ok_or(Error::InternalError)?, false));
+        }
+
+        if let Some(first_pkt_num_recv) = space.first_pkt_num_recv {
+            if hdr.pkt_num > first_pkt_num_recv {
+                trace!("{} select next key", self.data.trace_id);
+
+                if self.next_key.is_none() {
+                    self.next_key = Some(self.derive_keys()?);
+                }
+                let next_key = self.next_key.as_ref().unwrap();
+                return Ok((next_key.open.as_ref().ok_or(Error::InternalError)?, true));
+            }
+        }
+
+        if let Some(prev_key) = &self.prev_key {
+            trace!("{} select previous key", self.data.trace_id);
+
+            return Ok((prev_key.open.as_ref().ok_or(Error::InternalError)?, false));
+        }
+
+        trace!("{} previous key already discarded", self.data.trace_id);
+        Err(Error::Done)
+    }
+
+    /// Update key.
+    fn update_key(&mut self, space: &mut PacketNumSpace) -> Result<()> {
+        if self.next_key.is_none() {
+            self.next_key = Some(self.derive_keys()?);
+        }
+
+        self.current_key_phase = !self.current_key_phase;
+        self.prev_key = Some(mem::replace(
+            &mut self.data.key_collection[Level::OneRTT],
+            self.next_key.take().unwrap(),
+        ));
+        space.first_pkt_num_recv = None;
+        space.first_pkt_num_sent = None;
+
+        Ok(())
+    }
+
+    /// Try to update key after receiving a packet.
+    pub fn try_update_key(
+        &mut self,
+        timers: &mut TimerTable,
+        space: &mut PacketNumSpace,
+        attempt_key_update: bool,
+        hdr: &PacketHeader,
+        now: Instant,
+        max_pto: Option<Duration>,
+    ) -> Result<()> {
+        if attempt_key_update {
+            self.update_key(space)?;
+        }
+
+        if space.first_pkt_num_recv.is_none() && self.current_key_phase == hdr.key_phase {
+            space.first_pkt_num_recv = Some(hdr.pkt_num);
+
+            if self.prev_key.is_some() {
+                if let Some(duration) = max_pto {
+                    // An endpoint SHOULD retain old read keys for no more than three times the PTO after
+                    // having received a packet protected using the new keys. After this period, old read
+                    // keys and their corresponding secrets SHOULD be discarded.
+                    // See RFC 9001 Section 6.5.
+                    timers.set(Timer::KeyDiscard, now + duration * 3);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// If a key update is allowed to initiate.
+    fn key_update_allowed(&self, enable_multipath: bool, space: &PacketNumSpace) -> Result<bool> {
+        if enable_multipath {
+            // TODO: support key update in multipath scenario.
+            return Ok(false);
+        }
+
+        if let Some(first_pkt_num_sent) = space.first_pkt_num_sent {
+            if first_pkt_num_sent <= space.largest_acked_pkt {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    /// Initiate a key update.
+    pub fn initiate_key_update(
+        &mut self,
+        space: &mut PacketNumSpace,
+        enable_multipath: bool,
+    ) -> Result<()> {
+        if !self.key_update_allowed(enable_multipath, space)? {
+            return Err(Error::Done);
+        }
+
+        self.update_key(space)
+    }
+
+    /// Discard the previous key.
+    pub fn discard_prev_key(&mut self) {
+        self.prev_key = None;
+    }
+
+    /// Return the current key phase.
+    pub fn current_key_phase(&self) -> bool {
+        self.current_key_phase
     }
 
     /// Get overhead size of Seal operation
