@@ -531,6 +531,13 @@ impl PathMap {
             .map(|&(_, _, loss_time)| loss_time)
     }
 
+    /// Return the maximum PTO among all paths.
+    pub fn max_pto(&self) -> Option<Duration> {
+        self.iter()
+            .map(|(_, path)| path.recovery.rtt.pto_base())
+            .max()
+    }
+
     /// Increase send limit before address validation for server
     pub fn inc_anti_ampl_limit(&mut self, pid: usize, pkt_len: usize) {
         if !self.is_server {

@@ -77,6 +77,12 @@ pub struct PacketNumSpace {
     /// Highest received packet number.
     pub largest_rx_pkt_num: u64,
 
+    /// Track the first received packet in current key phase.
+    pub first_pkt_num_recv: Option<u64>,
+
+    /// Track the first sent packet in current key phase.
+    pub first_pkt_num_sent: Option<u64>,
+
     /// The time at which the packet of highest sequence number arrived.
     pub largest_rx_pkt_time: Instant,
 
@@ -137,6 +143,8 @@ impl PacketNumSpace {
             consecutive_non_ack_eliciting_sent: 0,
             lowest_1rtt_pkt_num: std::u64::MAX,
             largest_rx_pkt_num: 0,
+            first_pkt_num_recv: None,
+            first_pkt_num_sent: None,
             largest_rx_pkt_time: Instant::now(),
             largest_rx_non_probing_pkt_num: 0,
             recv_pkt_num_need_ack: RangeSet::new(crate::MAX_ACK_RANGES),

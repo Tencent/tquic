@@ -79,36 +79,82 @@ impl Algorithm {
     }
 }
 
+struct HeaderKey {
+    key: aead::quic::HeaderProtectionKey,
+    raw: Vec<u8>,
+}
+
+impl HeaderKey {
+    fn new(algor: Algorithm, hp_key: Vec<u8>) -> Result<Self> {
+        Ok(Self {
+            key: aead::quic::HeaderProtectionKey::new(algor.hp_algor(), &hp_key)
+                .map_err(|_| Error::CryptoFail)?,
+            raw: hp_key,
+        })
+    }
+}
+
+struct PacketKey {
+    ctx: EvpAeadCtx,
+    nonce: Vec<u8>,
+}
+
+impl PacketKey {
+    fn new(algor: Algorithm, key: Vec<u8>, iv: Vec<u8>) -> Result<Self> {
+        Ok(Self {
+            ctx: new_aead_ctx(algor, &key)?,
+            nonce: iv,
+        })
+    }
+}
+
 /// AEAD encryption.
 pub struct Seal {
     algor: Algorithm,
-    ctx: EvpAeadCtx,
-    hp_key: aead::quic::HeaderProtectionKey,
-    nonce: Vec<u8>,
+    secret: Vec<u8>,
+    hdr_key: HeaderKey,
+    pkt_key: PacketKey,
 }
 
 impl Seal {
     /// Create a new Seal.
-    fn new(algor: Algorithm, key: &[u8], iv: &[u8], hp_key: &[u8]) -> Result<Seal> {
-        Ok(Seal {
+    fn new(
+        algor: Algorithm,
+        secret: Vec<u8>,
+        hp_key: Vec<u8>,
+        key: Vec<u8>,
+        iv: Vec<u8>,
+    ) -> Result<Self> {
+        Ok(Self {
             algor,
-            ctx: new_aead_ctx(algor, key)?,
-            hp_key: aead::quic::HeaderProtectionKey::new(algor.hp_algor(), hp_key)
-                .map_err(|_| Error::CryptoFail)?,
-            nonce: Vec::from(iv),
+            secret,
+            hdr_key: HeaderKey::new(algor, hp_key)?,
+            pkt_key: PacketKey::new(algor, key, iv)?,
         })
     }
 
     /// Create a new Seal with secret.
-    pub fn new_with_secret(algor: Algorithm, secret: &[u8]) -> Result<Seal> {
+    pub fn new_with_secret(algor: Algorithm, secret: Vec<u8>) -> Result<Self> {
         let mut key = vec![0; algor.key_len()];
         let mut iv = vec![0; algor.nonce_len()];
-        let mut pn_key = vec![0; algor.key_len()];
-        key::derive_pkt_key(algor.hkdf_algor(), secret, &mut key)?;
-        key::derive_pkt_iv(algor.hkdf_algor(), secret, &mut iv)?;
-        key::derive_hdr_key(algor.hkdf_algor(), secret, &mut pn_key)?;
+        let mut hp_key = vec![0; algor.key_len()];
+        key::derive_pkt_key(algor.hkdf_algor(), &secret, &mut key)?;
+        key::derive_pkt_iv(algor.hkdf_algor(), &secret, &mut iv)?;
+        key::derive_hdr_key(algor.hkdf_algor(), &secret, &mut hp_key)?;
 
-        Self::new(algor, &key, &iv, &pn_key)
+        Self::new(algor, secret, hp_key, key, iv)
+    }
+
+    /// Derive next packet key.
+    pub fn derive_next_packet_key(&self) -> Result<Self> {
+        let mut next_secret = vec![0; self.secret.len()];
+        key::derive_next_packet_key(self.algor.hkdf_algor(), &self.secret, &mut next_secret)?;
+        let mut next_key = Self::new_with_secret(self.algor, next_secret)?;
+
+        // The header protection key is not updated.
+        next_key.hdr_key = HeaderKey::new(self.algor, self.hdr_key.raw.clone())?;
+
+        Ok(next_key)
     }
 
     /// Encrypt the plaintext and authenticate it in place.
@@ -131,10 +177,10 @@ impl Seal {
             return Err(Error::CryptoFail);
         }
 
-        let nonce = build_nonce(&self.nonce, cid_seq, counter);
+        let nonce = build_nonce(&self.pkt_key.nonce, cid_seq, counter);
         let rc = unsafe {
             EVP_AEAD_CTX_seal_scatter(
-                &self.ctx,
+                &self.pkt_key.ctx,
                 buf.as_mut_ptr(),
                 buf[in_len..].as_mut_ptr(),
                 &mut out_tag_len,
@@ -158,7 +204,10 @@ impl Seal {
 
     /// Generate header protection mask.
     pub fn new_mask(&self, sample: &[u8]) -> Result<[u8; 5]> {
-        self.hp_key.new_mask(sample).map_err(|_| Error::CryptoFail)
+        self.hdr_key
+            .key
+            .new_mask(sample)
+            .map_err(|_| Error::CryptoFail)
     }
 
     pub fn algor(&self) -> Algorithm {
@@ -169,33 +218,50 @@ impl Seal {
 /// AEAD decryption.
 pub struct Open {
     algor: Algorithm,
-    ctx: EvpAeadCtx,
-    hp_key: aead::quic::HeaderProtectionKey,
-    nonce: Vec<u8>,
+    secret: Vec<u8>,
+    hdr_key: HeaderKey,
+    pkt_key: PacketKey,
 }
 
 impl Open {
     /// Create a new Open.
-    fn new(algor: Algorithm, key: &[u8], iv: &[u8], hp_key: &[u8]) -> Result<Open> {
-        Ok(Open {
+    fn new(
+        algor: Algorithm,
+        secret: Vec<u8>,
+        hp_key: Vec<u8>,
+        key: Vec<u8>,
+        iv: Vec<u8>,
+    ) -> Result<Self> {
+        Ok(Self {
             algor,
-            ctx: new_aead_ctx(algor, key)?,
-            hp_key: aead::quic::HeaderProtectionKey::new(algor.hp_algor(), hp_key)
-                .map_err(|_| Error::CryptoFail)?,
-            nonce: Vec::from(iv),
+            secret,
+            hdr_key: HeaderKey::new(algor, hp_key)?,
+            pkt_key: PacketKey::new(algor, key, iv)?,
         })
     }
 
     /// Create a new Open with secret.
-    pub fn new_with_secret(algor: Algorithm, secret: &[u8]) -> Result<Open> {
+    pub fn new_with_secret(algor: Algorithm, secret: Vec<u8>) -> Result<Self> {
         let mut key = vec![0; algor.key_len()];
         let mut iv = vec![0; algor.nonce_len()];
         let mut hp_key = vec![0; algor.key_len()];
-        key::derive_pkt_key(algor.hkdf_algor(), secret, &mut key)?;
-        key::derive_pkt_iv(algor.hkdf_algor(), secret, &mut iv)?;
-        key::derive_hdr_key(algor.hkdf_algor(), secret, &mut hp_key)?;
+        key::derive_pkt_key(algor.hkdf_algor(), &secret, &mut key)?;
+        key::derive_pkt_iv(algor.hkdf_algor(), &secret, &mut iv)?;
+        key::derive_hdr_key(algor.hkdf_algor(), &secret, &mut hp_key)?;
 
-        Self::new(algor, &key, &iv, &hp_key)
+        Self::new(algor, secret, hp_key, key, iv)
+    }
+
+    /// Derive next packet key.
+    pub fn derive_next_packet_key(&self) -> Result<Self> {
+        let mut next_secret = vec![0; self.secret.len()];
+        key::derive_next_packet_key(self.algor.hkdf_algor(), &self.secret, &mut next_secret)?;
+        let mut next_key = Self::new_with_secret(self.algor, next_secret)?;
+
+        // The header protection key is not updated.
+        next_key.hdr_key = HeaderKey::new(self.algor, self.hdr_key.raw.clone())?;
+
+        Ok(next_key)
     }
 
     /// Decrypt the ciphertext into plaintext.
@@ -217,10 +283,10 @@ impl Open {
         }
 
         let max_out_len = out_len;
-        let nonce = build_nonce(&self.nonce, cid_seq, counter);
+        let nonce = build_nonce(&self.pkt_key.nonce, cid_seq, counter);
         let rc = unsafe {
             EVP_AEAD_CTX_open(
-                &self.ctx,
+                &self.pkt_key.ctx,
                 plaintext.as_mut_ptr(),
                 &mut out_len,
                 max_out_len,
@@ -241,7 +307,10 @@ impl Open {
 
     /// Generate header protection mask.
     pub fn new_mask(&self, sample: &[u8]) -> Result<[u8; 5]> {
-        self.hp_key.new_mask(sample).map_err(|_| Error::CryptoFail)
+        self.hdr_key
+            .key
+            .new_mask(sample)
+            .map_err(|_| Error::CryptoFail)
     }
 
     /// Return the AEAD algorithm.
@@ -278,14 +347,14 @@ pub fn derive_initial_secrets(cid: &[u8], version: u32, is_server: bool) -> Resu
 
     if is_server {
         return Ok((
-            Open::new(aead, &client_key, &client_iv, &client_hp_key)?,
-            Seal::new(aead, &server_key, &server_iv, &server_hp_key)?,
+            Open::new(aead, secret.to_vec(), client_hp_key, client_key, client_iv)?,
+            Seal::new(aead, secret.to_vec(), server_hp_key, server_key, server_iv)?,
         ));
     }
 
     Ok((
-        Open::new(aead, &server_key, &server_iv, &server_hp_key)?,
-        Seal::new(aead, &client_key, &client_iv, &client_hp_key)?,
+        Open::new(aead, secret.to_vec(), server_hp_key, server_key, server_iv)?,
+        Seal::new(aead, secret.to_vec(), client_hp_key, client_key, client_iv)?,
     ))
 }
 
