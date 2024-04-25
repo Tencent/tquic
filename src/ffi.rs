@@ -148,11 +148,16 @@ pub extern "C" fn quic_config_set_recv_udp_payload_size(config: &mut Config, v: 
     config.set_recv_udp_payload_size(v);
 }
 
-/// Set the initial maximum outgoing UDP payload size.
-/// The default and minimum value is `1200`.
-///
-/// The configuration should be changed with caution. The connection may
-/// not work properly if an inappropriate value is set.
+/// Enable the Datagram Packetization Layer Path MTU Discovery
+/// default value is true.
+#[no_mangle]
+pub extern "C" fn enable_dplpmtud(config: &mut Config, v: bool) {
+    config.enable_dplpmtud(v);
+}
+
+/// Set the maximum outgoing UDP payload size in bytes.
+/// It corresponds to the maximum datagram size that DPLPMTUD tries to discovery.
+/// The default value is `1200` which means let DPLPMTUD choose a value.
 #[no_mangle]
 pub extern "C" fn quic_config_set_send_udp_payload_size(config: &mut Config, v: usize) {
     config.set_send_udp_payload_size(v);

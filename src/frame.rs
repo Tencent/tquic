@@ -49,7 +49,9 @@ pub enum Frame {
 
     /// PING frame (type=0x01) is used to verify that peers are still alive
     /// or to check reachability to the peer.
-    Ping,
+    /// The extra metadata `pmtu_probe` is solely for internal use and is not
+    /// transmitted over the network.
+    Ping { pmtu_probe: Option<(usize, usize)> },
 
     /// ACK frame (types 0x02 and 0x03) is used to inform senders of packets
     /// they have received and processed. The ACK frame contains one or more
@@ -192,7 +194,7 @@ impl Frame {
                 Frame::Paddings { len }
             }
 
-            0x01 => Frame::Ping,
+            0x01 => Frame::Ping { pmtu_probe: None },
 
             0x02..=0x03 => {
                 let (frame, len) = parse_ack_frame(frame_type, b)?;
@@ -407,7 +409,7 @@ impl Frame {
                 }
             }
 
-            Frame::Ping => {
+            Frame::Ping { .. } => {
                 b.write_varint(0x01)?;
             }
 
@@ -613,7 +615,7 @@ impl Frame {
         match self {
             Frame::Paddings { len } => *len,
 
-            Frame::Ping => 1,
+            Frame::Ping { .. } => 1,
 
             Frame::Ack {
                 ack_delay,
@@ -962,7 +964,7 @@ impl std::fmt::Debug for Frame {
                 write!(f, "PADDINGS len={len}")?;
             }
 
-            Frame::Ping => {
+            Frame::Ping { .. } => {
                 write!(f, "PING")?;
             }
 
@@ -1273,7 +1275,7 @@ mod tests {
 
     #[test]
     fn ping() -> Result<()> {
-        let frame = Frame::Ping;
+        let frame = Frame::Ping { pmtu_probe: None };
         assert_eq!(format!("{:?}", &frame), "PING");
 
         let mut buf = [0; 128];

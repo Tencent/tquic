@@ -318,12 +318,17 @@ void quic_config_set_max_handshake_timeout(struct quic_config_t *config, uint64_
  */
 void quic_config_set_recv_udp_payload_size(struct quic_config_t *config, uint16_t v);
 
+/*
+ * Enable the Datagram Packetization Layer Path MTU Discovery
+ * default value is true.
+ */
+void enable_dplpmtud(struct quic_config_t *config, bool v);
+
 /**
- * Set the initial maximum outgoing UDP payload size.
- * The default and minimum value is `1200`.
+ * Set the maximum outgoing UDP payload size in bytes.
+ * It corresponds to the maximum datagram size that DPLPMTUD tries to discovery.
  *
- * The configuration should be changed with caution. The connection may
- * not work properly if an inappropriate value is set.
+ * The default value is `1200` which means let DPLPMTUD choose a value.
  */
 void quic_config_set_send_udp_payload_size(struct quic_config_t *config, uintptr_t v);
 

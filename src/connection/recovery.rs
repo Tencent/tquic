@@ -55,7 +55,7 @@ pub struct Recovery {
     /// It is used for PTO calculation.
     pub max_ack_delay: Duration,
 
-    /// The maximum size of outgoing UDP payloads.
+    /// The validated maximum size of outgoing UDP payloads in bytes.
     pub max_datagram_size: usize,
 
     /// The endpoint do not backoff the first `pto_linear_factor` consecutive probe timeouts.
@@ -109,7 +109,7 @@ impl Recovery {
     pub(super) fn new(conf: &RecoveryConfig) -> Self {
         Recovery {
             max_ack_delay: conf.max_ack_delay,
-            max_datagram_size: conf.max_datagram_size,
+            max_datagram_size: crate::DEFAULT_SEND_UDP_PAYLOAD_SIZE,
             pto_linear_factor: conf.pto_linear_factor,
             max_pto: conf.max_pto,
             pto_count: 0,
@@ -438,7 +438,12 @@ impl Recovery {
                             self.ack_eliciting_in_flight.saturating_sub(1);
                     }
                 }
-                latest_lost_packet = Some(unacked.clone());
+                // Loss of a QUIC packet that is carried in a PMTU probe is not
+                // a reliable indication of congestion and SHOULD NOT trigger a
+                // congestion control reaction
+                if !unacked.pmtu_probe {
+                    latest_lost_packet = Some(unacked.clone());
+                }
                 if let Some(qlog) = qlog.as_mut() {
                     self.qlog_recovery_packet_lost(qlog, unacked);
                 }
@@ -1036,6 +1041,7 @@ mod tests {
             initial_rtt: crate::INITIAL_RTT,
             pto_linear_factor: crate::DEFAULT_PTO_LINEAR_FACTOR,
             max_pto: crate::MAX_PTO,
+            ..RecoveryConfig::default()
         }
     }
 
