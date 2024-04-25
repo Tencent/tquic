@@ -350,7 +350,7 @@ pub struct Config {
     /// Maximum numbers of packets sent in a batch.
     send_batch_size: usize,
 
-    /// Recovery and congestion control configurations.
+    /// Configurations about loss recovery, congestion control, and pmtu discovery.
     recovery: RecoveryConfig,
 
     /// Multipath transport configurations.
@@ -427,11 +427,15 @@ impl Config {
         self.local_transport_params.max_udp_payload_size = cmp::min(v as u64, VINT_MAX);
     }
 
-    /// Set the initial maximum outgoing UDP payload size.
-    /// The default and minimum value is `1200`.
-    ///
-    /// The configuration should be changed with caution. The connection may
-    /// not work properly if an inappropriate value is set.
+    /// Enable the Datagram Packetization Layer Path MTU Discovery
+    /// default value is true.
+    pub fn enable_dplpmtud(&mut self, v: bool) {
+        self.recovery.enable_dplpmtud = v;
+    }
+
+    /// Set the maximum outgoing UDP payload size in bytes.
+    /// It corresponds to the maximum datagram size that DPLPMTUD tries to discovery.
+    /// The default value is `1200` which means let DPLPMTUD choose a value.
     pub fn set_send_udp_payload_size(&mut self, v: usize) {
         self.recovery.max_datagram_size = cmp::max(v, DEFAULT_SEND_UDP_PAYLOAD_SIZE);
     }
@@ -668,10 +672,13 @@ impl Config {
     }
 }
 
-/// Configurations about loss recovery and congestion control.
+/// Configurations about loss recovery, congestion control, and pmtu discovery.
 #[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct RecoveryConfig {
+    /// Enable Datagram Packetization Layer Path MTU Discovery.
+    pub enable_dplpmtud: bool,
+
     /// The maximum size of outgoing UDP payloads.
     pub max_datagram_size: usize,
 
@@ -700,14 +707,15 @@ pub struct RecoveryConfig {
     /// Linear factor for calculating the probe timeout.
     pub pto_linear_factor: u64,
 
-    // Upper limit of probe timeout.
+    /// Upper limit of probe timeout.
     pub max_pto: Duration,
 }
 
 impl Default for RecoveryConfig {
     fn default() -> RecoveryConfig {
         RecoveryConfig {
-            max_datagram_size: 1200,
+            enable_dplpmtud: true,
+            max_datagram_size: DEFAULT_SEND_UDP_PAYLOAD_SIZE, // The upper limit is determined by DPLPMTUD
             max_ack_delay: time::Duration::from_millis(0),
             congestion_control_algorithm: CongestionControlAlgorithm::Bbr,
             min_congestion_window: 2_u64,

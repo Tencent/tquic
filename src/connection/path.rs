@@ -21,6 +21,7 @@ use std::time::Duration;
 
 use slab::Slab;
 
+use super::pmtu::Dplpmtud;
 use super::recovery::Recovery;
 use super::timer;
 use crate::connection::SpaceId;
@@ -87,6 +88,9 @@ pub struct Path {
     /// Total bytes the server can send before the client's address is verified.
     pub(super) anti_ampl_limit: usize,
 
+    /// The current pmtu probing state of the path.
+    pub(super) dplpmtud: Dplpmtud,
+
     /// Trace id.
     trace_id: String,
 
@@ -112,6 +116,12 @@ impl Path {
             (PathState::Unknown, None, None)
         };
 
+        let dplpmtud = Dplpmtud::new(
+            conf.enable_dplpmtud,
+            conf.max_datagram_size,
+            remote_addr.is_ipv6(),
+        );
+
         Self {
             local_addr,
             remote_addr,
@@ -128,6 +138,7 @@ impl Path {
             verified_peer_address: false,
             peer_verified_local_address: false,
             anti_ampl_limit: 0,
+            dplpmtud,
             trace_id: trace_id.to_string(),
             space_id: SpaceId::Data,
             is_abandon: false,
@@ -600,6 +611,7 @@ mod tests {
             initial_rtt: crate::INITIAL_RTT,
             pto_linear_factor: crate::DEFAULT_PTO_LINEAR_FACTOR,
             max_pto: crate::MAX_PTO,
+            ..RecoveryConfig::default()
         }
     }
 

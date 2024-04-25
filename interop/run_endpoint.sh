@@ -80,9 +80,6 @@ if [ "$ROLE" == "client" ]; then
     zerortt)
         CLIENT_ARGS="$CLIENT_ARGS --session-file=session.bin --enable-early-data"
         ;;
-    transfer)
-        CLIENT_ARGS="$CLIENT_ARGS --send-udp-payload-size 1400"
-        ;;
     http3)
         CLIENT_ALPN="--alpn h3"
         ;;
@@ -111,9 +108,6 @@ elif [ "$ROLE" == "server" ]; then
     case $TESTCASE in
     retry)
         SERVER_ARGS="$SERVER_ARGS --enable-retry"
-        ;;
-    transfer)
-        SERVER_ARGS="$SERVER_ARGS --send-udp-payload-size 1400"
         ;;
     *)
         ;;

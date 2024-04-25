@@ -710,7 +710,7 @@ impl Connection {
         match frame {
             Frame::Paddings { .. } => (), // just ignore
 
-            Frame::Ping => (), // just ignore
+            Frame::Ping { .. } => (), // just ignore
 
             Frame::Ack {
                 ack_delay,
@@ -1318,6 +1318,18 @@ impl Connection {
                         self.streams.on_reset_stream_frame_acked(stream_id);
                     }
 
+                    Frame::Ping {
+                        pmtu_probe: Some((path_id, probe_size)),
+                    } => {
+                        if let Ok(path) = self.paths.get_mut(path_id) {
+                            let peer_mds = self.peer_transport_params.max_udp_payload_size as usize;
+                            path.dplpmtud.on_pmtu_probe_acked(probe_size, peer_mds);
+                            let current = path.dplpmtud.get_current_size();
+                            path.recovery.update_max_datagram_size(current, false);
+                            debug!("{} path {:?} MTU is {} now", self.trace_id, path, current);
+                        }
+                    }
+
                     _ => (),
                 }
             }
@@ -1352,7 +1364,7 @@ impl Connection {
             return crate::MIN_CLIENT_INITIAL_LEN;
         }
 
-        // Use the configured or validated max_datagram_size
+        // Use the validated max_datagram_size
         self.paths
             .get(pid)
             .ok()
@@ -1403,20 +1415,20 @@ impl Connection {
         let mut left = cmp::min(out.len(), self.max_datagram_size(pid));
         left = self.paths.cmp_anti_ampl_limit(pid, left);
 
-        let out = &mut out[..left];
         let mut done = 0;
 
         // Write QUIC packets to the buffer
         let mut has_initial = false;
         while left > 0 {
-            let (pkt_type, written) = match self.send_packet(&mut out[done..], pid, has_initial) {
-                Ok(v) => v,
-                Err(Error::BufferTooShort) | Err(Error::Done) => break,
-                Err(e) => return Err(e),
-            };
+            let (pkt_type, is_pmtu_probe, written) =
+                match self.send_packet(&mut out[done..], left, pid, done == 0, has_initial) {
+                    Ok(v) => v,
+                    Err(Error::BufferTooShort) | Err(Error::Done) => break,
+                    Err(e) => return Err(e),
+                };
 
-            left -= written;
-            done += written;
+            left = left.saturating_sub(written);
+            done = done.saturating_add(written);
 
             match pkt_type {
                 PacketType::Initial => has_initial = true,
@@ -1426,6 +1438,13 @@ impl Connection {
                 PacketType::OneRTT => break,
 
                 _ => (),
+            }
+
+            // The PMTU probe is not coalesced with other packets, since packets
+            // that are larger than the current maximum datagram size are more
+            // likely to be dropped by the network.
+            if is_pmtu_probe {
+                break;
             }
         }
 
@@ -1455,6 +1474,17 @@ impl Connection {
 
     /// Write a QUIC packet to the given buffer.
     ///
+    /// The `out` is the write buffer with a size that must be no less than `left`.
+    /// The `left` is the upper limit for the write size when sending a non-PMTU
+    /// probe packet.
+    /// The `path_id` is the selected path for sending out packets.
+    /// The `first` indicates that it is the first packet being written to the UDP
+    /// datagram.
+    /// The `has_initial` indicates that a previous Initial packet has been written
+    /// the UDP datagram.
+    ///
+    /// Return a tuple consisting of the packet type, PMUT probe flag, and the
+    /// packet size upon success.
     /// Return `Error::BufferTooShort` if the input buffer is too small to
     /// write a single QUIC packet.
     /// Return `Error::Done` if no packet can be sent.
@@ -1462,13 +1492,15 @@ impl Connection {
     fn send_packet(
         &mut self,
         out: &mut [u8],
+        mut left: usize,
         path_id: usize,
+        first: bool,
         has_initial: bool,
-    ) -> Result<(PacketType, usize)> {
+    ) -> Result<(PacketType, bool, usize)> {
         let now = time::Instant::now();
 
-        if out.is_empty() {
-            return Err(Error::BufferTooShort);
+        if out.len() < left {
+            return Err(Error::InvalidState("buffer too short".into()));
         }
 
         if self.is_draining() {
@@ -1478,8 +1510,6 @@ impl Connection {
         // Select packet type and encryption level
         let pkt_type = self.select_send_packet_type(path_id)?;
         let level = pkt_type.to_level()?;
-
-        let mut left = out.len();
 
         // Prepare and encode packet header (except for the Length and Packet Number field)
         let space_id = self.get_space_id(pkt_type, path_id)?;
@@ -1519,7 +1549,7 @@ impl Connection {
             },
             key_phase: self.tls_session.current_key_phase(),
         };
-        let hdr_offset = hdr.to_bytes(out)?;
+        let hdr_offset = hdr.to_bytes(&mut out[..left])?;
 
         // Check the size of remaining space of the buffer
         let mut pkt_num_offset = hdr_offset;
@@ -1543,9 +1573,8 @@ impl Connection {
         }
 
         // Encode packet number
-        let len = packet::encode_packet_num(pkt_num, &mut out[pkt_num_offset..])?;
+        let len = packet::encode_packet_num(pkt_num, &mut out[pkt_num_offset..left])?;
         let payload_offset = pkt_num_offset + len;
-        let payload_end = out.len() - crypto_overhead; // Reserved for crypto overhead
 
         // Write frames into the packet payload
         let (ack_elicit_required, is_probe) = {
@@ -1555,14 +1584,17 @@ impl Connection {
         let mut write_status = FrameWriteStatus {
             ack_elicit_required,
             is_probe,
+            overhead: total_overhead,
             ..FrameWriteStatus::default()
         };
 
         match self.send_frames(
-            &mut out[payload_offset..payload_end],
+            &mut out[payload_offset..],
+            left,
             &mut write_status,
             pkt_type,
             path_id,
+            first,
             has_initial,
         ) {
             Ok(..) => (),
@@ -1612,6 +1644,7 @@ impl Connection {
             ack_eliciting: write_status.ack_eliciting,
             in_flight: write_status.in_flight,
             has_data: write_status.has_data,
+            pmtu_probe: write_status.is_pmtu_probe,
             frames: write_status.frames,
             rate_sample_state: Default::default(),
             buffer_flags: write_status.buffer_flags,
@@ -1668,6 +1701,13 @@ impl Connection {
             self.paths.on_path_chal_sent(path_id, data, written, now)?;
         }
 
+        if write_status.is_pmtu_probe {
+            self.paths
+                .get_mut(path_id)?
+                .dplpmtud
+                .on_pmtu_probe_sent(written);
+        }
+
         // Update connection state and statistic metrics
         self.stats.sent_count += 1;
         self.stats.sent_bytes += written as u64;
@@ -1709,7 +1749,7 @@ impl Connection {
             self.flags.insert(SentAckElicitingSinceRecvPkt);
         }
 
-        Ok((pkt_type, written))
+        Ok((pkt_type, write_status.is_pmtu_probe, written))
     }
 
     // Write QUIC frames to the payload of a QUIC packet.
@@ -1717,19 +1757,22 @@ impl Connection {
     // The current write offset in the `out` buffer is recorded in `st.written`
     // Return Error::Done if there is no frame to send or no left room to write more frames.
     // Return other Error if found unexpected error.
+    #[allow(clippy::too_many_arguments)]
     fn send_frames(
         &mut self,
-        out: &mut [u8],
+        buf: &mut [u8],
+        left: usize,
         st: &mut FrameWriteStatus,
         pkt_type: PacketType,
         path_id: usize,
+        first: bool,
         has_initial: bool,
     ) -> Result<()> {
         // Write an ACK frame
-        self.try_write_ack_frame(out, st, pkt_type, path_id)?;
+        self.try_write_ack_frame(&mut buf[..left], st, pkt_type, path_id)?;
 
         // Write a CONNECTION_CLOSE frame
-        self.try_write_close_frame(out, st, pkt_type, path_id)?;
+        self.try_write_close_frame(&mut buf[..left], st, pkt_type, path_id)?;
 
         let path = self.paths.get_mut(path_id)?;
         path.recovery.stat_cwnd_limited();
@@ -1742,6 +1785,15 @@ impl Connection {
         if !st.is_probe && !path.recovery.can_send() {
             return Err(Error::Done);
         }
+
+        // Write PMTU probe frames
+        // Note: To probe the path MTU, the write size will exceed `left` but
+        // not surpass the length of `buf`.
+        self.try_write_pmut_probe_frames(buf, st, pkt_type, path_id, first)?;
+
+        // Since it's not a PMTU probe packet, let's cap the buffer size for
+        // simplicity.
+        let out = &mut buf[..left];
 
         // Write PATH_CHALLENGE/PATH_RESPONSE frames
         self.try_write_path_validation_frames(out, st, pkt_type, path_id)?;
@@ -1779,7 +1831,7 @@ impl Connection {
 
         // Write a PING frame
         if st.ack_elicit_required && !st.ack_eliciting && !self.is_closing() {
-            let frame = Frame::Ping;
+            let frame = Frame::Ping { pmtu_probe: None };
             Connection::write_frame_to_packet(frame, out, st)?;
             st.ack_eliciting = true;
             st.in_flight = true;
@@ -1861,6 +1913,55 @@ impl Connection {
         }
 
         Ok(())
+    }
+
+    /// Write PMTU probe frames if needed.
+    fn try_write_pmut_probe_frames(
+        &mut self,
+        buf: &mut [u8],
+        st: &mut FrameWriteStatus,
+        pkt_type: PacketType,
+        path_id: usize,
+        first: bool,
+    ) -> Result<()> {
+        if pkt_type != PacketType::OneRTT
+            || !self.flags.contains(HandshakeCompleted)
+            || self.is_closing()
+            || !first
+            || !st.frames.is_empty()
+        {
+            return Ok(());
+        }
+
+        let peer_mds = self.peer_transport_params.max_udp_payload_size as usize;
+        let path = self.paths.get_mut(path_id)?;
+        let probe_size = path.dplpmtud.get_probe_size(peer_mds);
+        if !path.validated()
+            || !path.dplpmtud.should_probe()
+            || probe_size > buf.len()
+            || (probe_size as u64) > path.recovery.congestion.congestion_window()
+            || path.recovery.congestion.in_recovery(time::Instant::now())
+        {
+            return Ok(());
+        }
+
+        // The content of the PMTU probe is limited to PING and PADDING frames.
+        let frame = frame::Frame::Ping {
+            pmtu_probe: Some((path_id, probe_size)),
+        };
+        Connection::write_frame_to_packet(frame, buf, st)?;
+
+        let padding_len = probe_size - st.overhead - 1;
+        let frame = frame::Frame::Paddings { len: padding_len };
+        Connection::write_frame_to_packet(frame, buf, st)?;
+
+        st.ack_eliciting = true;
+        st.in_flight = true;
+        st.is_pmtu_probe = true;
+
+        // Finish writing the datagram to prevent it from coalescing with other
+        // QUIC packets.
+        Err(Error::Done)
     }
 
     /// Populate Acknowledgement frame to packet payload buffer.
@@ -2647,6 +2748,22 @@ impl Connection {
                         self.streams.on_max_streams_frame_lost(bidi, max);
                     }
 
+                    // A PING frame contain no information, so lost PING frames
+                    // do not require repair. However, if it indicates the loss
+                    // of a PMTU probe, we will try to schedule a new probe.
+                    Frame::Ping {
+                        pmtu_probe: Some((path_id, probe_size)),
+                    } => {
+                        if let Ok(path) = self.paths.get_mut(path_id) {
+                            let peer_mds = self.peer_transport_params.max_udp_payload_size as usize;
+                            path.dplpmtud.on_pmtu_probe_lost(probe_size, peer_mds);
+                            debug!(
+                                "{} lost MTU probe on path {:?} size={}",
+                                self.trace_id, path, probe_size
+                            );
+                        }
+                    }
+
                     _ => (),
                 }
             }
@@ -2793,6 +2910,7 @@ impl Connection {
                 || self.need_send_new_token_frame()
                 || self.local_error.as_ref().map_or(false, |e| e.is_app)
                 || path.need_send_validation_frames(self.is_server)
+                || path.dplpmtud.should_probe()
                 || self.cids.need_send_cid_control_frames()
                 || self.streams.need_send_stream_frames()
                 || self.spaces.need_send_buffered_frames())
@@ -4058,6 +4176,12 @@ struct FrameWriteStatus {
     /// Whether the congestion window should be ignored.
     is_probe: bool,
 
+    /// Whether it is a PMTU probe packet
+    is_pmtu_probe: bool,
+
+    /// Packet overhead (i.e. packet header and crypto overhead) in bytes
+    overhead: usize,
+
     /// Status about buffered frames written to the packet.
     buffer_flags: BufferFlags,
 }
@@ -4209,7 +4333,7 @@ pub(crate) mod tests {
         pub fn conn_packets_out(conn: &mut Connection) -> Result<Vec<(Vec<u8>, PacketInfo)>> {
             let mut packets = Vec::new();
             loop {
-                let mut out = vec![0u8; 1350];
+                let mut out = vec![0u8; 1500];
                 let info = match conn.send(&mut out) {
                     Ok((written, info)) => {
                         out.truncate(written);
@@ -4371,6 +4495,7 @@ pub(crate) mod tests {
             conf.set_send_batch_size(2);
             conf.set_max_handshake_timeout(0);
             conf.enable_multipath(false);
+            conf.enable_dplpmtud(true);
 
             let application_protos = vec![b"h3".to_vec()];
             let tls_config = if !is_server {
@@ -5238,14 +5363,29 @@ pub(crate) mod tests {
     #[test]
     fn max_datagram_size() -> Result<()> {
         let mut client_config = TestPair::new_test_config(false)?;
-        client_config.set_send_udp_payload_size(2000);
+        client_config.set_send_udp_payload_size(1200);
         let mut server_config = TestPair::new_test_config(true)?;
         server_config.set_recv_udp_payload_size(1550);
         server_config.set_initial_max_data(10000);
         server_config.set_initial_max_stream_data_bidi_remote(10000);
         let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
-        assert_eq!(test_pair.handshake(), Ok(()));
+        assert_eq!(
+            test_pair.client.paths.get(0)?.recovery.max_datagram_size,
+            1200,
+        );
 
+        // Handshake and discovery path MTU
+        assert_eq!(test_pair.handshake(), Ok(()));
+        test_pair.move_forward()?;
+
+        // Check path MTU
+        let mds_ipv4 = 1472;
+        assert_eq!(
+            test_pair.client.paths.get(0)?.recovery.max_datagram_size,
+            mds_ipv4
+        );
+
+        // Check outgoing packet size
         let mut buf = vec![0; 2000];
         assert!(test_pair
             .client
@@ -5253,7 +5393,7 @@ pub(crate) mod tests {
             .is_ok());
         let r = test_pair.client.send(&mut buf);
         assert!(r.is_ok());
-        assert_eq!(r.unwrap().0, 1550);
+        assert_eq!(r.unwrap().0, mds_ipv4);
 
         Ok(())
     }
@@ -5668,6 +5808,97 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn path_mtu_discovery_max() -> Result<()> {
+        let cases = [
+            // (cli_enable_dplpmtud, srv_enable_dplpmtud, cli_mtu , srv_mtu)
+            (false, false, 1200, 1200),
+            (false, true, 1200, 1472),
+            (true, false, 1472, 1200),
+            (true, true, 1472, 1472),
+        ];
+
+        for case in cases {
+            let mut client_config = TestPair::new_test_config(false)?;
+            client_config.enable_dplpmtud(case.0);
+            let mut server_config = TestPair::new_test_config(true)?;
+            server_config.enable_dplpmtud(case.1);
+            let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
+            assert_eq!(test_pair.handshake(), Ok(()));
+
+            test_pair.move_forward()?;
+            assert_eq!(
+                test_pair.client.paths.get(0)?.recovery.max_datagram_size,
+                case.2
+            );
+            assert_eq!(
+                test_pair.server.paths.get(0)?.recovery.max_datagram_size,
+                case.3
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn path_mtu_discovery_lost() -> Result<()> {
+        let cases = [
+            // (router_mtu, searched_mtu)
+            (1472, 1463),
+            (1452, 1446),
+            (1432, 1429),
+            (1412, 1404),
+            (1392, 1387),
+            (1372, 1370),
+        ];
+
+        for case in cases {
+            let mut client_config = TestPair::new_test_config(false)?;
+            client_config.enable_dplpmtud(true);
+            let mut server_config = TestPair::new_test_config(true)?;
+            server_config.enable_dplpmtud(false);
+            server_config.set_initial_max_data(10240);
+            server_config.set_initial_max_stream_data_bidi_remote(10240);
+            let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
+            let router_mtu: usize = case.0;
+
+            // Handshake
+            while !test_pair.client.is_established() || !test_pair.server.is_established() {
+                let mut packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+                packets.retain(|p| p.0.len() < router_mtu); // fake dropping packets
+                TestPair::conn_packets_in(&mut test_pair.server, packets)?;
+
+                let packets = TestPair::conn_packets_out(&mut test_pair.server)?;
+                TestPair::conn_packets_in(&mut test_pair.client, packets)?;
+            }
+
+            // Path MTU searching
+            let data = Bytes::from_static(b"data");
+            for i in 0..30 {
+                let _ = test_pair.client.stream_write(0, data.clone(), false);
+                let mut packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+                packets.retain(|p| p.0.len() < router_mtu); // fake dropping packets
+
+                TestPair::conn_packets_in(&mut test_pair.server, packets)?;
+                let packets = TestPair::conn_packets_out(&mut test_pair.server)?;
+                TestPair::conn_packets_in(&mut test_pair.client, packets)?;
+
+                if test_pair.client.timeout().is_some() {
+                    let timeout = test_pair.client.timers.get(Timer::LossDetection);
+                    test_pair.client.on_timeout(timeout.unwrap());
+                }
+            }
+
+            // Check final MTU
+            assert_eq!(
+                test_pair.client.paths.get(0)?.recovery.max_datagram_size,
+                case.1
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
     fn conn_basic_operations() -> Result<()> {
         let mut test_pair = TestPair::new_with_zero_cid()?;
         test_pair.handshake()?;
@@ -5983,7 +6214,11 @@ pub(crate) mod tests {
 
     #[test]
     fn recv_packet_skipped_packet_number() -> Result<()> {
-        let mut test_pair = TestPair::new_with_test_config()?;
+        let mut client_config = TestPair::new_test_config(false)?;
+        client_config.enable_dplpmtud(false);
+        let mut server_config = TestPair::new_test_config(true)?;
+        server_config.enable_dplpmtud(false);
+        let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
         assert_eq!(test_pair.handshake(), Ok(()));
 
         let info = TestPair::new_test_packet_info(false);
@@ -5994,7 +6229,7 @@ pub(crate) mod tests {
             let packet = TestPair::conn_build_packet(
                 &mut test_pair.client,
                 PacketType::OneRTT,
-                &[frame::Frame::Ping],
+                &[frame::Frame::Ping { pmtu_probe: None }],
             )?;
 
             // Server recv OneRTT packet and send ack
@@ -6028,7 +6263,7 @@ pub(crate) mod tests {
                 TestPair::conn_build_packet(
                     &mut test_pair.client,
                     PacketType::OneRTT,
-                    &[frame::Frame::Ping],
+                    &[frame::Frame::Ping { pmtu_probe: None }],
                 )?,
                 info,
             ));
@@ -6433,6 +6668,7 @@ pub(crate) mod tests {
         };
 
         let mut client_config = TestPair::new_test_config(false)?;
+        client_config.enable_dplpmtud(false);
         let mut server_config = TestPair::new_test_config(true)?;
         server_config.local_transport_params = server_transport_params.clone();
 
@@ -7046,6 +7282,7 @@ pub(crate) mod tests {
 mod cid;
 mod flowcontrol;
 pub mod path;
+mod pmtu;
 mod recovery;
 pub(crate) mod rtt;
 pub(crate) mod space;
