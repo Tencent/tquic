@@ -10,6 +10,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.10.0] - 2024-04-26
+
+### Added
+- Add support for responding to key updates
+- Add datagram packetization layer PMTU discovery
+- Improve API for stream creation
+- Limit configuration value of type varint
+- Add pacing_rate to PathStats
+- tquic_server: output stats when server connection is closed
+- Add workflow and plot tools for fct testing
+
+### Fixed
+- Fix the issue where bbr3 cannot exit slow start due to high packet loss rate
+
+### Security
+- Limit memory consuption for tracking closed stream ids
+
 
 ## [v0.9.0] - 2024-04-10
 
@@ -182,6 +199,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Provide example clients and servers.
 
 
+[v0.10.0]: https://github.com/tencent/tquic/compare/v0.9.0...v0.10.0
 [v0.9.0]: https://github.com/tencent/tquic/compare/v0.8.1...v0.9.0
 [v0.8.1]: https://github.com/tencent/tquic/compare/v0.8.0...v0.8.1
 [v0.8.0]: https://github.com/tencent/tquic/compare/v0.7.0...v0.8.0
