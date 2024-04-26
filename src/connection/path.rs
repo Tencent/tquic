@@ -21,12 +21,13 @@ use std::time::Duration;
 
 use slab::Slab;
 
-pub use super::recovery::PathStats;
+use super::pmtu::Dplpmtud;
 use super::recovery::Recovery;
 use super::timer;
 use crate::connection::SpaceId;
 use crate::error::Error;
 use crate::multipath_scheduler::MultipathScheduler;
+use crate::PathStats;
 use crate::RecoveryConfig;
 use crate::Result;
 use crate::TIMER_GRANULARITY;
@@ -87,6 +88,9 @@ pub struct Path {
     /// Total bytes the server can send before the client's address is verified.
     pub(super) anti_ampl_limit: usize,
 
+    /// The current pmtu probing state of the path.
+    pub(super) dplpmtud: Dplpmtud,
+
     /// Trace id.
     trace_id: String,
 
@@ -112,6 +116,12 @@ impl Path {
             (PathState::Unknown, None, None)
         };
 
+        let dplpmtud = Dplpmtud::new(
+            conf.enable_dplpmtud,
+            conf.max_datagram_size,
+            remote_addr.is_ipv6(),
+        );
+
         Self {
             local_addr,
             remote_addr,
@@ -128,6 +138,7 @@ impl Path {
             verified_peer_address: false,
             peer_verified_local_address: false,
             anti_ampl_limit: 0,
+            dplpmtud,
             trace_id: trace_id.to_string(),
             space_id: SpaceId::Data,
             is_abandon: false,
@@ -531,6 +542,13 @@ impl PathMap {
             .map(|&(_, _, loss_time)| loss_time)
     }
 
+    /// Return the maximum PTO among all paths.
+    pub fn max_pto(&self) -> Option<Duration> {
+        self.iter()
+            .map(|(_, path)| path.recovery.rtt.pto_base())
+            .max()
+    }
+
     /// Increase send limit before address validation for server
     pub fn inc_anti_ampl_limit(&mut self, pid: usize, pkt_len: usize) {
         if !self.is_server {
@@ -593,6 +611,7 @@ mod tests {
             initial_rtt: crate::INITIAL_RTT,
             pto_linear_factor: crate::DEFAULT_PTO_LINEAR_FACTOR,
             max_pto: crate::MAX_PTO,
+            ..RecoveryConfig::default()
         }
     }
 

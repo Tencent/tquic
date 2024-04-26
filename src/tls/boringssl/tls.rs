@@ -904,7 +904,7 @@ extern "C" fn set_read_secret(
     if level != tls::Level::ZeroRTT || session_data.is_server {
         let secret = unsafe { slice::from_raw_parts(secret, secret_len) };
 
-        let open = match crypto::Open::new_with_secret(aead, secret) {
+        let open = match crypto::Open::new_with_secret(aead, secret.to_vec()) {
             Ok(v) => v,
             Err(_) => return 0,
         };
@@ -945,7 +945,7 @@ extern "C" fn set_write_secret(
     if level != tls::Level::ZeroRTT || !session_data.is_server {
         let secret = unsafe { slice::from_raw_parts(secret, secret_len) };
 
-        let seal = match crypto::Seal::new_with_secret(aead, secret) {
+        let seal = match crypto::Seal::new_with_secret(aead, secret.to_vec()) {
             Ok(v) => v,
             Err(_) => return 0,
         };

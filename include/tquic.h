@@ -318,12 +318,17 @@ void quic_config_set_max_handshake_timeout(struct quic_config_t *config, uint64_
  */
 void quic_config_set_recv_udp_payload_size(struct quic_config_t *config, uint16_t v);
 
+/*
+ * Enable the Datagram Packetization Layer Path MTU Discovery
+ * default value is true.
+ */
+void enable_dplpmtud(struct quic_config_t *config, bool v);
+
 /**
- * Set the initial maximum outgoing UDP payload size.
- * The default and minimum value is `1200`.
+ * Set the maximum outgoing UDP payload size in bytes.
+ * It corresponds to the maximum datagram size that DPLPMTUD tries to discovery.
  *
- * The configuration should be changed with caution. The connection may
- * not work properly if an inappropriate value is set.
+ * The default value is `1200` which means let DPLPMTUD choose a value.
  */
 void quic_config_set_send_udp_payload_size(struct quic_config_t *config, uintptr_t v);
 
@@ -891,12 +896,33 @@ ssize_t quic_stream_write(struct quic_conn_t *conn,
                           bool fin);
 
 /**
- * Create a new quic transport stream with the given id and priority.
+ * Create a new quic stream with the given id and priority.
+ * This is a low-level API for stream creation. It is recommended to use
+ * `quic_stream_bidi_new` for bidirectional streams or `quic_stream_uni_new`
+ * for unidrectional streams.
  */
 int quic_stream_new(struct quic_conn_t *conn,
                     uint64_t stream_id,
                     uint8_t urgency,
                     bool incremental);
+
+/**
+ * Create a new quic bidiectional stream with the given priority.
+ * If success, the output parameter `stream_id` carrys the id of the created stream.
+ */
+int quic_stream_bidi_new(struct quic_conn_t *conn,
+                         uint8_t urgency,
+                         bool incremental,
+                         uint64_t *stream_id);
+
+/**
+ * Create a new quic uniectional stream with the given priority.
+ * If success, the output parameter `stream_id` carrys the id of the created stream.
+ */
+int quic_stream_uni_new(struct quic_conn_t *conn,
+                        uint8_t urgency,
+                        bool incremental,
+                        uint64_t *stream_id);
 
 /**
  * Shutdown stream reading or writing.

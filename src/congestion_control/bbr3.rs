@@ -1463,7 +1463,8 @@ impl Bbr3 {
     //
     // See <https://www.ietf.org/archive/id/draft-cardwell-iccrg-bbr-congestion-control-02.html#name-probing-for-bandwidth-in-pr>.
     fn handle_lost_packet(&mut self, now: Instant, packet: &SentPacket) {
-        if !self.bw_probe_samples {
+        // In startup phase we need to update stats upon every ack reception
+        if !self.bw_probe_samples && !self.in_slow_start() {
             // not a packet sent while probing bandwidth.
             return;
         }

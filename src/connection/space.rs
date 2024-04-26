@@ -77,6 +77,12 @@ pub struct PacketNumSpace {
     /// Highest received packet number.
     pub largest_rx_pkt_num: u64,
 
+    /// Track the first received packet in current key phase.
+    pub first_pkt_num_recv: Option<u64>,
+
+    /// Track the first sent packet in current key phase.
+    pub first_pkt_num_sent: Option<u64>,
+
     /// The time at which the packet of highest sequence number arrived.
     pub largest_rx_pkt_time: Instant,
 
@@ -137,6 +143,8 @@ impl PacketNumSpace {
             consecutive_non_ack_eliciting_sent: 0,
             lowest_1rtt_pkt_num: std::u64::MAX,
             largest_rx_pkt_num: 0,
+            first_pkt_num_recv: None,
+            first_pkt_num_sent: None,
             largest_rx_pkt_time: Instant::now(),
             largest_rx_non_probing_pkt_num: 0,
             recv_pkt_num_need_ack: RangeSet::new(crate::MAX_ACK_RANGES),
@@ -332,6 +340,9 @@ pub struct SentPacket {
     /// Whether the packet contains CRYPTO or STREAM frame
     pub has_data: bool,
 
+    /// Whether it is a PMUT probe packet
+    pub pmtu_probe: bool,
+
     /// The number of bytes sent in the packet, not including UDP or IP overhead,
     /// but including QUIC framing overhead.
     pub sent_size: usize,
@@ -355,6 +366,7 @@ impl Default for SentPacket {
             ack_eliciting: false,
             in_flight: false,
             has_data: false,
+            pmtu_probe: false,
             sent_size: 0,
             rate_sample_state: RateSamplePacketState::default(),
             buffer_flags: BufferFlags::default(),
@@ -536,7 +548,10 @@ mod tests {
     fn sent_packet() {
         let sent_pkt = SentPacket {
             pkt_num: 9,
-            frames: vec![frame::Frame::Ping, frame::Frame::Paddings { len: 200 }],
+            frames: vec![
+                frame::Frame::Ping { pmtu_probe: None },
+                frame::Frame::Paddings { len: 200 },
+            ],
             time_sent: Instant::now(),
             time_acked: None,
             time_lost: None,
@@ -577,7 +592,7 @@ mod tests {
         assert_eq!(queue.len(), 2);
         assert_eq!(queue.is_empty(), false);
 
-        let f3 = Frame::Ping;
+        let f3 = Frame::Ping { pmtu_probe: None };
         queue.push_back(f3.clone(), BufferType::Low);
 
         assert_eq!(queue.pop_front(), Some((f2.clone(), BufferType::High)));

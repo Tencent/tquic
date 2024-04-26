@@ -59,6 +59,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time;
 use std::time::Duration;
+use std::time::Instant;
 
 use bytes::Buf;
 use bytes::BufMut;
@@ -69,6 +70,7 @@ use ring::aead::UnboundKey;
 use ring::hmac;
 use rustc_hash::FxHashSet;
 
+use crate::codec::VINT_MAX;
 use crate::connection::stream;
 use crate::tls::TlsSession;
 use crate::token::ResetToken;
@@ -348,7 +350,7 @@ pub struct Config {
     /// Maximum numbers of packets sent in a batch.
     send_batch_size: usize,
 
-    /// Recovery and congestion control configurations.
+    /// Configurations about loss recovery, congestion control, and pmtu discovery.
     recovery: RecoveryConfig,
 
     /// Multipath transport configurations.
@@ -410,7 +412,7 @@ impl Config {
     /// Set the `max_idle_timeout` transport parameter in milliseconds.
     /// Idle timeout is disabled by default.
     pub fn set_max_idle_timeout(&mut self, v: u64) {
-        self.local_transport_params.max_idle_timeout = v;
+        self.local_transport_params.max_idle_timeout = cmp::min(v, VINT_MAX);
     }
 
     /// Set handshake timeout in milliseconds. Zero turns the timeout off.
@@ -422,14 +424,18 @@ impl Config {
     /// the size of UDP payloads that the endpoint is willing to receive. The
     /// default value is `65527`.
     pub fn set_recv_udp_payload_size(&mut self, v: u16) {
-        self.local_transport_params.max_udp_payload_size = v as u64;
+        self.local_transport_params.max_udp_payload_size = cmp::min(v as u64, VINT_MAX);
     }
 
-    /// Set the initial maximum outgoing UDP payload size.
-    /// The default and minimum value is `1200`.
-    ///
-    /// The configuration should be changed with caution. The connection may
-    /// not work properly if an inappropriate value is set.
+    /// Enable the Datagram Packetization Layer Path MTU Discovery
+    /// default value is true.
+    pub fn enable_dplpmtud(&mut self, v: bool) {
+        self.recovery.enable_dplpmtud = v;
+    }
+
+    /// Set the maximum outgoing UDP payload size in bytes.
+    /// It corresponds to the maximum datagram size that DPLPMTUD tries to discovery.
+    /// The default value is `1200` which means let DPLPMTUD choose a value.
     pub fn set_send_udp_payload_size(&mut self, v: usize) {
         self.recovery.max_datagram_size = cmp::max(v, DEFAULT_SEND_UDP_PAYLOAD_SIZE);
     }
@@ -438,51 +444,51 @@ impl Config {
     /// value for the maximum amount of data that can be sent on the connection.
     /// The default value is `10485760`.
     pub fn set_initial_max_data(&mut self, v: u64) {
-        self.local_transport_params.initial_max_data = v;
+        self.local_transport_params.initial_max_data = cmp::min(v, VINT_MAX);
     }
 
     /// Set the `initial_max_stream_data_bidi_local` transport parameter.
     /// The default value is `5242880`.
     pub fn set_initial_max_stream_data_bidi_local(&mut self, v: u64) {
         self.local_transport_params
-            .initial_max_stream_data_bidi_local = v;
+            .initial_max_stream_data_bidi_local = cmp::min(v, VINT_MAX);
     }
 
     /// Set the `initial_max_stream_data_bidi_remote` transport parameter.
     /// The default value is `2097152`.
     pub fn set_initial_max_stream_data_bidi_remote(&mut self, v: u64) {
         self.local_transport_params
-            .initial_max_stream_data_bidi_remote = v;
+            .initial_max_stream_data_bidi_remote = cmp::min(v, VINT_MAX);
     }
 
     /// Set the `initial_max_stream_data_uni` transport parameter.
     /// The default value is `1048576`.
     pub fn set_initial_max_stream_data_uni(&mut self, v: u64) {
-        self.local_transport_params.initial_max_stream_data_uni = v;
+        self.local_transport_params.initial_max_stream_data_uni = cmp::min(v, VINT_MAX);
     }
 
     /// Set the `initial_max_streams_bidi` transport parameter.
     /// The default value is `200`.
     pub fn set_initial_max_streams_bidi(&mut self, v: u64) {
-        self.local_transport_params.initial_max_streams_bidi = v;
+        self.local_transport_params.initial_max_streams_bidi = cmp::min(v, VINT_MAX);
     }
 
     /// Set the `initial_max_streams_uni` transport parameter.
     /// The default value is `100`.
     pub fn set_initial_max_streams_uni(&mut self, v: u64) {
-        self.local_transport_params.initial_max_streams_uni = v;
+        self.local_transport_params.initial_max_streams_uni = cmp::min(v, VINT_MAX);
     }
 
     /// Set the `ack_delay_exponent` transport parameter.
     /// The default value is `3`.
     pub fn set_ack_delay_exponent(&mut self, v: u64) {
-        self.local_transport_params.ack_delay_exponent = v;
+        self.local_transport_params.ack_delay_exponent = cmp::min(v, VINT_MAX);
     }
 
     /// Set the `max_ack_delay` transport parameter.
     /// The default value is `25`.
     pub fn set_max_ack_delay(&mut self, v: u64) {
-        self.local_transport_params.max_ack_delay = v;
+        self.local_transport_params.max_ack_delay = cmp::min(v, VINT_MAX);
     }
 
     /// Set congestion control algorithm that the connection would use.
@@ -532,7 +538,7 @@ impl Config {
     /// The default value is `2`. Lower values will be ignored.
     pub fn set_active_connection_id_limit(&mut self, v: u64) {
         if v >= 2 {
-            self.local_transport_params.active_conn_id_limit = v;
+            self.local_transport_params.active_conn_id_limit = cmp::min(v, VINT_MAX);
         }
     }
 
@@ -666,10 +672,13 @@ impl Config {
     }
 }
 
-/// Configurations about loss recovery and congestion control.
+/// Configurations about loss recovery, congestion control, and pmtu discovery.
 #[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct RecoveryConfig {
+    /// Enable Datagram Packetization Layer Path MTU Discovery.
+    pub enable_dplpmtud: bool,
+
     /// The maximum size of outgoing UDP payloads.
     pub max_datagram_size: usize,
 
@@ -698,14 +707,15 @@ pub struct RecoveryConfig {
     /// Linear factor for calculating the probe timeout.
     pub pto_linear_factor: u64,
 
-    // Upper limit of probe timeout.
+    /// Upper limit of probe timeout.
     pub max_pto: Duration,
 }
 
 impl Default for RecoveryConfig {
     fn default() -> RecoveryConfig {
         RecoveryConfig {
-            max_datagram_size: 1200,
+            enable_dplpmtud: true,
+            max_datagram_size: DEFAULT_SEND_UDP_PAYLOAD_SIZE, // The upper limit is determined by DPLPMTUD
             max_ack_delay: time::Duration::from_millis(0),
             congestion_control_algorithm: CongestionControlAlgorithm::Bbr,
             min_congestion_window: 2_u64,
@@ -895,6 +905,81 @@ pub enum PathEvent {
     Abandoned(usize),
 }
 
+/// Statistics about path
+#[repr(C)]
+#[derive(Default)]
+pub struct PathStats {
+    /// The number of QUIC packets received.
+    pub recv_count: u64,
+
+    /// The number of received bytes.
+    pub recv_bytes: u64,
+
+    /// The number of QUIC packets sent.
+    pub sent_count: u64,
+
+    /// The number of sent bytes.
+    pub sent_bytes: u64,
+
+    /// The number of QUIC packets lost.
+    pub lost_count: u64,
+
+    /// The number of lost bytes.
+    pub lost_bytes: u64,
+
+    /// Total number of bytes acked.
+    pub acked_bytes: u64,
+
+    /// Total number of packets acked.
+    pub acked_count: u64,
+
+    /// Initial congestion window in bytes.
+    pub init_cwnd: u64,
+
+    /// Final congestion window in bytes.
+    pub final_cwnd: u64,
+
+    /// Maximum congestion window in bytes.
+    pub max_cwnd: u64,
+
+    /// Minimum congestion window in bytes.
+    pub min_cwnd: u64,
+
+    /// Maximum inflight data in bytes.
+    pub max_inflight: u64,
+
+    /// Total loss events.
+    pub loss_event_count: u64,
+
+    /// Total congestion window limited events.
+    pub cwnd_limited_count: u64,
+
+    /// Total duration of congestion windowlimited events.
+    pub cwnd_limited_duration: Duration,
+
+    /// The time for last congestion window event
+    last_cwnd_limited_time: Option<Instant>,
+
+    /* Note: the following fields are lazily updated from Recovery */
+    /// Minimum roundtrip time.
+    pub min_rtt: Duration,
+
+    /// Maximum roundtrip time.
+    pub max_rtt: Duration,
+
+    /// Smoothed roundtrip time.
+    pub srtt: Duration,
+
+    /// Roundtrip time variation.
+    pub rttvar: Duration,
+
+    /// Whether the congestion controller is in slow start status.
+    pub in_slow_start: bool,
+
+    /// Pacing rate estimated by congestion control algorithm.
+    pub pacing_rate: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -960,6 +1045,18 @@ mod tests {
 
         config.set_max_pto(300000);
         assert_eq!(config.recovery.max_pto, Duration::from_millis(300000));
+
+        Ok(())
+    }
+
+    #[test]
+    fn initial_max_streams_bidi() -> Result<()> {
+        let mut config = Config::new()?;
+        config.set_initial_max_streams_bidi(u64::MAX);
+        assert_eq!(
+            config.local_transport_params.initial_max_streams_bidi,
+            VINT_MAX
+        );
 
         Ok(())
     }

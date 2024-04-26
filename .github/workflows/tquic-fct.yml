@@ -1,4 +1,4 @@
-name: Goodput
+name: FCT
 
 on:
   schedule:
@@ -14,9 +14,10 @@ jobs:
     runs-on: ubuntu-latest
 
     strategy:
+      fail-fast: false
       matrix:
-        impl: [tquic,gquiche,lsquic,picoquic,quiche]
-        case: [goodput100k,goodput1m,goodput10m]
+        impl: [tquic,gquiche,lsquic,picoquic]
+        case: [fct1rtt,fct0rtt]
         cc: [cubic, bbr]
 
     # The scheduled workflow only runs for the main repository.
@@ -32,7 +33,7 @@ jobs:
 
     - name: Install quic-interop-runner
       run: |
-        git clone https://github.com/tquic-group/quic-interop-runner.git
+        git clone https://github.com/iyangsj/quic-interop-runner.git
         cd quic-interop-runner
         pip3 install -r requirements.txt
 
@@ -54,11 +55,12 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.case }}-${{ matrix.cc }}-${{ matrix.impl }}
-        path: quic-interop-runner/goodput*.json 
+        path: quic-interop-runner/fct*.json 
     
   result:
     runs-on: ubuntu-latest
     needs: measure
+    if: ${{ (( github.event_name == 'schedule' && github.repository == 'tencent/tquic' ) || github.event_name == 'workflow_dispatch') && !cancelled() }}
     steps:
     - name: Download all workflow run artifacts
       uses: actions/download-artifact@v4
@@ -79,10 +81,10 @@ jobs:
         sudo apt install python3-matplotlib
 
     - name: Plot all measurement results
-      run: python3 tools/.github/workflows/plot-goodput.py .
+      run: python3 tools/.github/workflows/plot-fct.py .
 
     - name: Store all measurement results
       uses: actions/upload-artifact@v4
       with:
-        name: goodput-all-result
-        path: goodput*
+        name: fct-all-result
+        path: fct*

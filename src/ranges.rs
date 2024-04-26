@@ -124,6 +124,11 @@ impl RangeSet {
         }
     }
 
+    /// Remove `elem` from the set, i.e. remove range [elem, elem + 1) from the set.
+    pub fn remove_elem(&mut self, elem: u64) {
+        self.remove(elem..elem + 1);
+    }
+
     /// Remove all ranges that are smaller or equal to `elem` from the set.
     pub fn remove_until(&mut self, elem: u64) {
         let ranges: Vec<Range<u64>> = self
@@ -225,6 +230,21 @@ impl RangeSet {
             .range((Included(elem), Unbounded))
             .map(|(&s, &e)| (s..e))
             .next()
+    }
+
+    /// Check if the element exists or not
+    pub fn contains(&self, elem: u64) -> bool {
+        if let Some(prev) = self.prev_to(elem) {
+            if prev.contains(&elem) {
+                return true;
+            }
+        }
+        if let Some(next) = self.next_to(elem) {
+            if next.contains(&elem) {
+                return true;
+            }
+        }
+        false
     }
 
     /// Peek at the smallest range in the set.
@@ -934,6 +954,30 @@ mod tests {
 
         for i in [23, 27, 28] {
             assert_eq!(r.next_to(i), None);
+        }
+    }
+
+    #[test]
+    fn contains() {
+        let mut r = RangeSet::default();
+        // Insert ranges: [2..6), [8, 13)
+        r.insert(2..6);
+        r.insert(8..13);
+
+        for i in [0, 1] {
+            assert_eq!(r.contains(i), false);
+        }
+        for i in 2..6 {
+            assert_eq!(r.contains(i), true);
+        }
+        for i in [6, 7] {
+            assert_eq!(r.contains(i), false);
+        }
+        for i in 8..13 {
+            assert_eq!(r.contains(i), true);
+        }
+        for i in 13..20 {
+            assert_eq!(r.contains(i), false);
         }
     }
 

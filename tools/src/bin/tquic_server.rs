@@ -736,7 +736,18 @@ impl TransportHandler for ServerHandler {
     }
 
     fn on_conn_closed(&mut self, conn: &mut Connection) {
-        log::debug!("connection[{:?}] is closed", conn.trace_id());
+        let stats = conn.stats();
+        log::debug!(
+            "{} connection is closed. recv pkts: {}, sent pkts: {}, \
+            lost pkts: {}, recv bytes: {}, sent bytes: {}, lost bytes: {}",
+            conn.trace_id(),
+            stats.recv_count,
+            stats.sent_count,
+            stats.lost_count,
+            stats.recv_bytes,
+            stats.sent_bytes,
+            stats.lost_bytes
+        );
 
         let index = conn.index().unwrap();
         self.conns.remove(&index);
@@ -803,6 +814,11 @@ fn main() -> Result<()> {
     let mut server = Server::new(&option)?;
 
     // Run event loop.
+    debug!(
+        "{} listen on {:?}",
+        server.endpoint.trace_id(),
+        option.listen
+    );
     let mut events = mio::Events::with_capacity(1024);
     loop {
         if let Err(e) = server.endpoint.process_connections() {
@@ -813,8 +829,11 @@ fn main() -> Result<()> {
             .endpoint
             .timeout()
             .map(|v| cmp::max(v, TIMER_GRANULARITY));
-        debug!("{} timeout: {:?}", server.endpoint.trace_id(), timeout);
-
+        debug!(
+            "{} wait for io events, timeout: {:?}",
+            server.endpoint.trace_id(),
+            timeout
+        );
         server.poll.poll(&mut events, timeout)?;
 
         // Process timeout events
