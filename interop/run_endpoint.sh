@@ -23,12 +23,12 @@ set -x
 case "$TESTCASE" in
 handshake|http3|multiconnect|resumption|retry|transfer|zerortt)
     ;;
-chacha20)
+chacha20|keyupdate)
     if [ "$ROLE" == "client" ]; then
         exit 127
     fi
     ;;
-keyupdate|ecn|v2)
+ecn|v2)
     exit 127
     ;;
 *)

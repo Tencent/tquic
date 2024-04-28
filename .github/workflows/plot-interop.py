@@ -18,8 +18,8 @@ SERVER_IMPLS = ["lsquic", "quiche", "picoquic", "ngtcp2", "msquic", "s2n-quic",
                 "go-x-net", "quic-go", "mvfst"]
 
 # Interop test cases
-INTEROP_TESTS = ["handshake", "retry", "resumption", "zerortt", "amplificationlimit",
-                 "http3", "ipv6", "transfer", "multiplexing", "longrtt", "blackhole", 
+INTEROP_TESTS = ["handshake", "retry", "resumption", "zerortt", "amplificationlimit", "http3",
+                 "ipv6", "chacha20", "keyupdate", "transfer", "multiplexing", "longrtt", "blackhole",
                  "handshakeloss", "handshakecorruption", "transferloss","transfercorruption"]
 
 
@@ -84,7 +84,7 @@ def plot(data_dir, is_tquic_server):
              rotation_mode="anchor")
     for i in range(len(INTEROP_TESTS)):
         for j in range(len(impls)):
-            text = ax.text(j, i, convert_text(interop_result[i, j]),
+            text = ax.text(i, j, convert_text(interop_result[j, i]),
                            ha="center", va="center", color="w")
     ax.set_title("TQUIC %s interop results" % (name))
     fig.tight_layout()
