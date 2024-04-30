@@ -1,0 +1,26 @@
+name: Integration
+
+on:
+  push:
+    branches: [ "develop" ]
+  pull_request:
+    branches: [ "develop" ]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  extra:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: 'recursive'
+    - name: Build
+      run: cargo build --release --all
+    - name: Run integration tests for multipath
+      run: |
+        cd tools/tests/
+        bash ./tquic_tools_test.sh -b ../../target/release/ -t multipath_redundant,multipath_minrtt,multipath_roundrobin -f 1000M -p 5
+
