@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include "openssl/ssl.h"
 
 /**
  * The current QUIC wire version.
