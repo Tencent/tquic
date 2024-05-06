@@ -1079,7 +1079,7 @@ impl Connection {
             return Err(Error::Done);
         }
 
-        self.token = pkt_hdr.token.clone();
+        self.token.clone_from(&pkt_hdr.token);
         self.flags.insert(DidRetry);
         self.flags.remove(GotPeerCid);
 
@@ -4045,13 +4045,7 @@ impl CryptoStreams {
     /// stream data. QUIC relies on the implementation to avoid excessive
     /// buffering of data
     fn new_stream() -> Stream {
-        Stream::new(
-            true,
-            true,
-            std::u64::MAX,
-            std::u64::MAX,
-            stream::MAX_STREAM_WINDOW,
-        )
+        Stream::new(true, true, u64::MAX, u64::MAX, stream::MAX_STREAM_WINDOW)
     }
 }
 

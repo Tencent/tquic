@@ -784,7 +784,7 @@ impl Worker {
 
         let mut worker_ctx = self.worker_ctx.borrow_mut();
         let mut client_ctx = self.client_ctx.lock().unwrap();
-        client_ctx.session = worker_ctx.session.clone();
+        client_ctx.session.clone_from(&worker_ctx.session);
         client_ctx.request_sent += worker_ctx.request_sent;
         client_ctx.request_done += worker_ctx.request_done;
         client_ctx.request_success += worker_ctx.request_success;
