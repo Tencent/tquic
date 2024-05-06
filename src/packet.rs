@@ -472,6 +472,7 @@ fn encrypt_header(
 /// The `paylaod_offset` is the offset of packet payload in `pkt_buf`.
 /// The `payload_len` is the length of pacekt payload (other than the value of Length field).
 /// The `pkt_num` is the decrypted and decoded packet number.
+#[allow(unexpected_cfgs)]
 pub(crate) fn decrypt_payload(
     pkt_buf: &mut [u8],
     payload_offset: usize,

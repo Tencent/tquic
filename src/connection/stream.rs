@@ -1619,7 +1619,7 @@ impl StreamMap {
     /// RESET_STREAM frame was lost, if the stream is still open, add the stream
     /// to the reset set to ensure a RESET_STREAM frame will be retransmitted.
     pub fn on_reset_stream_frame_lost(&mut self, stream_id: u64, error_code: u64, final_size: u64) {
-        if self.streams.get(&stream_id).is_some() {
+        if self.streams.contains_key(&stream_id) {
             self.mark_reset(stream_id, true, error_code, final_size);
         }
     }
@@ -1641,7 +1641,7 @@ impl StreamMap {
     /// MAX_STREAM_DATA frame was lost, add the stream to the almost full set
     /// to ensure a MAX_STREAM_DATA frame will be sent.
     pub fn on_max_stream_data_frame_lost(&mut self, stream_id: u64) {
-        if self.streams.get(&stream_id).is_some() {
+        if self.streams.contains_key(&stream_id) {
             self.mark_almost_full(stream_id, true);
         }
     }
