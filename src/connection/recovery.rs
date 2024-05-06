@@ -212,7 +212,7 @@ impl Recovery {
 
         // Update the largest packet number acknowledged in the space
         let largest_acked_pkt = ranges.max().unwrap();
-        if space.largest_acked_pkt == std::u64::MAX {
+        if space.largest_acked_pkt == u64::MAX {
             space.largest_acked_pkt = largest_acked_pkt;
         } else {
             space.largest_acked_pkt = cmp::max(space.largest_acked_pkt, largest_acked_pkt);
