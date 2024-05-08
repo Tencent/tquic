@@ -10,6 +10,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+
+## [v0.11.0] - 2024-05-08
+
+### Added
+- tquic_tools: group different options by category and prioritize commonly used options
+- Add the header file of BoringSSL library in tquic.h
+- Resolve new issues found by cargo clippy
+- Add integration testing for multipath
+- Update run_endpoint.sh to enable keyupdate/chacha20 testcase for server
+
+### Changed
+- tquic_tools: rename `max_requests_per_thread` to `total_requests_per_thread`
+
+### Fixed
+- Fix RangeSet::filter() used by Redundant multipath scheduler
+- Fix injected stream frames for Redundant multipath scheduler
+
+
 ## [v0.10.0] - 2024-04-26
 
 ### Added
@@ -199,6 +217,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Provide example clients and servers.
 
 
+[v0.11.0]: https://github.com/tencent/tquic/compare/v0.10.0...v0.11.0
 [v0.10.0]: https://github.com/tencent/tquic/compare/v0.9.0...v0.10.0
 [v0.9.0]: https://github.com/tencent/tquic/compare/v0.8.1...v0.9.0
 [v0.8.1]: https://github.com/tencent/tquic/compare/v0.8.0...v0.8.1
