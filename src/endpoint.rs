@@ -621,7 +621,7 @@ impl Endpoint {
 
     /// Check whether the given connection exists.
     pub(crate) fn conn_exist(&self, cid: ConnectionId) -> bool {
-        self.routes.cid_table.get(&cid).is_some()
+        self.routes.cid_table.contains_key(&cid)
     }
 
     /// Get the connection by index

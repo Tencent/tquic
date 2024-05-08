@@ -23,6 +23,21 @@ set -e
 BIN_DIR="./"
 TEST_DIR="./test-`date +%Y%m%d%H%M%S`"
 TEST_CASES="multipath_minrtt,multipath_roundrobin,multipath_redundant"
+TEST_PID="$$"
+TEST_FILE="10M"
+PATH_NUM=4
+LOG_LEVEL="debug"
+EXIT_CODE=0
+
+cleanup() {
+    set +e
+    pkill -P $TEST_PID
+    echo "exit with" $EXIT_CODE
+    exit $EXIT_CODE
+}
+
+# Ensure that all child processes have exited.
+trap 'cleanup' EXIT
 
 show_help() {
     echo "Usage: $0 [options]"
@@ -30,10 +45,13 @@ show_help() {
     echo "  -w, Set the workring directory for testing."
     echo "  -l, List all supported test cases."
     echo "  -t, Run the specified test cases."
+    echo "  -f, File size for test cases, eg. 10M"
+    echo "  -p, Path number for test cases, eg. 4"
+    echo "  -g, Log level, eg. debug"
     echo "  -h, Display this help and exit."
 }
 
-while getopts ":b:w:t:lh" opt; do
+while getopts ":b:w:t:f:p:g:lh" opt; do
     case $opt in
         b)
             BIN_DIR="$OPTARG"
@@ -43,6 +61,15 @@ while getopts ":b:w:t:lh" opt; do
             ;;
         t)
             TEST_CASES="$OPTARG"
+            ;;
+        f)
+            TEST_FILE="$OPTARG"
+            ;;
+        p)
+            PATH_NUM="$OPTARG"
+            ;;
+        g)
+            LOG_LEVEL="$OPTARG"
             ;;
         l)
             echo $TEST_CASES
@@ -64,6 +91,14 @@ while getopts ":b:w:t:lh" opt; do
     esac
 done
 
+if [[ ! -f "$BIN_DIR/tquic_client" || ! -f "$BIN_DIR/tquic_server" ]]; then
+    echo "Not found tquic_client/tquic_server. Please specify the directory for them by '-b' option."
+    show_help
+    exit
+fi
+
+CID_LIMIT=$(( $PATH_NUM * 2 ))
+
 generate_cert() {
     local cert_dir="$1/cert"
     mkdir -p $cert_dir
@@ -75,8 +110,7 @@ generate_cert() {
 generate_files() {
     local data_dir="$1/data"
     mkdir -p $data_dir
-    dd if=/dev/urandom of=$data_dir/1m bs=1M count=1
-    dd if=/dev/urandom of=$data_dir/10m bs=1M count=10
+    dd if=/dev/urandom of=$data_dir/$TEST_FILE bs=$TEST_FILE count=1
 }
 
 test_multipath() {
@@ -94,30 +128,38 @@ test_multipath() {
     generate_files $test_dir
 
     # start tquic server
-    $BIN_DIR/tquic_server -l 127.0.8.8:8443 --enable-multipath --multipath-algor $algor \
-        --cert $cert_dir/cert.crt --key $cert_dir/cert.key \
-        --root $data_dir --active-cid-limit 8 &
+    RUST_BACKTRACE=1 $BIN_DIR/tquic_server -l 127.0.8.8:8443 --enable-multipath --multipath-algor $algor \
+        --cert $cert_dir/cert.crt --key $cert_dir/cert.key --root $data_dir \
+        --active-cid-limit $CID_LIMIT --log-file $test_dir/server.log --log-level $LOG_LEVEL &
     server_pid=$!
-    trap "kill $server_pid" RETURN
 
     # start tquic client
     mkdir -p $dump_dir
-    $BIN_DIR/tquic_client -c 127.0.8.8:8443 --enable-multipath --multipath-algor $algor \
-        --local-addresses 127.0.0.1,127.0.0.2,127.0.0.3,127.0.0.4 --active-cid-limit 8 \
-        --qlog-dir $qlog_dir --log-file $test_dir/client.log --log-level trace \
+    local_addresses=`seq -s, -f "127.0.0.%g" 1 $PATH_NUM`
+    RUST_BACKTRACE=1 $BIN_DIR/tquic_client -c 127.0.8.8:8443 --enable-multipath --multipath-algor $algor \
+        --local-addresses $local_addresses --active-cid-limit $CID_LIMIT \
+        --qlog-dir $qlog_dir --log-file $test_dir/client.log --log-level $LOG_LEVEL \
         --dump-dir $dump_dir \
-        https://example.org/10m
+        https://example.org/$TEST_FILE
 
     # check files
-    if ! cmp -s $dump_dir/10m $data_dir/10m; then
-        echo "Files not same $dump_dir/1m:$data_dir/1m"
-        exit 1
+    if ! cmp -s $dump_dir/$TEST_FILE $data_dir/$TEST_FILE; then
+        echo "Files not same $dump_dir/$TEST_FILE:$data_dir/$TEST_FILE"
+        EXIT_CODE=100
+        exit $EXIT_CODE
     fi
 
-    # check logs
-    grep "recv packet OneRTT" $test_dir/client.log | grep "local=.*" -o | sort | uniq -c
+    # check packets received
+    pnum=`grep "recv packet OneRTT" $test_dir/client.log | grep "local=.*" -o | sort | uniq -c | tee /dev/stderr | wc -l`
+    if [ $pnum != $PATH_NUM ]; then
+        echo "Not all path ($pnum/$PATH_NUM) received packets"
+        EXIT_CODE=101
+        exit $EXIT_CODE
+    fi
 
-    echo "Test $algor OK"
+    # clean up
+    kill $server_pid
+    echo -e "Test $algor OK\n"
 }
 
 echo "$TEST_CASES" | sed 's/,/\n/g' | while read -r TEST_CASE; do

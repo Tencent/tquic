@@ -77,58 +77,75 @@ static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 #[derive(Parser, Debug, Clone)]
 #[clap(name = "client")]
 pub struct ClientOpt {
-    /// Request URLs. The host of the first one is used as SNI in Client Hello.
+    /// Server's address.
+    #[clap(short, long, value_name = "ADDR")]
+    pub connect_to: Option<SocketAddr>,
+
+    /// Optional local IP addresses for client. e.g 192.168.1.10,192.168.2.20
+    #[clap(long, value_delimiter = ',', value_name = "ADDR")]
+    pub local_addresses: Vec<IpAddr>,
+
+    /// Request URLs. The host of the first url is used as TLS SNI.
     #[clap(value_delimiter = ' ')]
     pub urls: Vec<Url>,
 
     /// Number of threads.
-    #[clap(short, long, default_value = "1", value_name = "NUM")]
+    #[clap(
+        short,
+        long,
+        default_value = "1",
+        value_name = "NUM",
+        help_heading = "Concurrency"
+    )]
     pub threads: u32,
 
     /// Number of concurrent connections per thread.
-    #[clap(long, default_value = "1", value_name = "NUM")]
+    #[clap(
+        long,
+        default_value = "1",
+        value_name = "NUM",
+        help_heading = "Concurrency"
+    )]
     pub max_concurrent_conns: u32,
 
-    /// Number of requests per thread. "0" means infinity mode.
-    #[clap(long, default_value = "1", value_name = "NUM")]
-    pub max_requests_per_thread: u64,
-
-    /// Number of max requests per connection. "0" means infinity mode.
-    #[clap(long, default_value = "1", value_name = "NUM")]
-    pub max_requests_per_conn: u64,
-
-    /// Number of max concurrent requests per connection.
-    #[clap(long, default_value = "1", value_name = "NUM")]
+    /// Number of concurrent requests per connection.
+    #[clap(
+        long,
+        default_value = "1",
+        value_name = "NUM",
+        help_heading = "Concurrency"
+    )]
     pub max_concurrent_requests: u64,
 
+    /// Number of max requests per connection before re-establishment. "0" means infinity mode.
+    #[clap(
+        long,
+        default_value = "1",
+        value_name = "NUM",
+        help_heading = "Concurrency"
+    )]
+    pub max_requests_per_conn: u64,
+
+    /// Total number of requests to send per thread. "0" means infinity mode.
+    /// Values below number of urls will be considered as number of urls.
+    #[clap(
+        long,
+        default_value = "1",
+        value_name = "NUM",
+        help_heading = "Concurrency"
+    )]
+    pub total_requests_per_thread: u64,
+
     /// Benchmarking duration in seconds. "0" means infinity mode.
-    /// Client will exit if either the max_requests or duration is reached.
-    #[clap(short, long, default_value = "0", value_name = "TIME")]
+    /// Client will exit upon reaching the total_requests_per_thread or duration limit.
+    #[clap(
+        short,
+        long,
+        default_value = "0",
+        value_name = "TIME",
+        help_heading = "Concurrency"
+    )]
     pub duration: u64,
-
-    /// Client will exit if consecutive failure reaches the threshold at the beginning.
-    #[clap(long, default_value = "10", value_name = "NUM")]
-    pub connection_failure_threshold: u64,
-
-    /// Number of max samples per thread used for request time statistics.
-    #[clap(long, default_value = "100000", value_name = "NUM")]
-    pub max_sample: usize,
-
-    /// Print response header and body to stdout.
-    #[clap(short, long)]
-    pub print_res: bool,
-
-    /// Log level, support OFF/ERROR/WARN/INFO/DEBUG/TRACE.
-    #[clap(long, default_value = "INFO", value_name = "STR")]
-    pub log_level: log::LevelFilter,
-
-    /// Log file path. If no file is specified, logs will be written to `stderr`.
-    #[clap(long, value_name = "FILE")]
-    pub log_file: Option<String>,
-
-    /// Override server's address.
-    #[clap(short, long, value_name = "ADDR")]
-    pub connect_to: Option<SocketAddr>,
 
     /// ALPN, separated by ",".
     #[clap(
@@ -136,98 +153,180 @@ pub struct ClientOpt {
         long,
         value_delimiter = ',',
         default_value = "h3,http/0.9,hq-interop",
-        value_name = "STR"
+        value_name = "STR",
+        help_heading = "Protocol"
     )]
     pub alpn: Vec<ApplicationProto>,
 
-    /// Dump response body into the given directory.
-    /// If the specified directory does not exist, a new directory will be created.
-    #[clap(long, value_name = "DIR")]
-    pub dump_dir: Option<String>,
-
     /// File used for session resumption.
-    #[clap(short, long, value_name = "FILE")]
+    #[clap(short, long, value_name = "FILE", help_heading = "Protocol")]
     pub session_file: Option<String>,
 
     /// Enable early data.
-    #[clap(short, long)]
+    #[clap(short, long, help_heading = "Protocol")]
     pub enable_early_data: bool,
 
     /// Disable stateless reset.
-    #[clap(long)]
+    #[clap(long, help_heading = "Protocol")]
     pub disable_stateless_reset: bool,
 
     /// Congestion control algorithm.
-    #[clap(long, default_value = "BBR")]
+    #[clap(long, default_value = "BBR", help_heading = "Protocol")]
     pub congestion_control_algor: CongestionControlAlgorithm,
 
     /// Initial congestion window in packets.
-    #[clap(long, default_value = "32", value_name = "NUM")]
+    #[clap(
+        long,
+        default_value = "32",
+        value_name = "NUM",
+        help_heading = "Protocol"
+    )]
     pub initial_congestion_window: u64,
 
     /// Minimum congestion window in packets.
-    #[clap(long, default_value = "4", value_name = "NUM")]
+    #[clap(
+        long,
+        default_value = "4",
+        value_name = "NUM",
+        help_heading = "Protocol"
+    )]
     pub min_congestion_window: u64,
 
     /// Enable multipath transport.
-    #[clap(long)]
+    #[clap(long, help_heading = "Protocol")]
     pub enable_multipath: bool,
 
     /// Multipath scheduling algorithm.
-    #[clap(long, default_value = "MINRTT")]
+    #[clap(long, default_value = "MINRTT", help_heading = "Protocol")]
     pub multipath_algor: MultipathAlgorithm,
 
-    /// Optional local IP addresses for client. e.g 192.168.1.10,192.168.2.20
-    #[clap(long, value_delimiter = ',', value_name = "ADDR")]
-    pub local_addresses: Vec<IpAddr>,
-
     /// Set active_connection_id_limit transport parameter. Values lower than 2 will be ignored.
-    #[clap(long, default_value = "2", value_name = "NUM")]
+    #[clap(
+        long,
+        default_value = "2",
+        value_name = "NUM",
+        help_heading = "Protocol"
+    )]
     pub active_cid_limit: u64,
 
     /// Set max_udp_payload_size transport parameter.
-    #[clap(long, default_value = "65527", value_name = "NUM")]
+    #[clap(
+        long,
+        default_value = "65527",
+        value_name = "NUM",
+        help_heading = "Protocol"
+    )]
     pub recv_udp_payload_size: u16,
 
     /// Set the maximum outgoing UDP payload size.
-    #[clap(long, default_value = "1200", value_name = "NUM")]
+    #[clap(
+        long,
+        default_value = "1200",
+        value_name = "NUM",
+        help_heading = "Protocol"
+    )]
     pub send_udp_payload_size: usize,
 
     /// Handshake timeout in microseconds.
-    #[clap(long, default_value = "10000", value_name = "TIME")]
+    #[clap(
+        long,
+        default_value = "10000",
+        value_name = "TIME",
+        help_heading = "Protocol"
+    )]
     pub handshake_timeout: u64,
 
     /// Connection idle timeout in microseconds.
-    #[clap(long, default_value = "30000", value_name = "TIME")]
+    #[clap(
+        long,
+        default_value = "30000",
+        value_name = "TIME",
+        help_heading = "Protocol"
+    )]
     pub idle_timeout: u64,
 
     /// Initial RTT in milliseconds.
-    #[clap(long, default_value = "333", value_name = "TIME")]
+    #[clap(
+        long,
+        default_value = "333",
+        value_name = "TIME",
+        help_heading = "Protocol"
+    )]
     pub initial_rtt: u64,
 
     /// Linear factor for calculating the probe timeout.
-    #[clap(long, default_value = "10", value_name = "NUM")]
+    #[clap(
+        long,
+        default_value = "10",
+        value_name = "NUM",
+        help_heading = "Protocol"
+    )]
     pub pto_linear_factor: u64,
 
     /// Upper limit of probe timeout in microseconds.
-    #[clap(long, default_value = "10000", value_name = "TIME")]
+    #[clap(
+        long,
+        default_value = "10000",
+        value_name = "TIME",
+        help_heading = "Protocol"
+    )]
     pub max_pto: u64,
 
+    /// Length of connection id in bytes.
+    #[clap(
+        long,
+        default_value = "8",
+        value_name = "NUM",
+        help_heading = "Protocol"
+    )]
+    pub cid_len: usize,
+
+    /// Print response header and body to stdout.
+    #[clap(short, long, help_heading = "Output")]
+    pub print_res: bool,
+
+    /// Dump response body into the given directory.
+    /// If the specified directory does not exist, a new directory will be created.
+    #[clap(long, value_name = "DIR", help_heading = "Output")]
+    pub dump_dir: Option<String>,
+
+    /// Log level, support OFF/ERROR/WARN/INFO/DEBUG/TRACE.
+    #[clap(
+        long,
+        default_value = "INFO",
+        value_name = "STR",
+        help_heading = "Output"
+    )]
+    pub log_level: log::LevelFilter,
+
+    /// Log file path. If no file is specified, logs will be written to `stderr`.
+    #[clap(long, value_name = "FILE", help_heading = "Output")]
+    pub log_file: Option<String>,
+
     /// Save TLS key log into the given file.
-    #[clap(short, long, value_name = "FILE")]
+    #[clap(short, long, value_name = "FILE", help_heading = "Output")]
     pub keylog_file: Option<String>,
 
     /// Save qlog file (<trace_id>.qlog) into the given directory.
-    #[clap(long, value_name = "DIR")]
+    #[clap(long, value_name = "DIR", help_heading = "Output")]
     pub qlog_dir: Option<String>,
 
-    /// Length of connection id in bytes.
-    #[clap(long, default_value = "8", value_name = "NUM")]
-    pub cid_len: usize,
+    /// Client will exit if consecutive failure reaches the threshold at the beginning.
+    #[clap(long, default_value = "10", value_name = "NUM", help_heading = "Misc")]
+    pub connection_failure_threshold: u64,
 
     /// Batch size for sending packets.
-    #[clap(long, default_value = "1", value_name = "NUM")]
+    #[clap(long, default_value = "1", value_name = "NUM", help_heading = "Misc")]
     pub send_batch_size: usize,
+
+    /// Number of max samples per thread used for request time statistics.
+    #[clap(
+        long,
+        default_value = "100000",
+        value_name = "NUM",
+        help_heading = "Misc"
+    )]
+    pub max_sample: usize,
 }
 
 const MAX_BUF_SIZE: usize = 65536;
@@ -559,8 +658,8 @@ impl Worker {
 
         if (self.option.duration > 0
             && (Instant::now() - self.start_time).as_secs() > self.option.duration)
-            || (self.option.max_requests_per_thread > 0
-                && worker_ctx.request_done >= self.option.max_requests_per_thread)
+            || (self.option.total_requests_per_thread > 0
+                && worker_ctx.request_done >= self.option.total_requests_per_thread)
         {
             debug!(
                 "worker should exit, concurrent conns {}, request sent {}, request done {}",
@@ -685,7 +784,7 @@ impl Worker {
 
         let mut worker_ctx = self.worker_ctx.borrow_mut();
         let mut client_ctx = self.client_ctx.lock().unwrap();
-        client_ctx.session = worker_ctx.session.clone();
+        client_ctx.session.clone_from(&worker_ctx.session);
         client_ctx.request_sent += worker_ctx.request_sent;
         client_ctx.request_done += worker_ctx.request_done;
         client_ctx.request_success += worker_ctx.request_success;
@@ -1427,9 +1526,9 @@ fn parse_option() -> std::result::Result<ClientOpt, clap::error::Error> {
         option.max_requests_per_conn = max(option.max_requests_per_conn, option.urls.len() as u64);
     }
 
-    if option.max_requests_per_thread != 0 {
-        option.max_requests_per_thread =
-            max(option.max_requests_per_thread, option.urls.len() as u64);
+    if option.total_requests_per_thread != 0 {
+        option.total_requests_per_thread =
+            max(option.total_requests_per_thread, option.urls.len() as u64);
     }
 
     Ok(option)

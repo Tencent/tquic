@@ -54,6 +54,10 @@ static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 #[derive(Parser, Debug)]
 #[clap(name = "server")]
 pub struct ServerOpt {
+    /// Address to listen.
+    #[clap(short, long, default_value = "0.0.0.0:4433", value_name = "ADDR")]
+    pub listen: SocketAddr,
+
     /// TLS certificate in PEM format.
     #[clap(
         short,
@@ -67,108 +71,170 @@ pub struct ServerOpt {
     #[clap(short, long = "key", default_value = "./cert.key", value_name = "FILE")]
     pub key_file: String,
 
-    /// Log level, support OFF/ERROR/WARN/INFO/DEBUG/TRACE.
-    #[clap(long, default_value = "INFO")]
-    pub log_level: log::LevelFilter,
-
-    /// Log file path. If no file is specified, logs will be written to `stderr`.
-    #[clap(long, value_name = "FILE")]
-    pub log_file: Option<String>,
-
-    /// Address to listen.
-    #[clap(short, long, default_value = "0.0.0.0:4433", value_name = "ADDR")]
-    pub listen: SocketAddr,
-
     /// Document root directory.
-    #[clap(long, default_value = "./", value_name = "DIR")]
+    #[clap(short, long, default_value = "./", value_name = "DIR")]
     pub root: String,
 
     /// Session ticket key.
-    #[clap(long, default_value = "tquic key", value_name = "STR")]
+    #[clap(
+        short,
+        long,
+        default_value = "tquic key",
+        value_name = "STR",
+        help_heading = "Protocol"
+    )]
     pub ticket_key: String,
 
     /// Key for generating address token.
-    #[clap(long, value_name = "STR")]
+    #[clap(long, value_name = "STR", help_heading = "Protocol")]
     pub address_token_key: Option<String>,
 
     /// Enable stateless retry.
-    #[clap(long)]
+    #[clap(long, help_heading = "Protocol")]
     pub enable_retry: bool,
 
     /// Disable stateless reset.
-    #[clap(long)]
+    #[clap(long, help_heading = "Protocol")]
     pub disable_stateless_reset: bool,
 
     /// Congestion control algorithm.
-    #[clap(long, default_value = "BBR")]
+    #[clap(long, default_value = "BBR", help_heading = "Protocol")]
     pub congestion_control_algor: CongestionControlAlgorithm,
 
     /// Initial congestion window in packets.
-    #[clap(long, default_value = "32", value_name = "NUM")]
+    #[clap(
+        long,
+        default_value = "32",
+        value_name = "NUM",
+        help_heading = "Protocol"
+    )]
     pub initial_congestion_window: u64,
 
     /// Minimum congestion window in packets.
-    #[clap(long, default_value = "4", value_name = "NUM")]
+    #[clap(
+        long,
+        default_value = "4",
+        value_name = "NUM",
+        help_heading = "Protocol"
+    )]
     pub min_congestion_window: u64,
 
     /// Enable multipath transport.
-    #[clap(long)]
+    #[clap(short, long, help_heading = "Protocol")]
     pub enable_multipath: bool,
 
     /// Multipath scheduling algorithm
-    #[clap(long, default_value = "MINRTT")]
+    #[clap(short, long, default_value = "MINRTT", help_heading = "Protocol")]
     pub multipath_algor: MultipathAlgorithm,
 
     /// Set active_connection_id_limit transport parameter. Values lower than 2 will be ignored.
-    #[clap(long, default_value = "2", value_name = "NUM")]
+    #[clap(
+        long,
+        default_value = "2",
+        value_name = "NUM",
+        help_heading = "Protocol"
+    )]
     pub active_cid_limit: u64,
 
     /// Set max_udp_payload_size transport parameter.
-    #[clap(long, default_value = "65527", value_name = "NUM")]
+    #[clap(
+        long,
+        default_value = "65527",
+        value_name = "NUM",
+        help_heading = "Protocol"
+    )]
     pub recv_udp_payload_size: u16,
 
     /// Set the maximum outgoing UDP payload size.
-    #[clap(long, default_value = "1200", value_name = "NUM")]
+    #[clap(
+        long,
+        default_value = "1200",
+        value_name = "NUM",
+        help_heading = "Protocol"
+    )]
     pub send_udp_payload_size: usize,
 
     /// Handshake timeout in microseconds.
-    #[clap(long, default_value = "10000", value_name = "TIME")]
+    #[clap(
+        long,
+        default_value = "10000",
+        value_name = "TIME",
+        help_heading = "Protocol"
+    )]
     pub handshake_timeout: u64,
 
     /// Connection idle timeout in microseconds.
-    #[clap(long, default_value = "30000", value_name = "TIME")]
+    #[clap(
+        long,
+        default_value = "30000",
+        value_name = "TIME",
+        help_heading = "Protocol"
+    )]
     pub idle_timeout: u64,
 
     /// Initial RTT in milliseconds.
-    #[clap(long, default_value = "333", value_name = "TIME")]
+    #[clap(
+        long,
+        default_value = "333",
+        value_name = "TIME",
+        help_heading = "Protocol"
+    )]
     pub initial_rtt: u64,
 
     /// Linear factor for calculating the probe timeout.
-    #[clap(long, default_value = "10", value_name = "NUM")]
+    #[clap(
+        long,
+        default_value = "10",
+        value_name = "NUM",
+        help_heading = "Protocol"
+    )]
     pub pto_linear_factor: u64,
 
     /// Upper limit of probe timeout in microseconds.
-    #[clap(long, default_value = "10000", value_name = "TIME")]
+    #[clap(
+        long,
+        default_value = "10000",
+        value_name = "TIME",
+        help_heading = "Protocol"
+    )]
     pub max_pto: u64,
 
+    /// Anti amplification factor.
+    #[clap(
+        long,
+        default_value = "3",
+        value_name = "NUM",
+        help_heading = "Protocol"
+    )]
+    pub anti_amplification_factor: usize,
+
+    /// Length of connection id in bytes.
+    #[clap(
+        long,
+        default_value = "8",
+        value_name = "NUM",
+        help_heading = "Protocol"
+    )]
+    pub cid_len: usize,
+
+    /// Log level, support OFF/ERROR/WARN/INFO/DEBUG/TRACE.
+    #[clap(long, default_value = "INFO", help_heading = "Output")]
+    pub log_level: log::LevelFilter,
+
+    /// Log file path. If no file is specified, logs will be written to `stderr`.
+    #[clap(long, value_name = "FILE", help_heading = "Output")]
+    pub log_file: Option<String>,
+
     /// Save TLS key log into the given file.
-    #[clap(long, value_name = "FILE")]
+    #[clap(long, value_name = "FILE", help_heading = "Output")]
     pub keylog_file: Option<String>,
 
     /// Save qlog file (<trace_id>.qlog) into the given directory.
-    #[clap(long, value_name = "DIR")]
+    #[clap(long, value_name = "DIR", help_heading = "Output")]
     pub qlog_dir: Option<String>,
 
-    /// Length of connection id in bytes.
-    #[clap(long, default_value = "8", value_name = "NUM")]
-    pub cid_len: usize,
-
-    /// Anti amplification factor.
-    #[clap(long, default_value = "3", value_name = "NUM")]
-    pub anti_amplification_factor: usize,
-
     /// Batch size for sending packets.
-    #[clap(long, default_value = "16", value_name = "NUM")]
+    #[clap(long, default_value = "16", value_name = "NUM", help_heading = "Misc")]
     pub send_batch_size: usize,
 }
 
@@ -814,7 +880,7 @@ fn main() -> Result<()> {
     let mut server = Server::new(&option)?;
 
     // Run event loop.
-    debug!(
+    info!(
         "{} listen on {:?}",
         server.endpoint.trace_id(),
         option.listen
