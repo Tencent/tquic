@@ -26,9 +26,18 @@ TEST_CASES="multipath_minrtt,multipath_roundrobin,multipath_redundant"
 TEST_PID="$$"
 TEST_FILE="10M"
 PATH_NUM=4
+LOG_LEVEL="debug"
+EXIT_CODE=0
+
+cleanup() {
+    set +e
+    pkill -P $TEST_PID
+    echo "exit with" $EXIT_CODE
+    exit $EXIT_CODE
+}
 
 # Ensure that all child processes have exited.
-trap 'pkill -P $TEST_PID' EXIT
+trap 'cleanup' EXIT
 
 show_help() {
     echo "Usage: $0 [options]"
@@ -38,10 +47,11 @@ show_help() {
     echo "  -t, Run the specified test cases."
     echo "  -f, File size for test cases, eg. 10M"
     echo "  -p, Path number for test cases, eg. 4"
+    echo "  -g, Log level, eg. debug"
     echo "  -h, Display this help and exit."
 }
 
-while getopts ":b:w:t:f:p:lh" opt; do
+while getopts ":b:w:t:f:p:g:lh" opt; do
     case $opt in
         b)
             BIN_DIR="$OPTARG"
@@ -57,6 +67,9 @@ while getopts ":b:w:t:f:p:lh" opt; do
             ;;
         p)
             PATH_NUM="$OPTARG"
+            ;;
+        g)
+            LOG_LEVEL="$OPTARG"
             ;;
         l)
             echo $TEST_CASES
@@ -117,33 +130,36 @@ test_multipath() {
     # start tquic server
     RUST_BACKTRACE=1 $BIN_DIR/tquic_server -l 127.0.8.8:8443 --enable-multipath --multipath-algor $algor \
         --cert $cert_dir/cert.crt --key $cert_dir/cert.key --root $data_dir \
-        --active-cid-limit $CID_LIMIT --log-file $test_dir/server.log --log-level debug &
+        --active-cid-limit $CID_LIMIT --log-file $test_dir/server.log --log-level $LOG_LEVEL &
     server_pid=$!
-    trap "kill $server_pid" RETURN
 
     # start tquic client
     mkdir -p $dump_dir
     local_addresses=`seq -s, -f "127.0.0.%g" 1 $PATH_NUM`
     RUST_BACKTRACE=1 $BIN_DIR/tquic_client -c 127.0.8.8:8443 --enable-multipath --multipath-algor $algor \
         --local-addresses $local_addresses --active-cid-limit $CID_LIMIT \
-        --qlog-dir $qlog_dir --log-file $test_dir/client.log --log-level trace \
+        --qlog-dir $qlog_dir --log-file $test_dir/client.log --log-level $LOG_LEVEL \
         --dump-dir $dump_dir \
         https://example.org/$TEST_FILE
 
     # check files
     if ! cmp -s $dump_dir/$TEST_FILE $data_dir/$TEST_FILE; then
         echo "Files not same $dump_dir/$TEST_FILE:$data_dir/$TEST_FILE"
-        exit 1
+        EXIT_CODE=100
+        exit $EXIT_CODE
     fi
 
     # check packets received
     pnum=`grep "recv packet OneRTT" $test_dir/client.log | grep "local=.*" -o | sort | uniq -c | tee /dev/stderr | wc -l`
     if [ $pnum != $PATH_NUM ]; then
         echo "Not all path ($pnum/$PATH_NUM) received packets"
-        exit 1
+        EXIT_CODE=101
+        exit $EXIT_CODE
     fi
 
-    echo "Test $algor OK"
+    # clean up
+    kill $server_pid
+    echo -e "Test $algor OK\n"
 }
 
 echo "$TEST_CASES" | sed 's/,/\n/g' | while read -r TEST_CASE; do

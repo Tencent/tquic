@@ -1161,7 +1161,7 @@ impl Connection {
                 self.multipath_scheduler = Some(build_multipath_scheduler(&self.multipath_conf));
                 self.paths.enable_multipath();
                 self.flags.insert(EnableMultipath);
-                trace!("{} enable multipath", &self.trace_id);
+                debug!("{} enable multipath", &self.trace_id);
             }
 
             // Prepare for sending NEW_CONNECTION_ID/NEW_TOKEN frames.
@@ -2528,12 +2528,14 @@ impl Connection {
 
                         // Processing the following subrange.
                         if r.start + (data_len as u64) < offset + length as u64 {
+                            let tail_len =
+                                (offset + length as u64 - r.start - data_len as u64) as usize;
                             let frame = Frame::Stream {
                                 stream_id,
                                 offset: r.start + data_len as u64,
-                                length: length - data_len,
+                                length: tail_len,
                                 fin,
-                                data: data.slice(data_len..),
+                                data: data.slice(length - tail_len..),
                             };
                             space.buffered.push_front(frame, buffer_type);
                         }
