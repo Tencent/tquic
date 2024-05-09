@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import ListedColormap
 
-# QUIC implementes
+# QUIC implements
 CLIENT_IMPLS = ["tquic", "lsquic", "quiche", "picoquic", "ngtcp2", "msquic",
                 "s2n-quic", "quinn", "neqo", "kwik", "aioquic", "chrome",
                 "go-x-net", "quic-go", "mvfst"]
