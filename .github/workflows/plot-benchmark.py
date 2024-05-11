@@ -12,9 +12,12 @@ import termcolor
 # Benchmark scenarios
 SCENARIO = ["long", "short"]
 
-# QUIC implements.
+# QUIC implementations.
 # The first element is used as the normalization base.
 IMPLS = ["lsquic", "tquic"]
+
+# Round of benchmark in one scenario.
+ROUND = 5
 
 # File sizes in long connection scenario benchmark.
 LONG_FILE_SIZES = ["15K", "50K", "2M"]
@@ -38,9 +41,9 @@ SHORT_STREAMS = [1]
 DAYS = 90
 
 # Read data from benchmark result file.
-def read_data(data_dir, scen, impl, size, conn, stream, date):
-    dirname = "benchmark_%s_%s_%s_%d_%d.%s" % (scen, impl, size, conn, stream, date)
-    filename = "benchmark_%s_%s_%s_%d_%d.%s" % (scen, impl, size, conn, stream, date)
+def read_data(data_dir, scen, impl, size, conn, stream, round, date):
+    dirname = "benchmark_%s_%s_%d_%d.%s" % (scen, size, conn, stream, date)
+    filename = "benchmark_%s_%s_%s_%d_%d.%d.%s" % (scen, impl, size, conn, stream, round, date)
     path = os.path.join(data_dir, dirname, filename)
     try:
         with open(path) as f:
@@ -49,10 +52,10 @@ def read_data(data_dir, scen, impl, size, conn, stream, date):
     except:
         return 0.0
 
-# Put benchmark result in array according to implement.
+# Load benchmark results into array.
 def prepare_data(data_dir):
     titles = [' ' for _ in range((len(LONG_FILE_SIZES)*len(LONG_CONNS)*len(LONG_STREAMS) + len(SHORT_FILE_SIZES)*len(SHORT_CONNS)*len(SHORT_STREAMS)))]
-    result = [[[0.0 for _ in range(len(LONG_FILE_SIZES)*len(LONG_CONNS)*len(LONG_STREAMS) + len(SHORT_FILE_SIZES)*len(SHORT_CONNS)*len(SHORT_STREAMS))] for _ in range(len(IMPLS))] for _ in range(DAYS)]
+    result = [[[[0.0 for _ in range(len(LONG_FILE_SIZES)*len(LONG_CONNS)*len(LONG_STREAMS) + len(SHORT_FILE_SIZES)*len(SHORT_CONNS)*len(SHORT_STREAMS))] for _ in range(len(IMPLS))] for _ in range(DAYS)] for _ in range(ROUND) ]
 
     # Load long connection scenario result.
     I = len(LONG_FILE_SIZES)
@@ -66,8 +69,9 @@ def prepare_data(data_dir):
                 titles[i*J*K+j*K+k] = "long %s %d %d" % (LONG_FILE_SIZES[i], LONG_CONNS[j], LONG_STREAMS[k])
                 for n in range(N):
                     for d in range(D):
-                        date = (datetime.datetime.now() - datetime.timedelta(days=d)).strftime('%Y-%m-%d')
-                        result[D-1-d][n][i*J*K+j*K+k] = read_data(data_dir, "long", IMPLS[n], LONG_FILE_SIZES[i], LONG_CONNS[j], LONG_STREAMS[k], date)
+                        for r in range(ROUND):
+                            date = (datetime.datetime.now() - datetime.timedelta(days=d)).strftime('%Y-%m-%d')
+                            result[r][D-1-d][n][i*J*K+j*K+k] = read_data(data_dir, "long", IMPLS[n], LONG_FILE_SIZES[i], LONG_CONNS[j], LONG_STREAMS[k], r, date)
 
     # Load short connection scenario result.
     M = len(LONG_FILE_SIZES)*len(LONG_CONNS)*len(LONG_STREAMS)
@@ -82,19 +86,23 @@ def prepare_data(data_dir):
                 titles[M+i*J*K+j*K+k] = "short %s %d %d" % (SHORT_FILE_SIZES[i], SHORT_CONNS[j], SHORT_STREAMS[k])
                 for n in range(N):
                     for d in range(D):
-                        date = (datetime.datetime.now() - datetime.timedelta(days=d)).strftime('%Y-%m-%d')
-                        result[D-1-d][n][M+i*J*K+j*K+k] = read_data(data_dir, "short", IMPLS[n], SHORT_FILE_SIZES[i], SHORT_CONNS[j], LONG_STREAMS[k], date)
+                        for r in range(ROUND):
+                            date = (datetime.datetime.now() - datetime.timedelta(days=d)).strftime('%Y-%m-%d')
+                            result[r][D-1-d][n][M+i*J*K+j*K+k] = read_data(data_dir, "short", IMPLS[n], SHORT_FILE_SIZES[i], SHORT_CONNS[j], LONG_STREAMS[k], r, date)
+
+    # Average by rounds.
+    result_avg = np.mean(np.array(result), axis=0).tolist()
 
     # Normalize benchmark result.
     for d in range(D):
-        base = result[d][0]
-        for i in range(1, len(result[d])):
-            result[d][i] = [round(x/y, 4) if y != 0 else 0 for x, y in zip(result[d][i], base)]
-        for i in range(len(result[d][0])):
-            if result[d][0][i] != 0:
-                result[d][0][i] = 1
+        base = result_avg[d][0]
+        for i in range(1, len(result_avg[d])):
+            result_avg[d][i] = [round(x/y, 4) if y != 0 else 0 for x, y in zip(result_avg[d][i], base)]
+        for i in range(len(result_avg[d][0])):
+            if result_avg[d][0][i] != 0:
+                result_avg[d][0][i] = 1
 
-    return titles, result
+    return titles, result_avg
 
 # Print benchmark performance result to stdout.
 def show(titles, result):
