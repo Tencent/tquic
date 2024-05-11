@@ -75,7 +75,7 @@ use tquic_tools::Result;
 static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 #[derive(Parser, Debug, Clone)]
-#[clap(name = "client")]
+#[clap(name = "client", version=env!("CARGO_PKG_VERSION"))]
 pub struct ClientOpt {
     /// Server's address.
     #[clap(short, long, value_name = "ADDR")]
