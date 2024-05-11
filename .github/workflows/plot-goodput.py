@@ -7,7 +7,7 @@ import json
 import matplotlib.pyplot as plt
 import numpy as np
 
-# QUIC implements
+# QUIC implementations
 IMPLS = ["tquic", "gquiche", "lsquic", "picoquic", "quiche"]
 
 # Different file sizes
