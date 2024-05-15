@@ -1321,7 +1321,9 @@ impl WorkerHandler {
         let senders = self.senders.borrow_mut();
         let sender = senders.get(&index);
         if let Some(s) = sender {
-            if s.request_done == s.option.max_requests_per_conn && !conn.is_closing() {
+            if s.request_done == s.option.max_requests_per_conn
+                && !(conn.is_closing() || conn.is_closed())
+            {
                 let mut worker_ctx = self.worker_ctx.borrow_mut();
                 worker_ctx.concurrent_conns -= 1;
                 debug!(
