@@ -14,7 +14,6 @@
 
 //! An QUIC server based on the high level endpoint API.
 
-use std::cmp;
 use std::collections::HashMap;
 use std::fs::create_dir_all;
 use std::fs::File;
@@ -43,7 +42,6 @@ use tquic::MultipathAlgorithm;
 use tquic::PacketInfo;
 use tquic::TlsConfig;
 use tquic::TransportHandler;
-use tquic::TIMER_GRANULARITY;
 use tquic_tools::ApplicationProto;
 use tquic_tools::QuicSocket;
 use tquic_tools::Result;
@@ -891,10 +889,7 @@ fn main() -> Result<()> {
             error!("process connections error: {:?}", e);
         }
 
-        let timeout = server
-            .endpoint
-            .timeout()
-            .map(|v| cmp::max(v, TIMER_GRANULARITY));
+        let timeout = server.endpoint.timeout();
         debug!(
             "{} wait for io events, timeout: {:?}",
             server.endpoint.trace_id(),
@@ -902,17 +897,16 @@ fn main() -> Result<()> {
         );
         server.poll.poll(&mut events, timeout)?;
 
-        // Process timeout events
-        if events.is_empty() {
-            server.endpoint.on_timeout(Instant::now());
-            continue;
-        }
-
         // Process IO events
         for event in events.iter() {
             if event.is_readable() {
                 server.process_read_event(event)?;
             }
         }
+
+        // Process timeout events.
+        // Note: Since `poll()` doesn't clearly tell if there was a timeout when it returns,
+        // it is up to the endpoint to check for a timeout and deal with it.
+        server.endpoint.on_timeout(Instant::now());
     }
 }
