@@ -350,6 +350,9 @@ pub struct Config {
     /// Maximum numbers of packets sent in a batch.
     send_batch_size: usize,
 
+    /// Buffer size for early incoming zero rtt packets, in packets.
+    zerortt_buffer_size: usize,
+
     /// Configurations about loss recovery, congestion control, and pmtu discovery.
     recovery: RecoveryConfig,
 
@@ -403,6 +406,7 @@ impl Config {
             cid_len: 8,
             anti_amplification_factor: ANTI_AMPLIFICATION_FACTOR,
             send_batch_size: 64,
+            zerortt_buffer_size: 1000,
             recovery: RecoveryConfig::default(),
             multipath: MultipathConfig::default(),
             tls_config_selector: None,
@@ -634,6 +638,12 @@ impl Config {
     /// Applicable to Endpoint only.
     pub fn set_send_batch_size(&mut self, v: usize) {
         self.send_batch_size = cmp::max(v, 1);
+    }
+
+    /// Set the buffer size for disordered zerortt packets on the server.
+    /// Applicable to Server only.
+    pub fn set_zerortt_buffer_size(&mut self, v: usize) {
+        self.zerortt_buffer_size = v;
     }
 
     /// Set TLS config.

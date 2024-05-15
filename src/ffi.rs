@@ -387,6 +387,13 @@ pub extern "C" fn quic_config_set_send_batch_size(config: &mut Config, v: u16) {
     config.set_send_batch_size(v as usize);
 }
 
+/// Set the buffer size for disordered zerortt packets on the server.
+/// Applicable to Server only.
+#[no_mangle]
+pub extern "C" fn quic_config_set_zerortt_buffer_size(config: &mut Config, v: u16) {
+    config.set_zerortt_buffer_size(v as usize);
+}
+
 /// Create a new TlsConfig.
 /// The caller is responsible for the memory of the TlsConfig and should properly
 /// destroy it by calling `quic_tls_config_free`.
