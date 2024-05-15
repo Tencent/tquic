@@ -1850,8 +1850,8 @@ impl CongestionController for Bbr3 {
             self.stats.bytes_lost_in_total,
         );
 
-        self.stats.bytes_in_flight += packet.sent_size as u64;
         self.handle_restart_from_idle(now, self.stats.bytes_in_flight);
+        self.stats.bytes_in_flight += packet.sent_size as u64;
     }
 
     fn begin_ack(&mut self, now: Instant, bytes_in_flight: u64) {
