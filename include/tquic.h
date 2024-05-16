@@ -498,6 +498,12 @@ void quic_config_set_cid_len(struct quic_config_t *config, uint8_t v);
 void quic_config_set_send_batch_size(struct quic_config_t *config, uint16_t v);
 
 /**
+ * Set the buffer size for disordered zerortt packets on the server.
+ * Applicable to Server only.
+ */
+void quic_config_set_zerortt_buffer_size(struct quic_config_t *config, uint16_t v);
+
+/**
  * Create a new TlsConfig.
  * The caller is responsible for the memory of the TlsConfig and should properly
  * destroy it by calling `quic_tls_config_free`.

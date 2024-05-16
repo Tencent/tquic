@@ -234,6 +234,15 @@ pub struct ServerOpt {
     /// Batch size for sending packets.
     #[clap(long, default_value = "16", value_name = "NUM", help_heading = "Misc")]
     pub send_batch_size: usize,
+
+    /// buffer size for disordered zerortt packets on the server.
+    #[clap(
+        long,
+        default_value = "1000",
+        value_name = "NUM",
+        help_heading = "Misc"
+    )]
+    pub zerortt_buffer_size: usize,
 }
 
 const MAX_BUF_SIZE: usize = 65536;
@@ -269,6 +278,7 @@ impl Server {
         config.set_cid_len(option.cid_len);
         config.set_anti_amplification_factor(option.anti_amplification_factor);
         config.set_send_batch_size(option.send_batch_size);
+        config.set_zerortt_buffer_size(option.zerortt_buffer_size);
         config.set_congestion_control_algorithm(option.congestion_control_algor);
         config.set_initial_congestion_window(option.initial_congestion_window);
         config.set_min_congestion_window(option.min_congestion_window);
