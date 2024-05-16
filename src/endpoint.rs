@@ -224,8 +224,10 @@ impl Endpoint {
         }
 
         // Drop the datagram for unrecognized connection for client
-        if !self.is_server && self.config.stateless_reset {
-            self.send_stateless_reset(buf.len(), &hdr.dcid, local, remote)?;
+        if !self.is_server {
+            if self.config.stateless_reset {
+                self.send_stateless_reset(buf.len(), &hdr.dcid, local, remote)?;
+            }
             return Ok(());
         }
 
@@ -2293,6 +2295,31 @@ mod tests {
                 assert!(packets.len() == 0);
             }
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn endpoint_client_recv_invalid_initial() -> Result<()> {
+        let sock = Rc::new(MockSocket::new());
+        let mut conf = TestPair::new_test_config(false)?;
+        conf.enable_stateless_reset(false);
+
+        let mut e = Endpoint::new(
+            Box::new(conf),
+            false,
+            Box::new(ClientHandler::new(
+                CaseConf::default(),
+                Arc::new(AtomicBool::new(false)),
+            )),
+            sock.clone(),
+        );
+        let info = TestTool::new_test_packet_info(false);
+
+        // Client recv an Initial with ClientHello message
+        let mut initial = TEST_INITIAL.clone();
+        e.recv(&mut initial, &info)?;
+        assert_eq!(e.conns.len(), 0);
 
         Ok(())
     }
