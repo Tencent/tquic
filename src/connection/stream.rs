@@ -170,10 +170,6 @@ impl StreamMap {
 
             flow_control: flowcontrol::FlowControl::new(
                 local_params.initial_max_data,
-                cmp::min(
-                    local_params.initial_max_data / 2 * 3,
-                    DEFAULT_CONNECTION_WINDOW,
-                ),
                 max_connection_window,
             ),
 
@@ -2026,11 +2022,7 @@ impl RecvBuf {
     /// Create a new receive-side stream buffer with given flow control limits.
     fn new(max_data: u64, max_window: u64) -> RecvBuf {
         RecvBuf {
-            flow_control: flowcontrol::FlowControl::new(
-                max_data,
-                cmp::min(max_data, DEFAULT_STREAM_WINDOW),
-                max_window,
-            ),
+            flow_control: flowcontrol::FlowControl::new(max_data, max_window),
             ..RecvBuf::default()
         }
     }
@@ -3739,10 +3731,10 @@ mod tests {
         assert!(map.readable.contains(&0));
         assert!(map.stream_shutdown(0, Shutdown::Read, 10).is_ok());
 
-        // init_max_data: 14, window: 21, read_off: 10
+        // init_max_data: 14, window: 14, read_off: 10
         // available_window: 4 < window / 2, should update max_data.
         assert_eq!(map.flow_control.max_data(), 14);
-        assert_eq!(map.flow_control.max_data_next(), 31);
+        assert_eq!(map.flow_control.max_data_next(), 24);
         assert!(map.flow_control.should_send_max_data());
         assert!(map.rx_almost_full);
     }
@@ -3888,7 +3880,7 @@ mod tests {
         assert_eq!(map.concurrency_control, ConcurrencyControl::new(5, 5));
 
         // Check connection-level flow control
-        assert_eq!(map.flow_control.window(), 150);
+        assert_eq!(map.flow_control.window(), 100);
         assert_eq!(map.flow_control.max_data(), 100);
         assert!(
             !map.flow_control.should_send_max_data(),
@@ -4959,8 +4951,7 @@ mod tests {
         };
 
         let mut map = StreamMap::new(true, 50, 50, local_tp);
-        // init window = initial_max_data /2 * 3
-        assert_eq!(map.flow_control.window(), 30);
+        assert_eq!(map.flow_control.window(), 20);
         assert_eq!(map.flow_control.max_data(), 20);
 
         // 1. Receive a RESET_STREAM frame for a stream which has received some data
@@ -4973,10 +4964,10 @@ mod tests {
         );
         assert_eq!(map.on_reset_stream_frame_received(4, 0, 4), Ok(()));
         // map.flow_control.consumed = 4
-        assert_eq!(map.flow_control.max_data_next(), 34);
+        assert_eq!(map.flow_control.max_data_next(), 24);
         assert!(
             !map.flow_control.should_send_max_data(),
-            "available_window = 16 > 15 = window/2, not update max_data"
+            "available_window = 16 > 10 = window/2, not update max_data"
         );
         assert!(!map.rx_almost_full);
 
@@ -4985,15 +4976,15 @@ mod tests {
         // stream_id: 8, max received offset: 1, final size: 2.
         let stream = map.get_or_create(8, false).unwrap();
         assert_eq!(
-            stream.recv.write(0, Bytes::from_static(b"O"), false),
+            stream.recv.write(0, Bytes::from_static(b"QUICQUIC"), false),
             Ok(())
         );
-        assert_eq!(map.on_reset_stream_frame_received(8, 0, 2), Ok(()));
-        // map.flow_control.consumed = 6
-        assert_eq!(map.flow_control.max_data_next(), 36);
+        assert_eq!(map.on_reset_stream_frame_received(8, 0, 8), Ok(()));
+        // map.flow_control.consumed = 12
+        assert_eq!(map.flow_control.max_data_next(), 32);
         assert!(
             map.flow_control.should_send_max_data(),
-            "available_window = 14 < 15 = window/2, update max_data"
+            "available_window = 8 < 10 = window/2, update max_data"
         );
         assert!(map.rx_almost_full);
     }
@@ -5334,8 +5325,7 @@ mod tests {
             initial_max_streams_uni: 5,
         };
         let mut map = StreamMap::new(true, 50, 50, local_tp);
-        // init window = initial_max_data /2 * 3
-        assert_eq!(map.flow_control.window(), 30);
+        assert_eq!(map.flow_control.window(), 20);
         assert_eq!(map.flow_control.max_data(), 20);
 
         // Create stream 4
@@ -5351,19 +5341,19 @@ mod tests {
         // map.flow_control.consumed = 4
         assert!(
             !map.flow_control.should_send_max_data(),
-            "available_window = 16 > 15 = window/2, not update max_data"
+            "available_window = 16 > 10 = window/2, not update max_data"
         );
         assert!(!map.rx_almost_full);
 
         // Receive the second block of data of stream 4, should update max_data
         assert_eq!(
-            map.on_stream_frame_received(4, 4, 2, false, Bytes::from_static(b"GO")),
+            map.on_stream_frame_received(4, 4, 8, false, Bytes::from_static(b"QUICQUIC")),
             Ok(())
         );
-        // map.flow_control.consumed = 6
+        // map.flow_control.consumed = 12
         assert!(
             map.flow_control.should_send_max_data(),
-            "available_window = 14 < 15 = window/2, update max_data"
+            "available_window = 8 < 10 = window/2, update max_data"
         );
         assert!(map.rx_almost_full);
     }
