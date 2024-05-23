@@ -2646,6 +2646,20 @@ mod tests {
     }
 
     #[test]
+    fn transfer_single_stream_dummy_with_packet_loss() -> Result<()> {
+        let mut t = TestPair::new();
+
+        let mut case_conf = CaseConf::default();
+        case_conf.request_num = 1;
+        case_conf.request_size = 1024 * 16;
+        case_conf.packet_loss = 1;
+        case_conf.cc_algor = CongestionControlAlgorithm::Dummy;
+
+        t.run_with_test_config(case_conf)?;
+        Ok(())
+    }
+
+    #[test]
     fn transfer_single_stream_with_packet_delay() -> Result<()> {
         let mut t = TestPair::new();
 

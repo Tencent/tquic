@@ -55,11 +55,16 @@ BBR3)
 COPA)
     CC_ALGOR="COPA"
     ;;
+DUMMY)
+    CC_ALGOR="DUMMY"
+    ;;
 *)
     ;;
 esac
 
-COMMON_ARGS="--keylog-file $SSLKEYLOGFILE --log-level DEBUG --log-file $LOG_DIR/$ROLE.log --idle-timeout 30000 --handshake-timeout 30000 --initial-rtt 100 --congestion-control-algor $CC_ALGOR"
+# Note: You can add extra command-line options to tquic_client/tquic_sever by
+# using the `EXTRA_ARGS` environment variable.
+COMMON_ARGS="--keylog-file $SSLKEYLOGFILE --log-level DEBUG --log-file $LOG_DIR/$ROLE.log --idle-timeout 30000 --handshake-timeout 30000 --initial-rtt 100 --congestion-control-algor $CC_ALGOR $EXTRA_ARGS"
 
 if [ "$TESTCASE" != "transfer" ]; then
     COMMON_ARGS="$COMMON_ARGS --qlog-dir $QLOG_DIR"
