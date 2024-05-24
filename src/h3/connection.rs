@@ -4618,7 +4618,12 @@ mod tests {
     // Client send a PRIORITY_UPDATE(request) for a closed stream.
     #[test]
     fn client_send_priority_update_request_on_closed_stream() {
-        let mut s = Session::new().unwrap();
+        let h3_conf = Http3Config::new().unwrap();
+        let mut cli_conf = Session::new_test_config(false).unwrap();
+        cli_conf.set_ack_eliciting_threshold(1);
+        let mut srv_conf = Session::new_test_config(true).unwrap();
+        srv_conf.set_ack_eliciting_threshold(1);
+        let mut s = Session::new_with_test_config(&mut cli_conf, &mut srv_conf, &h3_conf).unwrap();
 
         // Client send a request with FIN flag.
         let (stream_id, req_headers) = s.send_request(true).unwrap();

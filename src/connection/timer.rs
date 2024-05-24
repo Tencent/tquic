@@ -23,6 +23,9 @@ pub(crate) enum Timer {
     /// When to declare unacked packets lost or send ack-eliciting probe packets
     LossDetection,
 
+    /// When to send acknowledgements
+    Ack,
+
     /// When to close the connection after no activity
     Idle,
 

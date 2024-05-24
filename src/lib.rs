@@ -500,6 +500,13 @@ impl Config {
         self.local_transport_params.max_ack_delay = cmp::min(v, VINT_MAX);
     }
 
+    /// Set the maximum number of ack-eliciting packets the endpoint receives before
+    /// sending an acknowledgment.
+    /// The default value is `2`.
+    pub fn set_ack_eliciting_threshold(&mut self, v: u64) {
+        self.recovery.ack_eliciting_threshold = v;
+    }
+
     /// Set congestion control algorithm that the connection would use.
     /// The default value is Bbr.
     pub fn set_congestion_control_algorithm(&mut self, cca: CongestionControlAlgorithm) {
@@ -702,6 +709,10 @@ pub struct RecoveryConfig {
     /// for packets in the Application Data packet number space.
     max_ack_delay: Duration,
 
+    /// The maximum number of ack-eliciting packets the endpoint receives before
+    /// sending an acknowledgment.
+    ack_eliciting_threshold: u64,
+
     /// The congestion control algorithm used for a path.
     pub congestion_control_algorithm: CongestionControlAlgorithm,
 
@@ -733,6 +744,7 @@ impl Default for RecoveryConfig {
             enable_dplpmtud: true,
             max_datagram_size: DEFAULT_SEND_UDP_PAYLOAD_SIZE, // The upper limit is determined by DPLPMTUD
             max_ack_delay: time::Duration::from_millis(0),
+            ack_eliciting_threshold: 2,
             congestion_control_algorithm: CongestionControlAlgorithm::Bbr,
             min_congestion_window: 2_u64,
             initial_congestion_window: 10_u64,
