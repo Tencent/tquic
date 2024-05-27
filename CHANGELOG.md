@@ -12,15 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 ## [v0.12.0] - 2024-05-27
-# Added
+### Added
 - Buffer disordered zero rtt packets on the server endpoint
 - Add dummy congestion controller for testing and expriments
 - Tweak configurations and initialization of flow control
 - Improve comments of bbr congestion control algorithm
 - Add workflow and plot tools for benchmarking
-- tquic_tools: tquic_tools: add the `version` option
+- tquic_tools: add the `version` option
 
-# Fixed
+### Fixed
 - Fix dropping datagrams from unknown connections on the client endpoint
 - Fix handling restart from idle for bbr/bbr3 algorithms
 - tquic_tools: resolve minor issues
