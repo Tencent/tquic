@@ -3309,6 +3309,9 @@ mod tests {
             assert_eq!(s.server_poll(), Ok((stream_id, headers_event)));
             assert_eq!(s.server_poll(), Ok((stream_id, Http3Event::Finished)));
             assert_eq!(s.server_poll(), Err(Http3Error::Done));
+
+            // Server send MAX_DATA
+            s.move_forward().unwrap();
         }
 
         // 4. Server send response headers with FIN for stream 0, 4, 8.

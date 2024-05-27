@@ -446,29 +446,34 @@ impl Config {
 
     /// Set the `initial_max_data` transport parameter. It means the initial
     /// value for the maximum amount of data that can be sent on the connection.
+    /// The value is capped by the setting `max_connection_window`.
     /// The default value is `10485760`.
     pub fn set_initial_max_data(&mut self, v: u64) {
-        self.local_transport_params.initial_max_data = cmp::min(v, VINT_MAX);
+        self.local_transport_params.initial_max_data = cmp::min(v, self.max_connection_window);
     }
 
     /// Set the `initial_max_stream_data_bidi_local` transport parameter.
+    /// The value is capped by the setting `max_stream_window`.
     /// The default value is `5242880`.
     pub fn set_initial_max_stream_data_bidi_local(&mut self, v: u64) {
         self.local_transport_params
-            .initial_max_stream_data_bidi_local = cmp::min(v, VINT_MAX);
+            .initial_max_stream_data_bidi_local = cmp::min(v, self.max_stream_window);
     }
 
     /// Set the `initial_max_stream_data_bidi_remote` transport parameter.
+    /// The value is capped by the setting `max_stream_window`.
     /// The default value is `2097152`.
     pub fn set_initial_max_stream_data_bidi_remote(&mut self, v: u64) {
         self.local_transport_params
-            .initial_max_stream_data_bidi_remote = cmp::min(v, VINT_MAX);
+            .initial_max_stream_data_bidi_remote = cmp::min(v, self.max_stream_window);
     }
 
     /// Set the `initial_max_stream_data_uni` transport parameter.
+    /// The value is capped by the setting `max_stream_window`.
     /// The default value is `1048576`.
     pub fn set_initial_max_stream_data_uni(&mut self, v: u64) {
-        self.local_transport_params.initial_max_stream_data_uni = cmp::min(v, VINT_MAX);
+        self.local_transport_params.initial_max_stream_data_uni =
+            cmp::min(v, self.max_stream_window);
     }
 
     /// Set the `initial_max_streams_bidi` transport parameter.
@@ -559,15 +564,16 @@ impl Config {
     }
 
     /// Set the maximum size of the connection flow control window.
-    /// The default value is MAX_CONNECTION_WINDOW.
+    /// The default value is MAX_CONNECTION_WINDOW (15 MB).
     pub fn set_max_connection_window(&mut self, v: u64) {
-        self.max_connection_window = v;
+        self.max_connection_window = cmp::min(v, VINT_MAX);
     }
 
     /// Set the maximum size of the stream flow control window.
-    /// The default value is MAX_STREAM_WINDOW.
+    /// The value should not be greater than the setting `max_connection_window`.
+    /// The default value is MAX_STREAM_WINDOW (6 MB).
     pub fn set_max_stream_window(&mut self, v: u64) {
-        self.max_stream_window = v;
+        self.max_stream_window = cmp::min(v, VINT_MAX);
     }
 
     /// Set the maximum number of concurrent connections.
