@@ -15,6 +15,23 @@
 use std::time::Duration;
 use std::time::Instant;
 
+/// A flow control implementation that allows the size of the receive buffer to
+/// be auto-tuned.
+///
+/// The basic idea is to start with relatively small initial window size, and
+/// then grow the window as necessary. For simplicity, auto-tuning may increase
+/// the window size, but never decreases (contrast with congestion control).
+///
+/// The ideal size of the window is one that is large enough that it can
+/// encompass the bandwidth delay product (BDP) to the peer.
+///
+/// The algorithm will compare the interval between successive flow control
+/// window updates to the smoothed RTT. If the flow control window is too small
+/// to keep up with the BDP, there will be a window update each RTT.
+/// Alternatively, when the window is sized to the ideal, window updates can be
+/// expected to occur with frequency corresponding to more than the 1 RTT
+/// indicative of blocking, but not too much more. The default target chosen for
+/// auto-tuning corresponds to 2 RTTs.
 #[derive(Default, Debug)]
 pub struct FlowControl {
     /// Number of bytes consumed (cumulative).
@@ -47,9 +64,9 @@ pub struct FlowControl {
 }
 
 impl FlowControl {
-    pub fn new(max_data: u64, window: u64, max_window: u64) -> FlowControl {
+    pub fn new(window: u64, max_window: u64) -> FlowControl {
         FlowControl {
-            max_data,
+            max_data: window,
             window,
             max_window,
             ..FlowControl::default()
@@ -86,7 +103,7 @@ impl FlowControl {
     /// Return true if the available window is smaller than the half
     /// of the current window.
     pub fn should_send_max_data(&self) -> bool {
-        (self.max_data - self.read_off) < (self.window / 2)
+        (self.max_data - self.read_off) * 2 < self.window
     }
 
     /// Get the next max_data limit which will be sent to the peer
@@ -102,7 +119,7 @@ impl FlowControl {
     }
 
     /// Adjust the window size automatically. If the last update
-    /// is within 2 * srtt, increase the window size by 1.5, but
+    /// is within 2 * srtt, increase the window size by 2, but
     /// not exceeding the max_window.
     pub fn autotune_window(&mut self, now: Instant, srtt: Duration) {
         if let Some(last_updated) = self.last_updated {
@@ -125,10 +142,10 @@ mod tests {
 
     #[test]
     fn fc_new() {
-        let flow_control = FlowControl::new(100, 10, 200);
+        let flow_control = FlowControl::new(100, 200);
 
         assert_eq!(flow_control.max_data(), 100);
-        assert_eq!(flow_control.window(), 10);
+        assert_eq!(flow_control.window(), 100);
         assert_eq!(flow_control.max_window, 200);
         assert_eq!(flow_control.read_off, 0);
         assert_eq!(flow_control.recv_off, 0);
@@ -137,7 +154,7 @@ mod tests {
 
     #[test]
     fn fc_increase_recv_off() {
-        let mut fc = FlowControl::new(100, 10, 200);
+        let mut fc = FlowControl::new(100, 200);
 
         for (delta, total) in [(10, 10), (20, 30), (30, 60)] {
             fc.increase_recv_off(delta);
@@ -147,19 +164,19 @@ mod tests {
 
     #[test]
     fn fc_update_logic() {
-        let mut fc = FlowControl::new(100, 10, 200);
+        let mut fc = FlowControl::new(100, 200);
 
         for (read_delta, read_off, should_send, max_data_next) in [
             // 1. Initial state
-            (0, 0, false, 10),
-            // 2. Read 95 bytes
-            // available window is 5 == window / 2, not need to send max_data,
-            // max_data_next is 105 = read_off(95) + window(10)
-            (95, 95, false, 105),
+            (0, 0, false, 100),
+            // 2. Read 50 bytes
+            // available window is 50 == window / 2, not need to send max_data,
+            // max_data_next is 150 = read_off(50) + window(100)
+            (50, 50, false, 150),
             // 3. Read 1 bytes
-            // available window is 4 < window / 2, need to send max_data
-            // max_data_next is 106 = read_off(96) + window(10)
-            (1, 96, true, 106),
+            // available window is 49 < window / 2, need to send max_data
+            // max_data_next is 151 = read_off(51) + window(100)
+            (1, 51, true, 151),
         ] {
             fc.increase_read_off(read_delta);
             assert_eq!(fc.read_off, read_off);
@@ -168,7 +185,7 @@ mod tests {
         }
 
         fc.update_max_data(Instant::now());
-        assert_eq!(fc.max_data(), 106);
+        assert_eq!(fc.max_data(), 151);
     }
 
     #[test]
@@ -177,18 +194,18 @@ mod tests {
         let max_window = 30;
         let now = Instant::now();
         let srtt = Duration::from_millis(100);
-        let mut fc = FlowControl::new(100, window, max_window);
+        let mut fc = FlowControl::new(window, max_window);
 
-        // 1. Read 96 bytes, available window is 4 < window / 2, need to send max_data.
-        let read_off = 96;
+        // 1. Read 6 bytes, available window is 4 < window / 2, need to send max_data.
+        let read_off = 6;
         fc.increase_read_off(read_off);
         assert_eq!(fc.should_send_max_data(), true);
 
-        // max_data_next = read_off(96) + window(10) = 106
+        // max_data_next = read_off(6) + window(10) = 16
         let max_data_next = fc.max_data_next();
         assert_eq!(max_data_next, read_off + fc.window);
 
-        // 2. Apply the new max_data limit(106), last_updated is set to now.
+        // 2. Apply the new max_data limit(16), last_updated is set to now.
         fc.update_max_data(now);
         assert_eq!(fc.max_data(), max_data_next);
 
@@ -197,16 +214,16 @@ mod tests {
         // Window auto-tuned to 20
         assert_eq!(fc.window, window * 2);
 
-        // 4. Read 1 byte, available window is 9 < window / 2, need to send max_data.
-        let read_off_delta = 1;
+        // 4. Read 5 byte, available window is 9 < window / 2, need to send max_data.
+        let read_off_delta = 5;
         fc.increase_read_off(read_off_delta);
         assert_eq!(fc.should_send_max_data(), true);
 
-        // max_data_next = read_off(97) + window(20) = 117
+        // max_data_next = read_off(11) + window(20) = 31
         let max_data_next = fc.max_data_next();
         assert_eq!(max_data_next, read_off + read_off_delta + fc.window);
 
-        // 5. Apply the new max_data limit(117), last_updated is set to now.
+        // 5. Apply the new max_data limit(31), last_updated is set to now.
         fc.update_max_data(now);
         assert_eq!(fc.max_data(), max_data_next);
 
@@ -219,8 +236,7 @@ mod tests {
 
     #[test]
     fn fc_ensure_window_lower_bound() {
-        let min_window = 10;
-        let mut fc = FlowControl::new(100, 10, 200);
+        let mut fc = FlowControl::new(10, 200);
 
         for (min_window, window) in [
             // min_window < window, unchanged

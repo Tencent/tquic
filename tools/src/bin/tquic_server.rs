@@ -14,7 +14,6 @@
 
 //! An QUIC server based on the high level endpoint API.
 
-use std::cmp;
 use std::collections::HashMap;
 use std::fs::create_dir_all;
 use std::fs::File;
@@ -43,7 +42,6 @@ use tquic::MultipathAlgorithm;
 use tquic::PacketInfo;
 use tquic::TlsConfig;
 use tquic::TransportHandler;
-use tquic::TIMER_GRANULARITY;
 use tquic_tools::ApplicationProto;
 use tquic_tools::QuicSocket;
 use tquic_tools::Result;
@@ -52,7 +50,7 @@ use tquic_tools::Result;
 static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 #[derive(Parser, Debug)]
-#[clap(name = "server")]
+#[clap(name = "server", version=env!("CARGO_PKG_VERSION"))]
 pub struct ServerOpt {
     /// Address to listen.
     #[clap(short, long, default_value = "0.0.0.0:4433", value_name = "ADDR")]
@@ -236,6 +234,15 @@ pub struct ServerOpt {
     /// Batch size for sending packets.
     #[clap(long, default_value = "16", value_name = "NUM", help_heading = "Misc")]
     pub send_batch_size: usize,
+
+    /// buffer size for disordered zerortt packets on the server.
+    #[clap(
+        long,
+        default_value = "1000",
+        value_name = "NUM",
+        help_heading = "Misc"
+    )]
+    pub zerortt_buffer_size: usize,
 }
 
 const MAX_BUF_SIZE: usize = 65536;
@@ -271,6 +278,7 @@ impl Server {
         config.set_cid_len(option.cid_len);
         config.set_anti_amplification_factor(option.anti_amplification_factor);
         config.set_send_batch_size(option.send_batch_size);
+        config.set_zerortt_buffer_size(option.zerortt_buffer_size);
         config.set_congestion_control_algorithm(option.congestion_control_algor);
         config.set_initial_congestion_window(option.initial_congestion_window);
         config.set_min_congestion_window(option.min_congestion_window);
@@ -891,10 +899,7 @@ fn main() -> Result<()> {
             error!("process connections error: {:?}", e);
         }
 
-        let timeout = server
-            .endpoint
-            .timeout()
-            .map(|v| cmp::max(v, TIMER_GRANULARITY));
+        let timeout = server.endpoint.timeout();
         debug!(
             "{} wait for io events, timeout: {:?}",
             server.endpoint.trace_id(),
@@ -902,17 +907,16 @@ fn main() -> Result<()> {
         );
         server.poll.poll(&mut events, timeout)?;
 
-        // Process timeout events
-        if events.is_empty() {
-            server.endpoint.on_timeout(Instant::now());
-            continue;
-        }
-
         // Process IO events
         for event in events.iter() {
             if event.is_readable() {
                 server.process_read_event(event)?;
             }
         }
+
+        // Process timeout events.
+        // Note: Since `poll()` doesn't clearly tell if there was a timeout when it returns,
+        // it is up to the endpoint to check for a timeout and deal with it.
+        server.endpoint.on_timeout(Instant::now());
     }
 }

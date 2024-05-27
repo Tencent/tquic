@@ -14,7 +14,6 @@
 
 use std::cell::RefCell;
 use std::cell::RefMut;
-use std::cmp;
 use std::cmp::max;
 use std::fs::create_dir_all;
 use std::fs::File;
@@ -66,7 +65,6 @@ use tquic::MultipathAlgorithm;
 use tquic::PacketInfo;
 use tquic::TlsConfig;
 use tquic::TransportHandler;
-use tquic::TIMER_GRANULARITY;
 use tquic_tools::ApplicationProto;
 use tquic_tools::QuicSocket;
 use tquic_tools::Result;
@@ -75,7 +73,7 @@ use tquic_tools::Result;
 static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 #[derive(Parser, Debug, Clone)]
-#[clap(name = "client")]
+#[clap(name = "client", version=env!("CARGO_PKG_VERSION"))]
 pub struct ClientOpt {
     /// Server's address.
     #[clap(short, long, value_name = "ADDR")]
@@ -611,18 +609,7 @@ impl Worker {
                 break;
             }
 
-            let timeout = self
-                .endpoint
-                .timeout()
-                .map(|v| cmp::max(v, TIMER_GRANULARITY));
-
-            self.poll.poll(&mut events, timeout)?;
-
-            // Process timeout events
-            if events.is_empty() {
-                self.endpoint.on_timeout(Instant::now());
-                continue;
-            }
+            self.poll.poll(&mut events, self.endpoint.timeout())?;
 
             // Process IO events
             for event in events.iter() {
@@ -630,6 +617,11 @@ impl Worker {
                     self.process_read_event(event)?;
                 }
             }
+
+            // Process timeout events.
+            // Note: Since `poll()` doesn't clearly tell if there was a timeout when it returns,
+            // it is up to the endpoint to check for a timeout and deal with it.
+            self.endpoint.on_timeout(Instant::now());
         }
 
         self.finish();
@@ -1321,7 +1313,9 @@ impl WorkerHandler {
         let senders = self.senders.borrow_mut();
         let sender = senders.get(&index);
         if let Some(s) = sender {
-            if s.request_done == s.option.max_requests_per_conn && !conn.is_closing() {
+            if s.request_done == s.option.max_requests_per_conn
+                && !(conn.is_closing() || conn.is_closed())
+            {
                 let mut worker_ctx = self.worker_ctx.borrow_mut();
                 worker_ctx.concurrent_conns -= 1;
                 debug!(

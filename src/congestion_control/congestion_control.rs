@@ -32,6 +32,7 @@ pub use copa::Copa;
 pub use copa::CopaConfig;
 pub use cubic::Cubic;
 pub use cubic::CubicConfig;
+pub use dummy::Dummy;
 pub use hystart_plus_plus::HystartPlusPlus;
 
 /// Available congestion control algorithms.
@@ -61,6 +62,10 @@ pub enum CongestionControlAlgorithm {
     /// and delay can be configured via a user-specified parameter.
     /// (Experimental)
     Copa,
+
+    /// Dummy is a simple congestion controller with a static congestion window.
+    /// It is intended to be used for testing and experiments.
+    Dummy,
 }
 
 impl FromStr for CongestionControlAlgorithm {
@@ -75,6 +80,8 @@ impl FromStr for CongestionControlAlgorithm {
             Ok(CongestionControlAlgorithm::Bbr3)
         } else if algor.eq_ignore_ascii_case("copa") {
             Ok(CongestionControlAlgorithm::Copa)
+        } else if algor.eq_ignore_ascii_case("dummy") {
+            Ok(CongestionControlAlgorithm::Dummy)
         } else {
             Err(Error::InvalidConfig("unknown".into()))
         }
@@ -208,6 +215,7 @@ pub fn build_congestion_controller(conf: &RecoveryConfig) -> Box<dyn CongestionC
             Some(conf.initial_rtt),
             max_datagram_size,
         ))),
+        CongestionControlAlgorithm::Dummy => Box::new(Dummy::new(initial_cwnd)),
     }
 }
 
@@ -235,6 +243,9 @@ mod tests {
             ("copa", Ok(CongestionControlAlgorithm::Copa)),
             ("Copa", Ok(CongestionControlAlgorithm::Copa)),
             ("COPA", Ok(CongestionControlAlgorithm::Copa)),
+            ("dummy", Ok(CongestionControlAlgorithm::Dummy)),
+            ("Dummy", Ok(CongestionControlAlgorithm::Dummy)),
+            ("DUMMY", Ok(CongestionControlAlgorithm::Dummy)),
             ("cubci", Err(Error::InvalidConfig("unknown".into()))),
         ];
 
@@ -287,6 +298,7 @@ mod bbr3;
 mod copa;
 mod cubic;
 mod delivery_rate;
+mod dummy;
 mod hystart_plus_plus;
 mod minmax;
 mod pacing;

@@ -1,0 +1,260 @@
+name: Benchmark
+
+on:
+  schedule:
+    - cron: '30 3 * * *'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  config:
+    name: Prepare config
+    runs-on: ubuntu-latest
+    outputs:
+      benchmark_date: ${{ steps.set-benchmark-date.outputs.benchmark_date }}
+      benchmark_impls: ${{ steps.set-implements.outputs.benchmark_impls }}
+      benchmark_rounds: ${{ steps.set-rounds.outputs.benchmark_rounds }}
+      benchmark_duration: ${{ steps.set-duration.outputs.benchmark_duration }}
+    steps:
+    - name: Set date
+      id: set-benchmark-date
+      run: |
+        BENCHMARK_DATE=$(date -u +"%Y-%m-%d")
+        echo $BENCHMARK_DATE
+        echo "benchmark_date=$BENCHMARK_DATE" >> $GITHUB_OUTPUT
+    - name: Set implements
+      id: set-implements
+      run: |
+        IMPLS="lsquic tquic"
+        echo "benchmark_impls=$IMPLS" >> $GITHUB_OUTPUT
+    - name: Set rounds
+      id: set-rounds
+      run: |
+        ROUNDS=5
+        echo "benchmark_rounds=$ROUNDS" >> $GITHUB_OUTPUT
+    - name: Set benchmark duration
+      id: set-duration
+      run: |
+        DURATION=120
+        echo "benchmark_duration=$DURATION" >> $GITHUB_OUTPUT
+
+  build_tquic:
+    name: Build tquic
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: 'recursive'
+    - name: Update rust
+      run: rustup update
+    - name: Build tquic
+      run: |
+        cargo build --all --release
+        cp target/release/tquic_server tquic_server
+        cp target/release/tquic_client tquic_client
+    - name: Build start script
+      run: |
+        echo $'#!/bin/bash\ncd "$(dirname "$0")"\nchmod u+x ./tquic_server\n./tquic_server --send-udp-payload-size 1350 --log-level OFF --root ../files --disable-stateless-reset -l 0.0.0.0:4433 -c ../cert/cert.crt -k ../cert/cert.key &' > start_tquic.sh
+        chmod u+x start_tquic.sh
+    - name: Upload tquic_server
+      uses: actions/upload-artifact@v4
+      with:
+        name: tquic_server_bin
+        path: |
+          tquic_server
+          start_tquic.sh
+    - name: Upload tquic_client
+      uses: actions/upload-artifact@v4
+      with:
+        name: tquic_client_bin
+        path: tquic_client
+
+  build_lsquic:
+    name: Build lsquic
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: 'litespeedtech/lsquic'
+        path: lsquic
+        submodules: 'recursive'
+    - name: Build lsquic
+      run: |
+        git clone https://boringssl.googlesource.com/boringssl
+        cd boringssl
+        git checkout 9fc1c33e9c21439ce5f87855a6591a9324e569fd
+        cmake . &&  make
+        BORINGSSL=$PWD
+        cd ../lsquic
+        sudo apt install libevent-dev
+        cmake -DBORINGSSL_DIR=$BORINGSSL .
+        make
+        cp bin/http_server ../lsquic_server
+    - name: Build start script
+      run: |
+        echo $'#!/bin/bash\ncd "$(dirname "$0")"\nchmod u+x ./lsquic_server\n./lsquic_server -c tquic_benchmark,../cert/cert.crt,../cert/cert.key -s 0.0.0.0:4433 -r ../files -L crit > lsquic.log 2>&1 &' > start_lsquic.sh
+        chmod u+x start_lsquic.sh
+    - name: Upload lsquic server
+      uses: actions/upload-artifact@v4
+      with:
+        name: lsquic_server_bin
+        path: |
+          lsquic_server
+          start_lsquic.sh
+
+  gen_cert:
+    name: Generate cert
+    runs-on: ubuntu-latest
+    steps:
+    - name: Generate cert
+      run: |
+        openssl genrsa -out cert.key 2048
+        openssl req -new -x509 -key cert.key -out cert.crt -days 365 -subj "/CN=tquic_benchmark"
+    - name: Upload cert
+      uses: actions/upload-artifact@v4
+      with:
+        name: cert
+        path: cert.*
+
+  gen_files:
+    name: Generate files
+    runs-on: ubuntu-latest
+    steps:
+    - name: Generate files
+      run: |
+        head -c 1K /dev/urandom > file_1K
+        head -c 15K /dev/urandom > file_15K
+        head -c 50K /dev/urandom > file_50K
+        head -c 2M /dev/urandom > file_2M
+    - name: Upload files
+      uses: actions/upload-artifact@v4
+      with:
+        name: files
+        path: file_*
+
+  run_long_conn:
+    name: Run long connection scenario benchmark
+    needs: [ config, build_tquic, build_lsquic, gen_cert, gen_files ]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        file: [ 15K, 50K, 2M ]
+        conn: [ 10 ]
+        stream: [ 1, 10 ]
+    steps:
+    - name: Download all
+      uses: actions/download-artifact@v4
+    - name: Display structure of downloaded files
+      run: ls -R
+    - name: Benchmark
+      run: |
+        chmod u+x ./tquic_client_bin/tquic_client
+        for((round=0;round<${{ needs.config.outputs.benchmark_rounds }};round++));do
+          for impl in ${{ needs.config.outputs.benchmark_impls }};do
+            sh ${impl}_server_bin/start_${impl}.sh
+            pgrep ${impl}_server
+            sleep 1
+            ./tquic_client_bin/tquic_client https://tquic_benchmark:4433/file_${{ matrix.file }} --connect-to 127.0.0.1:4433 --threads ${{ matrix.conn }} --max-concurrent-conns 1 --max-concurrent-requests ${{ matrix.stream }} --max-requests-per-conn 0 --total-requests-per-thread 0 -d ${{ needs.config.outputs.benchmark_duration }} --disable-stateless-reset --send-batch-size 1 --recv-udp-payload-size 1350 --send-udp-payload-size 1350 --log-level OFF > client.log 2>&1
+            cat client.log | grep "finished in" | awk '{print $4}' > benchmark_long_${impl}_${{ matrix.file }}_${{ matrix.conn }}_${{ matrix.stream }}.${round}.${{ needs.config.outputs.benchmark_date }}
+            killall ${impl}_server
+            sleep 1
+          done
+        done
+    - name: Upload benchmark result
+      uses: actions/upload-artifact@v4
+      with:
+        name: benchmark_long_${{ matrix.file }}_${{ matrix.conn }}_${{ matrix.stream }}.${{ needs.config.outputs.benchmark_date }}
+        path: benchmark_long_*
+        retention-days: 90
+
+  run_short_conn:
+    name: Run short connection scenario benchmark
+    needs: [ config, build_tquic, build_lsquic, gen_cert, gen_files ]
+    runs-on: ubuntu-latest
+    steps:
+    - name: Download all
+      uses: actions/download-artifact@v4
+    - name: Display structure of downloaded files
+      run: ls -R
+    - name: Benchmark
+      run: |
+        chmod u+x ./tquic_client_bin/tquic_client
+        for((round=0;round<${{ needs.config.outputs.benchmark_rounds }};round++));do
+          for impl in ${{ needs.config.outputs.benchmark_impls }};do
+            sh ${impl}_server_bin/start_${impl}.sh
+            pgrep ${impl}_server
+            sleep 1
+            ./tquic_client_bin/tquic_client https://tquic_benchmark:4433/file_1K --connect-to 127.0.0.1:4433 --threads 10 --max-concurrent-conns 1 --max-concurrent-requests 1 --max-requests-per-conn 1 --total-requests-per-thread 0 -d ${{ needs.config.outputs.benchmark_duration }} --disable-stateless-reset --send-batch-size 1 --recv-udp-payload-size 1350 --send-udp-payload-size 1350 --log-level OFF > client.log 2>&1
+            cat client.log | grep "finished in" | awk '{print $4}' > benchmark_short_${impl}_1K_10_1.${round}.${{ needs.config.outputs.benchmark_date }}
+            killall ${impl}_server
+            sleep 1
+          done
+        done
+    - name: Upload benchmark result
+      uses: actions/upload-artifact@v4
+      with:
+        name: benchmark_short_1K_10_1.${{ needs.config.outputs.benchmark_date }}
+        path: benchmark_short_*
+        retention-days: 90
+
+  result:
+    runs-on: ubuntu-latest
+    needs: [ run_long_conn, run_short_conn ]
+    steps:
+    - name: Download plot tools
+      uses: actions/checkout@v4
+    - name: Download all
+      uses: actions/download-artifact@v4
+      with:
+        path: benchmark_result
+    - name: Download latest benchmark history
+      working-directory: ./benchmark_result
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        SCENARIO=("long" "short")
+        LONG_FILE_SIZES=("15K" "50K" "2M")
+        SHORT_FILE_SIZES=("1K")
+        LONG_CONNS=10
+        SHORT_CONNS=10
+        LONG_STREAMS=(1 10)
+        SHORT_STREAMS=(1)
+        DAYS=90
+        for ((i=1; i<$DAYS; i++)); do
+            date=$(date -d "-$i day" +%Y-%m-%d)
+            download_cmd="gh run download"
+            for scen in "${SCENARIO[@]}"; do
+                if [ "$scen" == "long" ]; then
+                    FILE_SIZES=("${LONG_FILE_SIZES[@]}")
+                    CONNS=$LONG_CONNS
+                    STREAMS=("${LONG_STREAMS[@]}")
+                else
+                    FILE_SIZES=("${SHORT_FILE_SIZES[@]}")
+                    CONNS=$SHORT_CONNS
+                    STREAMS=("${SHORT_STREAMS[@]}")
+                fi
+                for size in "${FILE_SIZES[@]}"; do
+                    for stream in "${STREAMS[@]}"; do
+                        download_cmd+=" -n benchmark_${scen}_${size}_${CONNS}_${stream}.${date}"
+                    done
+                done
+            done
+            echo "$download_cmd"
+            eval "$download_cmd" || echo ""
+        done
+    - name: Display structure of downloaded files
+      run: ls -R benchmark_result
+    - name: Install dependencies
+      run: |
+        sudo apt install python3-matplotlib
+        pip3 install prettytable termcolor
+    - name: Plot and print all benchmark results
+      run: python3 .github/workflows/plot-benchmark.py ./benchmark_result
+    - name: Store all benchmark results
+      uses: actions/upload-artifact@v4
+      with:
+        name: benchmark_all
+        path: benchmark_all*
+

@@ -121,7 +121,7 @@ const SEND_QUANTUM_THRESHOLD_PACING_RATE: u64 = 1_200_000 / 8;
 
 /// BBR State Machine.
 ///
-/// See <https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-00#section-3.4>.
+/// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 3.4.
 #[derive(Debug, PartialEq, Eq)]
 enum BbrStateMachine {
     Startup,
@@ -198,7 +198,7 @@ impl Default for AckState {
 
 /// BBR Congestion Control Algorithm.
 ///
-/// See <https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-00>.
+/// See draft-cardwell-iccrg-bbr-congestion-control-00.
 #[derive(Debug)]
 pub struct Bbr {
     /// Configurable parameters.
@@ -265,7 +265,7 @@ pub struct Bbr {
     /// Whether a roundtrip in ProbeRTT state ends.
     probe_rtt_round_done: bool,
 
-    /// Whether in packet sonservation mode.
+    /// Whether in packet conservation mode.
     packet_conservation: bool,
 
     /// Cwnd before loss recovery.
@@ -333,7 +333,8 @@ impl Bbr {
     }
 
     /// Initialization Steps.
-    /// See <https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-00#section-4.3.1>.
+    ///
+    /// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 4.3.1.
     fn init(&mut self) {
         self.rtprop = self.config.initial_rtt.unwrap_or(Duration::MAX);
         self.rtprop_stamp = Instant::now();
@@ -350,21 +351,21 @@ impl Bbr {
         self.enter_startup();
     }
 
-    /// See <https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-00#section-4.1.1.3>.
+    /// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 4.1.1.3.
     fn init_round_counting(&mut self) {
         self.round.next_round_delivered = 0;
         self.round.round_count = 0;
         self.round.is_round_start = false;
     }
 
-    /// See <https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-00#section-4.3.2.2>.
+    /// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 4.3.2.2.
     fn init_full_pipe(&mut self) {
         self.full_pipe.is_filled_pipe = false;
         self.full_pipe.full_bw = 0;
         self.full_pipe.full_bw_count = 0;
     }
 
-    // See https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-00#section-4.2.1
+    /// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 4.2.1
     fn init_pacing_rate(&mut self) {
         // When a BBR flow starts it has no BBR.BtlBw estimate.  So in this case
         // it sets an initial pacing rate based on the transport sender implementation's
@@ -378,14 +379,24 @@ impl Bbr {
         self.pacing_rate = (self.pacing_gain * nominal_bandwidth) as u64;
     }
 
-    /// See <https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-00#section-4.3.2.1>.
+    /// Enter the Startup state
+    ///
+    /// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 4.3.2.1.
     fn enter_startup(&mut self) {
         self.state = BbrStateMachine::Startup;
+
+        // To achieve this rapid probing in the smoothest possible fashion, upon
+        // entry into Startup state BBR sets BBR.pacing_gain and BBR.cwnd_gain
+        // to BBRHighGain, the minimum gain value that will allow the sending
+        // rate to double each round.
         self.pacing_gain = HIGH_GAIN;
         self.cwnd_gain = HIGH_GAIN;
     }
 
-    /// See <https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-00#section-4.3.2.2>.
+    /// Estimate whether the pipe is full by looking for a plateau in the
+    /// BBR.BtlBw estimate.
+    ///
+    /// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 4.3.2.2.
     fn check_full_pipe(&mut self) {
         // no need to check for a full pipe now
         if self.is_filled_pipe()
@@ -400,26 +411,36 @@ impl Bbr {
             // record new baseline level
             self.full_pipe.full_bw = self.btlbw;
             self.full_pipe.full_bw_count = 0;
-
             return;
         }
 
         // another round w/o much growth
         self.full_pipe.full_bw_count += 1;
 
+        // BBR waits three rounds in order to have solid evidence that the
+        // sender is not detecting a delivery-rate plateau that was temporarily
+        // imposed by the receive window.
+        // This three-round threshold was validated by YouTube experimental data.
         if self.full_pipe.full_bw_count >= FULL_BW_COUNT_THRESHOLD {
             self.full_pipe.is_filled_pipe = true;
         }
     }
 
-    /// See <https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-00#section-4.1.1.3>.
+    /// Update the virtual time tracked by BBR.round_count.
+    ///
+    /// BBR tracks time for the BBR.BtlBw filter window using a virtual time
+    /// tracked by BBR.round_countt, a count of "packet-timed" round-trips.
+    /// The BBR.round_count counts packet-timed round trips by recording state
+    /// about a sentinel packet, and waiting for an ACK of any data packet that
+    /// was sent after that sentinel packet.
+    ///
+    /// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 4.1.1.3.
     fn update_round(&mut self) {
         if self.ack_state.packet_delivered >= self.round.next_round_delivered {
             self.round.next_round_delivered = self.delivery_rate_estimator.delivered();
             self.round.round_count += 1;
             self.round.is_round_start = true;
-            // After one round-trip in Fast Recovery:
-            //     BBR.packet_conservation = false
+            // After one round-trip in Fast Recovery, exit the packet conservation mode.
             self.packet_conservation = false;
         } else {
             self.round.is_round_start = false;
@@ -436,30 +457,37 @@ impl Bbr {
         self.round.is_round_start
     }
 
-    /// See <https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-00#section-4.2.1>.
+    /// Try to update the pacing rate using the given pacing_gain
+    ///
+    /// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 4.2.1.
     fn set_pacing_rate_with_gain(&mut self, pacing_gain: f64) {
         let rate = (pacing_gain * self.btlbw as f64) as u64;
 
-        // on each data ACK BBR updates its pacing rate to
-        // be proportional to BBR.BtlBw, as long as it estimates that it has
-        // filled the pipe (BBR.filled_pipe is true; see the "Startup" section
-        // below for details), or doing so increases the pacing rate.
+        // On each data ACK BBR updates its pacing rate to be proportional to
+        // BBR.BtlBw, as long as it estimates that it has filled the pipe, or
+        // doing so increases the pacing rate.
         if self.is_filled_pipe() || rate > self.pacing_rate {
             self.pacing_rate = rate;
         }
     }
 
-    /// See <https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-00#section-4.3.3>.
+    /// In Drain, BBR aims to quickly drain any queue created in Startup by
+    /// switching to a pacing_gain well below 1.0.
+    ///
+    /// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 4.3.3.
     fn enter_drain(&mut self) {
         self.state = BbrStateMachine::Drain;
-        // pace slowly
-        self.pacing_gain = 1.0 / HIGH_GAIN;
-        // maintain cwnd
-        self.cwnd_gain = HIGH_GAIN;
+
+        // It uses a pacing_gain that is the inverse of the value used during
+        // Startup, which drains the queue in one round.
+        self.pacing_gain = 1.0 / HIGH_GAIN; // pace slowly
+        self.cwnd_gain = HIGH_GAIN; // maintain cwnd
     }
 
-    /// See <https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-00#section-4.2.3.2>.
-    /// Target cwnd.
+    /// Calculate the target cwnd, which is the upper bound on the volume of data BBR
+    /// allows in flight.
+    ///
+    /// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 4.2.3.2 Target cwnd.
     fn inflight(&self, gain: f64) -> u64 {
         if self.rtprop == Duration::MAX {
             // no valid RTT samples yet
@@ -470,29 +498,52 @@ impl Bbr {
         // and receiving hosts to reach full utilization even in high-throughput
         // environments using offloading mechanisms.
         let quanta = 3 * self.send_quantum;
+
+        // The "estimated_bdp" term allows enough packets in flight to fully
+        // utilize the estimated BDP of the path, by allowing the flow to send
+        // at BBR.BtlBw for a duration of BBR.RTprop.
         let estimated_bdp = self.btlbw as f64 * self.rtprop.as_secs_f64();
 
+        // Scaling up the BDP by cwnd_gain, selected by the BBR state machine to
+        // be above 1.0 at all times, bounds in-flight data to a small multiple
+        // of the BDP, in order to handle common network and receiver pathologies,
+        // such as delayed, stretched, or aggregated ACKs.
         (gain * estimated_bdp) as u64 + quanta
     }
 
-    /// See <https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-00#section-4.2.3.2>.
+    /// On each ACK, BBR calculates the BBR.target_cwnd.
+    ///
+    /// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 4.2.3.2.
     fn update_target_cwnd(&mut self) {
         self.target_cwnd = self.inflight(self.cwnd_gain);
     }
 
-    /// See <https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-00#section-4.3.3>.
+    /// Check and try to enter or leave Drain state.
+    ///
+    /// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 4.3.3.
     fn check_drain(&mut self, bytes_in_flight: u64, now: Instant) {
+        // In Startup, when the BBR "full pipe" estimator estimates that BBR has
+        // filled the pipe, BBR switches to its Drain state.
         if self.state == BbrStateMachine::Startup && self.is_filled_pipe() {
             self.enter_drain();
         }
 
+        // In Drain, when the number of packets in flight matches the estimated
+        // BDP, meaning BBR estimates that the queue has been fully drained but
+        // the pipe is still full, then BBR leaves Drain and enters ProbeBW.
         if self.state == BbrStateMachine::Drain && bytes_in_flight <= self.inflight(1.0) {
             // we estimate queue is drained
             self.enter_probe_bw(now);
         }
     }
 
-    /// See <https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-00#section-4.3.4.3>.
+    /// Enter the ProbeBW state.
+    /// BBR flows spend the vast majority of their time in ProbeBW state,
+    /// probing for bandwidth using an approach called gain cycling, which
+    /// helps BBR flows reach high throughput, low queuing delay, and
+    /// convergence to a fair share of bandwidth.
+    ///
+    /// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 4.3.4.3.
     fn enter_probe_bw(&mut self, now: Instant) {
         self.state = BbrStateMachine::ProbeBW;
         self.pacing_gain = 1.0;
@@ -504,7 +555,6 @@ impl Bbr {
         // gain cycling by randomly picking an initial phase, from among all but
         // the 3/4 phase, when entering ProbeBW.
         self.cycle_index = GAIN_CYCLE_LEN - 1 - rand::thread_rng().gen_range(0..GAIN_CYCLE_LEN - 1);
-
         self.advance_cycle_phase(now);
     }
 
@@ -515,7 +565,7 @@ impl Bbr {
         }
     }
 
-    /// Advance cycle phase during probe_bw state.
+    /// Advance cycle phase during ProbeBW state.
     fn advance_cycle_phase(&mut self, now: Instant) {
         // BBR flows spend the vast majority of their time in ProbeBW state,
         // probing for bandwidth using an approach called gain cycling, which
@@ -526,6 +576,7 @@ impl Bbr {
         self.pacing_gain = PACING_GAIN_CYCLE[self.cycle_index];
     }
 
+    /// Check if it's time to advance to the next gain cycle phase in ProbeBW state.
     fn is_next_cycle_phase(&mut self, now: Instant) -> bool {
         // Each cycle phase normally lasts for roughly BBR.RTprop.
         let is_full_length = now.saturating_duration_since(self.cycle_stamp) > self.rtprop;
@@ -550,11 +601,16 @@ impl Bbr {
         is_full_length
     }
 
-    /// See <https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-00#section-4.3.4.4>.
+    /// When restarting from idle, BBR leaves its cwnd as-is and paces
+    /// packets at exactly BBR.BtlBw, aiming to return as quickly as possible
+    /// to its target operating point of rate balance and a full pipe.
+    ///
+    /// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 4.3.4.4.
     fn handle_restart_from_idle(&mut self, bytes_in_flight: u64) {
-        // When restarting from idle, BBR leaves its cwnd as-is and paces
-        // packets at exactly BBR.BtlBw, aiming to return as quickly as possible
-        // to its target operating point of rate balance and a full pipe.
+        // If the flow's BBR.state is ProbeBW, and the flow is
+        // application-limited, and there are no packets in flight currently,
+        // then at the moment the flow sends one or more packets BBR sets
+        // BBR.pacing_rate to exactly BBR.BtlBw.
         if bytes_in_flight == 0 && self.delivery_rate_estimator.is_app_limited() {
             self.is_idle_restart = true;
 
@@ -564,8 +620,12 @@ impl Bbr {
         }
     }
 
-    /// See <https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-00#section-4.2.3.4>.
     /// Remember cwnd.
+    ///
+    /// It helps remember and restore the last-known good cwnd (the latest cwnd
+    /// unmodulated by loss recovery or ProbeRTT)
+    ///
+    /// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 4.2.3.4.
     fn save_cwnd(&mut self) {
         self.prior_cwnd = if !self.in_recovery && self.state != BbrStateMachine::ProbeRTT {
             self.cwnd
@@ -574,17 +634,26 @@ impl Bbr {
         }
     }
 
-    /// Restore cwnd
+    /// Restore cwnd.
+    ///
+    /// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 4.2.3.4.
     fn restore_cwnd(&mut self) {
         self.cwnd = self.cwnd.max(self.prior_cwnd)
     }
 
+    /// Return cwnd for ProbeRTT state.
     fn probe_rtt_cwnd(&self) -> u64 {
         self.config.min_cwnd
     }
 
-    /// See <https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-00#section-4.3.5>.
+    /// Check and try to enter or leave ProbeRTT state.
+    ///
+    /// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 4.3.5.
     fn check_probe_rtt(&mut self, now: Instant, bytes_in_flight: u64) {
+        // In any state other than ProbeRTT itself, if the RTProp estimate has
+        // not been updated (i.e., by getting a lower RTT measurement) for more
+        // than ProbeRTTInterval = 10 seconds, then BBR enters ProbeRTT and
+        // reduces the cwnd to a minimal value, BBRMinPipeCwnd (four packets).
         if self.state != BbrStateMachine::ProbeRTT
             && self.is_rtprop_expired
             && !self.is_idle_restart
@@ -603,6 +672,7 @@ impl Bbr {
         self.is_idle_restart = false;
     }
 
+    /// Enter the ProbeRTT state
     fn enter_probe_rtt(&mut self) {
         self.state = BbrStateMachine::ProbeRTT;
 
@@ -610,6 +680,7 @@ impl Bbr {
         self.cwnd_gain = 1.0;
     }
 
+    /// Process for the ProbeRTT state
     fn handle_probe_rtt(&mut self, now: Instant, bytes_in_flight: u64) {
         // Ignore low rate samples during ProbeRTT. MarkConnectionAppLimited.
         // C.app_limited = (BW.delivered + packets_in_flight) ? : 1
@@ -620,9 +691,11 @@ impl Bbr {
                 self.probe_rtt_round_done = true;
             }
 
+            // After maintaining BBRMinPipeCwnd or fewer packets in flight for
+            // at least ProbeRTTDuration (200 ms) and one round trip, BBR leaves
+            // ProbeRTT.
             if self.probe_rtt_round_done && now >= probe_rtt_done_stamp {
                 self.rtprop_stamp = now;
-
                 self.restore_cwnd();
                 self.exit_probe_rtt(now);
             }
@@ -634,6 +707,8 @@ impl Bbr {
         }
     }
 
+    /// BBR leaves ProbeRTT and transitions to either Startup or ProbeBW,
+    /// depending on whether it estimates the pipe was filled already.
     fn exit_probe_rtt(&mut self, now: Instant) {
         if self.is_filled_pipe() {
             self.enter_probe_bw(now);
@@ -642,6 +717,7 @@ impl Bbr {
         }
     }
 
+    /// On every ACK, the BBR updates its network path model and state machine
     fn update_model_and_state(&mut self, now: Instant) {
         self.update_btlbw();
         self.check_cycle_phase(now);
@@ -651,13 +727,17 @@ impl Bbr {
         self.check_probe_rtt(now, self.stats.bytes_in_flight);
     }
 
+    /// BBR adjusts its control parameters to adapt to the updated model.
     fn update_control_parameters(&mut self) {
         self.set_pacing_rate();
         self.set_send_quantum();
         self.set_cwnd();
     }
 
-    /// See <https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-00#section-4.1.1.5>.
+    /// For every ACK that acknowledges some data packets as delivered, BBR
+    /// update the BBR.BtlBw estimator as follows.
+    ///
+    /// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 4.1.1.5.
     fn update_btlbw(&mut self) {
         self.update_round();
 
@@ -672,7 +752,10 @@ impl Bbr {
         }
     }
 
-    /// See <https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-00#section-4.1.2.3>.
+    /// On every ACK that provides an RTT sample BBR updates the BBR.RTprop
+    /// estimator as follows.
+    ///
+    /// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 4.1.2.3.
     fn update_rtprop(&mut self, now: Instant) {
         let sample_rtt = self.delivery_rate_estimator.sample_rtt();
 
@@ -687,21 +770,25 @@ impl Bbr {
         }
     }
 
-    /// See <https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-00#section-4.2.1>.
+    /// BBR updates the pacing rate on each ACK as follows.
+    ///
+    /// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 4.2.1.
     fn set_pacing_rate(&mut self) {
         self.set_pacing_rate_with_gain(self.pacing_gain);
     }
 
-    /// See <https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-00#section-4.2.2>.
+    /// On each ACK, BBR runs BBRSetSendQuantum() to update BBR.send_quantum
+    /// as follows.
+    ///
+    /// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 4.2.2.
     fn set_send_quantum(&mut self) {
         // A BBR implementation MAY use alternate approaches to select a
         // BBR.send_quantum, as appropriate for the CPU overheads anticipated
         // for senders and receivers, and buffering considerations anticipated
-        // in the network path.  However, for the sake of the network and other
+        // in the network path. However, for the sake of the network and other
         // users, a BBR implementation SHOULD attempt to use the smallest
         // feasible quanta.
-        // Adjust according to:
-        // <https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-02>.
+        // Adjust according to draft-cardwell-iccrg-bbr-congestion-control-02
         let floor = if self.pacing_rate < SEND_QUANTUM_THRESHOLD_PACING_RATE {
             self.config.max_datagram_size
         } else {
@@ -713,7 +800,12 @@ impl Bbr {
         self.send_quantum = (self.pacing_rate / 1000).clamp(floor, 64 * 1024);
     }
 
-    /// See <https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-00#section-4.2.3.4>.
+    /// Upon every ACK in Fast Recovery, run the following steps, which help
+    /// ensure packet conservation on the first round of recovery, and sending
+    /// at no more than twice the current delivery rate on later rounds of
+    /// recovery.
+    ///
+    /// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 4.2.3.4.
     fn modulate_cwnd_for_recovery(&mut self, bytes_in_flight: u64) {
         if self.ack_state.newly_lost_bytes > 0 {
             self.cwnd = self
@@ -729,7 +821,11 @@ impl Bbr {
         }
     }
 
-    /// See <https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-00#section-4.2.3.5>.
+    /// To quickly reduce the volume of in-flight data and drain the bottleneck
+    /// queue, thereby allowing measurement of BBR.RTprop, BBR bounds the cwnd
+    /// to BBRMinPipeCwnd, the minimal value that allows pipelining.
+    ///
+    /// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 4.2.3.5.
     fn modulate_cwnd_for_probe_rtt(&mut self) {
         // BBR bounds the cwnd in ProbeRTT.
         if self.state == BbrStateMachine::ProbeRTT {
@@ -737,7 +833,9 @@ impl Bbr {
         }
     }
 
-    // See https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-00#section-4.2.3.6
+    /// Adjust the congestion window
+    ///
+    /// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 4.2.3.6
     fn set_cwnd(&mut self) {
         let bytes_in_flight = self.stats.bytes_in_flight;
 
@@ -745,6 +843,10 @@ impl Bbr {
         self.modulate_cwnd_for_recovery(bytes_in_flight);
 
         if !self.packet_conservation {
+            // If BBR has measured enough samples to achieve confidence that it
+            // has filled the pipe, then it increases its cwnd based on the
+            // number of packets delivered, while bounding its cwnd to be no
+            // larger than the BBR.target_cwnd adapted to the estimated BDP.
             if self.is_filled_pipe() {
                 self.cwnd = self
                     .target_cwnd
@@ -752,41 +854,57 @@ impl Bbr {
             } else if self.cwnd < self.target_cwnd
                 || self.delivery_rate_estimator.delivered() < self.config.initial_cwnd
             {
+                // Otherwise, if the cwnd is below the target, or the sender has
+                // marked so little data delivered (less than InitialCwnd) that
+                // it does not yet judge its BBR.BtlBw estimate and BBR.target_cwnd
+                // as useful, then it increases cwnd without bounding it to be
+                // below the target.
                 self.cwnd += self.ack_state.newly_acked_bytes;
             }
+
+            // Finally, BBR imposes a floor of BBRMinPipeCwnd in order to allow
+            // pipelining even with small BDPs.
             self.cwnd = self.cwnd.max(self.config.min_cwnd);
         }
 
         self.modulate_cwnd_for_probe_rtt();
     }
 
-    /// See <https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control-00#section-4.2.3.4>.
+    /// Enter loss recovery
+    ///
+    /// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 4.2.3.4.
     fn enter_recovery(&mut self, now: Instant) {
         self.save_cwnd();
 
         self.recovery_epoch_start = Some(now);
+
+        // Upon entering Fast Recovery, set cwnd to the number of packets still
+        // in flight (allowing at least one for a fast retransmit):
         self.cwnd = self.stats.bytes_in_flight
             + self
                 .ack_state
                 .newly_acked_bytes
                 .max(self.config.max_datagram_size);
+
+        // Note: After one round-trip in Fast Recovery, BBR.packet_conservation
+        // will reset to false
         self.packet_conservation = true;
         self.in_recovery = true;
 
-        // After one round-trip in Fast Recovery:
-        //   BBR.packet_conservation = false
         self.round.next_round_delivered = self.delivery_rate_estimator.delivered();
     }
 
+    /// Exit loss recovery
+    ///
+    /// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 4.2.3.4.
     fn exit_recovery(&mut self) {
-        // Upon exiting loss recovery (RTO recovery or Fast Recovery), either by
-        // repairing all losses or undoing recovery, BBR restores the best-known
-        // cwnd value we had upon entering loss recovery
         self.recovery_epoch_start = None;
-
         self.packet_conservation = false;
         self.in_recovery = false;
 
+        // Upon exiting loss recovery (RTO recovery or Fast Recovery), either by
+        // repairing all losses or undoing recovery, BBR restores the best-known
+        // cwnd value we had upon entering loss recovery
         self.restore_cwnd();
     }
 }
@@ -803,8 +921,8 @@ impl CongestionController for Bbr {
             self.stats.bytes_lost_in_total,
         );
 
-        self.stats.bytes_in_flight += packet.sent_size as u64;
         self.handle_restart_from_idle(self.stats.bytes_in_flight);
+        self.stats.bytes_in_flight += packet.sent_size as u64;
     }
 
     fn begin_ack(&mut self, now: Instant, bytes_in_flight: u64) {

@@ -165,24 +165,32 @@ pub extern "C" fn quic_config_set_send_udp_payload_size(config: &mut Config, v: 
 
 /// Set the `initial_max_data` transport parameter. It means the initial
 /// value for the maximum amount of data that can be sent on the connection.
+/// The value is capped by the setting `max_connection_window`.
+/// The default value is `10485760`.
 #[no_mangle]
 pub extern "C" fn quic_config_set_initial_max_data(config: &mut Config, v: u64) {
     config.set_initial_max_data(v);
 }
 
 /// Set the `initial_max_stream_data_bidi_local` transport parameter.
+/// The value is capped by the setting `max_stream_window`.
+/// The default value is `5242880`.
 #[no_mangle]
 pub extern "C" fn quic_config_set_initial_max_stream_data_bidi_local(config: &mut Config, v: u64) {
     config.set_initial_max_stream_data_bidi_local(v);
 }
 
 /// Set the `initial_max_stream_data_bidi_remote` transport parameter.
+/// The value is capped by the setting `max_stream_window`.
+/// The default value is `2097152`.
 #[no_mangle]
 pub extern "C" fn quic_config_set_initial_max_stream_data_bidi_remote(config: &mut Config, v: u64) {
     config.set_initial_max_stream_data_bidi_remote(v);
 }
 
 /// Set the `initial_max_stream_data_uni` transport parameter.
+/// The value is capped by the setting `max_stream_window`.
+/// The default value is `1048576`.
 #[no_mangle]
 pub extern "C" fn quic_config_set_initial_max_stream_data_uni(config: &mut Config, v: u64) {
     config.set_initial_max_stream_data_uni(v);
@@ -283,12 +291,15 @@ pub extern "C" fn quic_config_set_multipath_algorithm(config: &mut Config, v: Mu
 }
 
 /// Set the maximum size of the connection flow control window.
+/// The default value is MAX_CONNECTION_WINDOW (15 MB).
 #[no_mangle]
 pub extern "C" fn quic_config_set_max_connection_window(config: &mut Config, v: u64) {
     config.set_max_connection_window(v);
 }
 
 /// Set the maximum size of the stream flow control window.
+/// The value should not be greater than the setting `max_connection_window`.
+/// The default value is MAX_STREAM_WINDOW (6 MB).
 #[no_mangle]
 pub extern "C" fn quic_config_set_max_stream_window(config: &mut Config, v: u64) {
     config.set_max_stream_window(v);
@@ -385,6 +396,13 @@ pub extern "C" fn quic_config_set_cid_len(config: &mut Config, v: u8) {
 #[no_mangle]
 pub extern "C" fn quic_config_set_send_batch_size(config: &mut Config, v: u16) {
     config.set_send_batch_size(v as usize);
+}
+
+/// Set the buffer size for disordered zerortt packets on the server.
+/// Applicable to Server only.
+#[no_mangle]
+pub extern "C" fn quic_config_set_zerortt_buffer_size(config: &mut Config, v: u16) {
+    config.set_zerortt_buffer_size(v as usize);
 }
 
 /// Create a new TlsConfig.
