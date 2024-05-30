@@ -868,7 +868,7 @@ mod tests {
                     assert_eq!(res, Some(i..2), "{:?} want {:?}, got {:?}", i..j, i..2, res)
                 } else if i >= 2 && i <= 4 && j > 4 && j <= 6 {
                     assert_eq!(res, Some(4..j), "{:?} want {:?}, got {:?}", i..j, 4..j, res)
-                } else if i >= 2 && i <= 4 && j > 4 && j > 6 {
+                } else if i >= 2 && i <= 4 && j > 6 {
                     assert_eq!(res, Some(4..6), "{:?} want {:?}, got {:?}", i..j, 4..6, res)
                 } else if i >= 4 && i < 6 && j >= 6 {
                     assert_eq!(res, Some(i..6), "{:?} want {:?}, got {:?}", i..j, i..6, res)
