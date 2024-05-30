@@ -2213,6 +2213,7 @@ mod tests {
             conf.set_max_connection_window(1024 * 1024 * 3);
             conf.set_max_stream_window(1024 * 1024 * 1);
             conf.set_max_concurrent_conns(100);
+            conf.enable_pacing(false);
 
             let application_protos = vec![b"h3".to_vec()];
             let tls_config = if !is_server {
