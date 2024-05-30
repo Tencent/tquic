@@ -15,6 +15,7 @@
 use std::cmp;
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
+use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::time;
 use std::time::Duration;
@@ -119,7 +120,7 @@ impl Path {
         let dplpmtud = Dplpmtud::new(
             conf.enable_dplpmtud,
             conf.max_datagram_size,
-            remote_addr.is_ipv6(),
+            Self::is_ipv6(&remote_addr),
         );
 
         Self {
@@ -325,6 +326,17 @@ impl Path {
     /// Return the validation state of the path
     pub fn state(&self) -> PathState {
         self.state
+    }
+
+    /// Return true if the given address is a pure IPv6 address, rather than an
+    /// IPv4-mapped IPv6 address.
+    fn is_ipv6(addr: &SocketAddr) -> bool {
+        if let IpAddr::V6(ip) = addr.ip() {
+            if !matches!(ip.segments(), [0, 0, 0, 0, 0, 0xffff, _, _]) {
+                return true;
+            }
+        }
+        false
     }
 }
 
