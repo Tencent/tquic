@@ -545,6 +545,14 @@ impl PathMap {
             .min()
     }
 
+    /// Return the lowest pacer timer value among all paths.
+    pub fn min_pacer_timer(&self) -> Option<time::Instant> {
+        self.paths
+            .iter()
+            .filter_map(|(_, p)| p.recovery.pacer_timer)
+            .min()
+    }
+
     /// Return the minimum timeout among all paths.
     pub fn min_path_chal_timer(&self) -> Option<time::Instant> {
         self.paths

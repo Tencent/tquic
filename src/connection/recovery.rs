@@ -15,6 +15,7 @@
 use std::cmp;
 use std::collections::VecDeque;
 use std::ops::Range;
+use std::time;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -31,6 +32,8 @@ use super::Connection;
 use super::HandshakeStatus;
 use crate::congestion_control;
 use crate::congestion_control::CongestionController;
+use crate::congestion_control::Pacer;
+use crate::connection::Timer;
 use crate::frame;
 use crate::qlog;
 use crate::qlog::events::EventData;
@@ -94,6 +97,15 @@ pub struct Recovery {
     /// Congestion controller for the corresponding path.
     pub congestion: Box<dyn CongestionController>,
 
+    /// Pacing.
+    pub pacer: Pacer,
+
+    /// Next pacer tick
+    pub pacer_timer: Option<Instant>,
+
+    /// Cache pkt size
+    pub cache_pkt_size: usize,
+
     /// Path level Statistics.
     pub stats: PathStats,
 
@@ -120,6 +132,9 @@ impl Recovery {
             ack_eliciting_in_flight: 0,
             rtt: RttEstimator::new(conf.initial_rtt),
             congestion: congestion_control::build_congestion_controller(conf),
+            pacer: Pacer::build_pacer_controller(conf),
+            pacer_timer: None,
+            cache_pkt_size: conf.max_datagram_size,
             stats: PathStats::default(),
             last_metrics: RecoveryMetrics::default(),
             trace_id: String::from(""),
@@ -189,6 +204,7 @@ impl Recovery {
 
             space.bytes_in_flight += sent_size;
             self.bytes_in_flight += sent_size;
+            self.cache_pkt_size = sent_size;
 
             self.set_loss_detection_timer(space_id, spaces, handshake_status, now);
         }
@@ -808,6 +824,33 @@ impl Recovery {
     /// Check whether the congestion window is still sufficient for sending packets.
     pub(crate) fn can_send(&self) -> bool {
         self.bytes_in_flight < self.congestion.congestion_window() as usize
+    }
+
+    pub fn can_pacing(&mut self) -> bool {
+        let now = time::Instant::now();
+        let cwnd = self.congestion.congestion_window();
+        let srtt = self.rtt.smoothed_rtt() as Duration;
+
+        if let Some(pr) = self.congestion.pacing_rate() {
+            if let Some(pacer_timer) = self.pacer.schedule(
+                self.cache_pkt_size as u64,
+                pr,
+                srtt,
+                cwnd,
+                self.max_datagram_size as u64,
+                now,
+            ) {
+                trace!("{} pacer will be ready at {:?}", self.trace_id, pacer_timer);
+                self.pacer_timer = Some(pacer_timer);
+                return false;
+            } else {
+                self.pacer.on_sent(self.max_datagram_size as u64);
+                self.pacer_timer = None;
+                return true;
+            }
+        }
+        trace!("{} pacing is disabled", self.trace_id);
+        true
     }
 
     /// Update statistics for the packet sent event

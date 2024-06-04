@@ -526,6 +526,12 @@ impl Config {
         self.recovery.initial_rtt = cmp::max(Duration::from_millis(millis), TIMER_GRANULARITY);
     }
 
+    /// Enable pacing to smooth the flow of packets sent onto the network.
+    /// default value is true.
+    pub fn enable_pacing(&mut self, v: bool) {
+        self.recovery.enable_pacing = v;
+    }
+
     /// Set the linear factor for calculating the probe timeout.
     /// The endpoint do not backoff the first `v` consecutive probe timeouts.
     /// The default value is `0`.
@@ -720,6 +726,9 @@ pub struct RecoveryConfig {
     /// The initial rtt, used before real rtt is estimated.
     pub initial_rtt: Duration,
 
+    /// Enable pacing to smooth the flow of packets sent onto the network.
+    pub enable_pacing: bool,
+
     /// Linear factor for calculating the probe timeout.
     pub pto_linear_factor: u64,
 
@@ -737,6 +746,7 @@ impl Default for RecoveryConfig {
             min_congestion_window: 2_u64,
             initial_congestion_window: 10_u64,
             initial_rtt: INITIAL_RTT,
+            enable_pacing: true,
             pto_linear_factor: DEFAULT_PTO_LINEAR_FACTOR,
             max_pto: MAX_PTO,
         }
