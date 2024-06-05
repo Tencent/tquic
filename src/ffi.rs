@@ -1981,7 +1981,6 @@ pub extern "C" fn http3_recv_body(
 
 /// Parse HTTP/3 priority data.
 #[no_mangle]
-#[cfg(feature = "sfv")]
 pub extern "C" fn http3_parse_extensible_priority(
     priority: *const u8,
     priority_len: size_t,
