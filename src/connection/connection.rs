@@ -3694,12 +3694,14 @@ impl Connection {
     /// Create a new bidirectional stream with given stream priority.
     /// Return id of the created stream upon success.
     pub fn stream_bidi_new(&mut self, urgency: u8, incremental: bool) -> Result<u64> {
+        self.mark_tickable(true);
         self.streams.stream_bidi_new(urgency, incremental)
     }
 
     /// Create a new unidrectional stream with given stream priority.
     /// Return id of the created stream upon success.
     pub fn stream_uni_new(&mut self, urgency: u8, incremental: bool) -> Result<u64> {
+        self.mark_tickable(true);
         self.streams.stream_uni_new(urgency, incremental)
     }
 
