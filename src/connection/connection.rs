@@ -4150,6 +4150,7 @@ enum ConnectionFlags {
 }
 
 /// Statistics about a QUIC connection.
+#[repr(C)]
 #[derive(Default)]
 pub struct ConnectionStats {
     /// Total number of received packets.
