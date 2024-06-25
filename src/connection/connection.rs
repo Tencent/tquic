@@ -1752,11 +1752,11 @@ impl Connection {
         Ok((pkt_type, write_status.is_pmtu_probe, written))
     }
 
-    // Write QUIC frames to the payload of a QUIC packet.
-    //
-    // The current write offset in the `out` buffer is recorded in `st.written`
-    // Return Error::Done if there is no frame to send or no left room to write more frames.
-    // Return other Error if found unexpected error.
+    /// Write QUIC frames to the payload of a QUIC packet.
+    ///
+    /// The current write offset in the `out` buffer is recorded in `st.written`
+    /// Return Error::Done if there is no frame to send or no left room to write more frames.
+    /// Return other Error if found unexpected error.
     #[allow(clippy::too_many_arguments)]
     fn send_frames(
         &mut self,
@@ -1777,13 +1777,23 @@ impl Connection {
         let path = self.paths.get_mut(path_id)?;
         path.recovery.stat_cwnd_limited();
 
+        let now = time::Instant::now();
+        let r = &mut self.paths.get_mut(path_id)?.recovery;
+
         // Check the congestion window
         // - Packets containing frames besides ACK or CONNECTION_CLOSE frames
         // count toward congestion control limits. (RFC 9002 Section 3)
         // - Probe packets are allowed to temporarily exceed the congestion
         // window. (RFC 9002 Section 4.7)
-        if !st.is_probe && !path.recovery.can_send() {
-            return Err(Error::Done);
+        if !st.is_probe {
+            if !r.can_send() {
+                return Err(Error::Done);
+            }
+
+            // Check the pacer
+            if self.recovery_conf.enable_pacing && !r.can_pacing() {
+                return Err(Error::Done);
+            }
         }
 
         // Write PMTU probe frames
@@ -3035,6 +3045,10 @@ impl Connection {
                 Some(time) => self.timers.set(Timer::LossDetection, time),
                 None => self.timers.stop(Timer::LossDetection),
             }
+            match self.paths.min_pacer_timer() {
+                Some(time) => self.timers.set(Timer::Pacer, time),
+                None => self.timers.stop(Timer::Pacer),
+            }
             match self.paths.min_path_chal_timer() {
                 Some(time) => self.timers.set(Timer::PathChallenge, time),
                 None => self.timers.stop(Timer::PathChallenge),
@@ -3089,6 +3103,18 @@ impl Connection {
                             }
                         }
                     }
+                }
+
+                Timer::Pacer => {
+                    for (_, path) in self.paths.iter_mut() {
+                        if let Some(timer) = path.recovery.pacer_timer {
+                            if timer > now {
+                                continue;
+                            }
+                        }
+                        path.recovery.pacer_timer = None;
+                    }
+                    self.mark_tickable(true);
                 }
 
                 Timer::Idle => {
@@ -3668,12 +3694,14 @@ impl Connection {
     /// Create a new bidirectional stream with given stream priority.
     /// Return id of the created stream upon success.
     pub fn stream_bidi_new(&mut self, urgency: u8, incremental: bool) -> Result<u64> {
+        self.mark_tickable(true);
         self.streams.stream_bidi_new(urgency, incremental)
     }
 
     /// Create a new unidrectional stream with given stream priority.
     /// Return id of the created stream upon success.
     pub fn stream_uni_new(&mut self, urgency: u8, incremental: bool) -> Result<u64> {
+        self.mark_tickable(true);
         self.streams.stream_uni_new(urgency, incremental)
     }
 
@@ -4122,6 +4150,7 @@ enum ConnectionFlags {
 }
 
 /// Statistics about a QUIC connection.
+#[repr(C)]
 #[derive(Default)]
 pub struct ConnectionStats {
     /// Total number of received packets.
@@ -4492,6 +4521,7 @@ pub(crate) mod tests {
             conf.set_max_handshake_timeout(0);
             conf.enable_multipath(false);
             conf.enable_dplpmtud(true);
+            conf.enable_pacing(false);
 
             let application_protos = vec![b"h3".to_vec()];
             let tls_config = if !is_server {

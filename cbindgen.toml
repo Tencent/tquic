@@ -26,6 +26,7 @@ exclude = ["MAX_CID_LEN", "MIN_CLIENT_INITIAL_LEN"]
 "TlsConfig" = "quic_tls_config_t"
 "SslCtx" = "SSL_CTX"
 "Connection" = "quic_conn_t"
+"ConnectionStats" = "quic_conn_stats_t"
 "Endpoint" = "quic_endpoint_t"
 "PacketOutSpec" = "quic_packet_out_spec_t"
 "PacketInfo" = "quic_packet_info_t"

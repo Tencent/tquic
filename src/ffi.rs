@@ -50,6 +50,7 @@ use libc::AF_INET;
 use libc::AF_INET6;
 
 use crate::codec::Decoder;
+use crate::connection::ConnectionStats;
 use crate::error::Error;
 use crate::h3::connection::Http3Connection;
 use crate::h3::connection::Http3Priority;
@@ -1022,6 +1023,12 @@ pub extern "C" fn quic_conn_active_path(conn: &Connection, a: &mut PathAddress) 
     false
 }
 
+/// Return statistics about the connection.
+#[no_mangle]
+pub extern "C" fn quic_conn_stats(conn: &mut Connection) -> &ConnectionStats {
+    conn.stats()
+}
+
 /// Return the trace id of the connection
 #[no_mangle]
 pub extern "C" fn quic_conn_trace_id(
@@ -1042,8 +1049,20 @@ pub extern "C" fn quic_conn_is_draining(conn: &mut Connection) -> bool {
 
 /// Check whether the connection is closing.
 #[no_mangle]
+pub extern "C" fn quic_conn_is_closing(conn: &mut Connection) -> bool {
+    conn.is_closing()
+}
+
+/// Check whether the connection is closed.
+#[no_mangle]
 pub extern "C" fn quic_conn_is_closed(conn: &mut Connection) -> bool {
     conn.is_closed()
+}
+
+/// Check whether the connection was closed due to handshake timeout.
+#[no_mangle]
+pub extern "C" fn quic_conn_is_handshake_timeout(conn: &mut Connection) -> bool {
+    conn.is_handshake_timeout()
 }
 
 /// Check whether the connection was closed due to idle timeout.
@@ -1981,7 +2000,6 @@ pub extern "C" fn http3_recv_body(
 
 /// Parse HTTP/3 priority data.
 #[no_mangle]
-#[cfg(feature = "sfv")]
 pub extern "C" fn http3_parse_extensible_priority(
     priority: *const u8,
     priority_len: size_t,

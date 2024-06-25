@@ -34,6 +34,7 @@ pub use cubic::Cubic;
 pub use cubic::CubicConfig;
 pub use dummy::Dummy;
 pub use hystart_plus_plus::HystartPlusPlus;
+pub use pacing::Pacer;
 
 /// Available congestion control algorithms.
 #[repr(C)]

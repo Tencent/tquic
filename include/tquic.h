@@ -235,6 +235,36 @@ typedef struct quic_path_address_t {
   socklen_t remote_addr_len;
 } quic_path_address_t;
 
+/**
+ * Statistics about a QUIC connection.
+ */
+typedef struct quic_conn_stats_t {
+  /**
+   * Total number of received packets.
+   */
+  uint64_t recv_count;
+  /**
+   * Total number of bytes received on the connection.
+   */
+  uint64_t recv_bytes;
+  /**
+   * Total number of sent packets.
+   */
+  uint64_t sent_count;
+  /**
+   * Total number of bytes sent on the connection.
+   */
+  uint64_t sent_bytes;
+  /**
+   * Total number of lost packets.
+   */
+  uint64_t lost_count;
+  /**
+   * Total number of bytes lost on the connection.
+   */
+  uint64_t lost_bytes;
+} quic_conn_stats_t;
+
 typedef struct http3_methods_t {
   /**
    * Called when the stream got headers.
@@ -319,7 +349,7 @@ void quic_config_set_max_handshake_timeout(struct quic_config_t *config, uint64_
  */
 void quic_config_set_recv_udp_payload_size(struct quic_config_t *config, uint16_t v);
 
-/*
+/**
  * Enable the Datagram Packetization Layer Path MTU Discovery
  * default value is true.
  */
@@ -793,6 +823,11 @@ bool quic_conn_path_iter_next(struct quic_path_address_iter_t *iter, struct quic
 bool quic_conn_active_path(const struct quic_conn_t *conn, struct quic_path_address_t *a);
 
 /**
+ * Return statistics about the connection.
+ */
+const struct quic_conn_stats_t *quic_conn_stats(struct quic_conn_t *conn);
+
+/**
  * Return the trace id of the connection
  */
 void quic_conn_trace_id(struct quic_conn_t *conn, const uint8_t **out, size_t *out_len);
@@ -805,7 +840,17 @@ bool quic_conn_is_draining(struct quic_conn_t *conn);
 /**
  * Check whether the connection is closing.
  */
+bool quic_conn_is_closing(struct quic_conn_t *conn);
+
+/**
+ * Check whether the connection is closed.
+ */
 bool quic_conn_is_closed(struct quic_conn_t *conn);
+
+/**
+ * Check whether the connection was closed due to handshake timeout.
+ */
+bool quic_conn_is_handshake_timeout(struct quic_conn_t *conn);
 
 /**
  * Check whether the connection was closed due to idle timeout.
