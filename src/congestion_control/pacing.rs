@@ -43,28 +43,40 @@ pub struct Pacer {
     /// Bucket capacity (bytes). Bytes that could burst during a pacing granularity
     capacity: u64,
 
-    /// last congestion window, bytes
-    last_cwnd: u64,
-
     /// available tokens, bytes
     tokens: u64,
 
+    /// last congestion window, bytes
+    last_cwnd: u64,
+
     /// last schedule time
     last_sched_time: Instant,
+
+    /// Pacing granularity
+    granularity: Duration,
 }
 
 impl Pacer {
     /// Generate a pacer (for each path)
-    pub fn new(enabled: bool, srtt: Duration, cwnd: u64, mtu: u64, now: Instant) -> Self {
-        let capacity = Self::calc_capacity(cwnd, srtt, mtu);
-
-        Self {
+    pub fn new(
+        enabled: bool,
+        srtt: Duration,
+        cwnd: u64,
+        mtu: u64,
+        now: Instant,
+        granularity: Duration,
+    ) -> Self {
+        let mut pacer = Pacer {
             enabled,
-            capacity,
+            capacity: 0,
+            tokens: 0,
             last_cwnd: cwnd,
-            tokens: capacity,
             last_sched_time: now,
-        }
+            granularity,
+        };
+        pacer.update_capacity(cwnd, srtt, mtu);
+        pacer.tokens = pacer.capacity;
+        pacer
     }
 
     /// Build a pacer controller.
@@ -76,6 +88,7 @@ impl Pacer {
                 .saturating_mul(conf.max_datagram_size as u64),
             conf.max_datagram_size as u64,
             Instant::now(),
+            conf.pacing_granularity,
         )
     }
 
@@ -111,7 +124,7 @@ impl Pacer {
 
         // Update capacity and tokens if necessary
         if cwnd != self.last_cwnd {
-            self.capacity = Self::calc_capacity(cwnd, srtt, mtu);
+            self.update_capacity(cwnd, srtt, mtu);
             self.tokens = self.capacity.min(self.tokens);
             self.last_cwnd = cwnd;
         }
@@ -139,14 +152,13 @@ impl Pacer {
         Some(self.last_sched_time + Duration::from_nanos(time_to_wait))
     }
 
-    fn calc_capacity(cwnd: u64, srtt: Duration, mtu: u64) -> u64 {
+    fn update_capacity(&mut self, cwnd: u64, srtt: Duration, mtu: u64) {
         // Note: the bound operation would limit the average pacing rate to
         //   [MIN_BURST_PACKET_NUM * mtu / srtt, MAX_BURST_PACKET_NUM * mtu / srtt]
         // the minimal pacing rate may be too large in some cases.
         let capacity =
-            (cwnd as u128 * PACING_GRANULARITY.as_nanos() / srtt.as_nanos().max(1_000_000)) as u64;
-
-        capacity.clamp(MIN_BURST_PACKET_NUM * mtu, MAX_BURST_PACKET_NUM * mtu)
+            (cwnd as u128 * self.granularity.as_nanos() / srtt.as_nanos().max(1_000_000)) as u64;
+        self.capacity = capacity.clamp(MIN_BURST_PACKET_NUM * mtu, MAX_BURST_PACKET_NUM * mtu)
     }
 }
 
@@ -162,7 +174,7 @@ mod tests {
         let now = Instant::now();
 
         let cwnd: u64 = 20 * mtu;
-        let p = Pacer::new(enabled, srtt, cwnd, mtu, now);
+        let p = Pacer::new(enabled, srtt, cwnd, mtu, now, PACING_GRANULARITY);
         assert!(p.enabled() == true);
         assert_eq!(p.capacity, p.tokens);
         assert_eq!(
@@ -171,13 +183,13 @@ mod tests {
         );
 
         let cwnd: u64 = 1 * mtu;
-        let p = Pacer::new(enabled, srtt, cwnd, mtu, now);
+        let p = Pacer::new(enabled, srtt, cwnd, mtu, now, PACING_GRANULARITY);
         assert!(p.enabled() == true);
         assert_eq!(p.capacity, p.tokens);
         assert_eq!(p.capacity, MIN_BURST_PACKET_NUM * mtu);
 
         let cwnd: u64 = 200 * mtu;
-        let p = Pacer::new(enabled, srtt, cwnd, mtu, now);
+        let p = Pacer::new(enabled, srtt, cwnd, mtu, now, PACING_GRANULARITY);
         assert!(p.enabled() == true);
         assert_eq!(p.capacity, p.tokens);
         assert_eq!(p.capacity, MAX_BURST_PACKET_NUM * mtu);
@@ -193,7 +205,7 @@ mod tests {
         let bytes_to_send: u64 = 1000;
         let pacing_rate: u64 = 1000000;
 
-        let mut p = Pacer::new(enabled, srtt, cwnd, mtu, now);
+        let mut p = Pacer::new(enabled, srtt, cwnd, mtu, now, PACING_GRANULARITY);
 
         assert_eq!(p.enabled(), false);
         assert_eq!(p.capacity, 20 * 1500);
@@ -216,7 +228,7 @@ mod tests {
 
         // Abnormal input
         assert_eq!(
-            Pacer::new(enabled, srtt, cwnd, mtu, now).schedule(
+            Pacer::new(enabled, srtt, cwnd, mtu, now, PACING_GRANULARITY).schedule(
                 bytes_to_send,
                 pacing_rate,
                 Duration::ZERO,
@@ -227,7 +239,7 @@ mod tests {
             None
         );
         assert_eq!(
-            Pacer::new(enabled, srtt, cwnd, mtu, now).schedule(
+            Pacer::new(enabled, srtt, cwnd, mtu, now, PACING_GRANULARITY).schedule(
                 bytes_to_send,
                 pacing_rate,
                 srtt,
@@ -239,7 +251,7 @@ mod tests {
         );
 
         // Congestion window changes
-        let mut p = Pacer::new(enabled, srtt, cwnd, mtu, now);
+        let mut p = Pacer::new(enabled, srtt, cwnd, mtu, now, PACING_GRANULARITY);
         assert_eq!(p.capacity, cwnd);
         assert_eq!(p.capacity, p.tokens);
 
@@ -251,7 +263,7 @@ mod tests {
         assert_eq!(p.tokens, cwnd); // do not change tokens
 
         // Schedule and wait cases
-        let mut p = Pacer::new(enabled, srtt, cwnd, mtu, now);
+        let mut p = Pacer::new(enabled, srtt, cwnd, mtu, now, PACING_GRANULARITY);
         assert_eq!(p.capacity, 10 * mtu);
         assert_eq!(p.tokens, 10 * mtu);
 

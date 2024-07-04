@@ -559,9 +559,16 @@ impl Config {
     }
 
     /// Enable pacing to smooth the flow of packets sent onto the network.
-    /// default value is true.
+    /// The default value is true.
     pub fn enable_pacing(&mut self, v: bool) {
         self.recovery.enable_pacing = v;
+    }
+
+    /// Set clock granularity used by the pacer.
+    /// The default value is 1 milliseconds.
+    pub fn set_pacing_granularity(&mut self, millis: u64) {
+        self.recovery.pacing_granularity =
+            cmp::max(Duration::from_millis(millis), TIMER_GRANULARITY);
     }
 
     /// Set the linear factor for calculating the probe timeout.
@@ -784,6 +791,9 @@ pub struct RecoveryConfig {
     /// Enable pacing to smooth the flow of packets sent onto the network.
     pub enable_pacing: bool,
 
+    /// Clock granularity used by the pacer.
+    pub pacing_granularity: Duration,
+
     /// Linear factor for calculating the probe timeout.
     pub pto_linear_factor: u64,
 
@@ -808,6 +818,7 @@ impl Default for RecoveryConfig {
             bbr_probe_bw_cwnd_gain: 2.0,
             initial_rtt: INITIAL_RTT,
             enable_pacing: true,
+            pacing_granularity: time::Duration::from_millis(1),
             pto_linear_factor: DEFAULT_PTO_LINEAR_FACTOR,
             max_pto: MAX_PTO,
         }
