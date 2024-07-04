@@ -431,6 +431,42 @@ void quic_config_set_initial_congestion_window(struct quic_config_t *config, uin
 void quic_config_set_min_congestion_window(struct quic_config_t *config, uint64_t v);
 
 /**
+ * Set the threshold for slow start in packets.
+ * The default value is the maximum value of u64.
+ */
+void quic_config_set_slow_start_thresh(struct quic_config_t *config, uint64_t v);
+
+/**
+ * Set the minimum duration for BBR ProbeRTT state in milliseconds.
+ * The default value is 200 milliseconds.
+ */
+void quic_config_set_bbr_probe_rtt_duration(struct quic_config_t *config, uint64_t v);
+
+/**
+ * Enable using a cwnd based on bdp during ProbeRTT state.
+ * The default value is false.
+ */
+void quic_config_enable_bbr_probe_rtt_based_on_bdp(struct quic_config_t *config, bool v);
+
+/**
+ * Set the cwnd gain for BBR ProbeRTT state.
+ * The default value is 0.75
+ */
+void quic_config_set_bbr_probe_rtt_cwnd_gain(struct quic_config_t *config, double v);
+
+/**
+ * Set the length of the BBR RTProp min filter window in milliseconds.
+ * The default value is 10000 milliseconds.
+ */
+void quic_config_set_bbr_rtprop_filter_len(struct quic_config_t *config, uint64_t v);
+
+/**
+ * Set the cwnd gain for BBR ProbeBW state.
+ * The default value is 2.0
+ */
+void quic_config_set_bbr_probe_bw_cwnd_gain(struct quic_config_t *config, double v);
+
+/**
  * Set the initial RTT in milliseconds. The default value is 333ms.
  * The configuration should be changed with caution. Setting a value less than the default
  * will cause retransmission of handshake packets to be more aggressive.

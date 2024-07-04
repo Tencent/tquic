@@ -33,6 +33,7 @@ pub use copa::CopaConfig;
 pub use cubic::Cubic;
 pub use cubic::CubicConfig;
 pub use dummy::Dummy;
+pub use dummy::DummyConfig;
 pub use hystart_plus_plus::HystartPlusPlus;
 pub use pacing::Pacer;
 
@@ -185,38 +186,12 @@ impl fmt::Debug for dyn CongestionController {
 
 /// Build a congestion controller.
 pub fn build_congestion_controller(conf: &RecoveryConfig) -> Box<dyn CongestionController> {
-    let max_datagram_size: u64 = conf.max_datagram_size as u64;
-    let min_cwnd = conf.min_congestion_window.saturating_mul(max_datagram_size);
-    let initial_cwnd = conf
-        .initial_congestion_window
-        .saturating_mul(max_datagram_size);
-
     match conf.congestion_control_algorithm {
-        CongestionControlAlgorithm::Cubic => Box::new(Cubic::new(CubicConfig::new(
-            min_cwnd,
-            initial_cwnd,
-            Some(conf.initial_rtt),
-            max_datagram_size,
-        ))),
-        CongestionControlAlgorithm::Bbr => Box::new(Bbr::new(BbrConfig::new(
-            min_cwnd,
-            initial_cwnd,
-            Some(conf.initial_rtt),
-            max_datagram_size,
-        ))),
-        CongestionControlAlgorithm::Bbr3 => Box::new(Bbr3::new(Bbr3Config::new(
-            min_cwnd,
-            initial_cwnd,
-            Some(conf.initial_rtt),
-            max_datagram_size,
-        ))),
-        CongestionControlAlgorithm::Copa => Box::new(Copa::new(CopaConfig::new(
-            min_cwnd,
-            initial_cwnd,
-            Some(conf.initial_rtt),
-            max_datagram_size,
-        ))),
-        CongestionControlAlgorithm::Dummy => Box::new(Dummy::new(initial_cwnd)),
+        CongestionControlAlgorithm::Cubic => Box::new(Cubic::new(CubicConfig::from(conf))),
+        CongestionControlAlgorithm::Bbr => Box::new(Bbr::new(BbrConfig::from(conf))),
+        CongestionControlAlgorithm::Bbr3 => Box::new(Bbr3::new(Bbr3Config::from(conf))),
+        CongestionControlAlgorithm::Copa => Box::new(Copa::new(CopaConfig::from(conf))),
+        CongestionControlAlgorithm::Dummy => Box::new(Dummy::new(DummyConfig::from(conf))),
     }
 }
 

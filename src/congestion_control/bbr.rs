@@ -35,6 +35,7 @@ use super::minmax::MinMax;
 use super::{CongestionController, CongestionStats};
 use crate::connection::rtt::RttEstimator;
 use crate::connection::space::{RateSamplePacketState, SentPacket};
+use crate::RecoveryConfig;
 
 /// BBR configurable parameters.
 #[derive(Debug)]
@@ -48,21 +49,43 @@ pub struct BbrConfig {
     /// Initial Smoothed rtt.
     initial_rtt: Option<Duration>,
 
+    /// The minimum duration for ProbeRTT state
+    probe_rtt_duration: Duration,
+
+    /// If true, use a cwnd of `probe_rtt_cwnd_gain*BDP` during ProbeRtt state
+    /// instead of minimal window.
+    probe_rtt_based_on_bdp: bool,
+
+    /// The cwnd gain for ProbeRTT state
+    probe_rtt_cwnd_gain: f64,
+
+    /// The length of the RTProp min filter window
+    rtprop_filter_len: Duration,
+
+    /// The cwnd gain for ProbeBW state
+    probe_bw_cwnd_gain: f64,
+
     /// Max datagram size in bytes.
     max_datagram_size: u64,
 }
 
 impl BbrConfig {
-    pub fn new(
-        min_cwnd: u64,
-        initial_cwnd: u64,
-        initial_rtt: Option<Duration>,
-        max_datagram_size: u64,
-    ) -> Self {
+    pub fn from(conf: &RecoveryConfig) -> Self {
+        let max_datagram_size = conf.max_datagram_size as u64;
+        let min_cwnd = conf.min_congestion_window.saturating_mul(max_datagram_size);
+        let initial_cwnd = conf
+            .initial_congestion_window
+            .saturating_mul(max_datagram_size);
+
         Self {
             min_cwnd,
             initial_cwnd,
-            initial_rtt,
+            initial_rtt: Some(conf.initial_rtt),
+            probe_rtt_duration: conf.bbr_probe_rtt_duration,
+            probe_rtt_based_on_bdp: conf.bbr_probe_rtt_based_on_bdp,
+            probe_rtt_cwnd_gain: conf.bbr_probe_rtt_cwnd_gain,
+            rtprop_filter_len: conf.bbr_rtprop_filter_len,
+            probe_bw_cwnd_gain: conf.bbr_probe_bw_cwnd_gain,
             max_datagram_size,
         }
     }
@@ -74,6 +97,11 @@ impl Default for BbrConfig {
             min_cwnd: 4 * crate::DEFAULT_SEND_UDP_PAYLOAD_SIZE as u64,
             initial_cwnd: 80 * crate::DEFAULT_SEND_UDP_PAYLOAD_SIZE as u64,
             initial_rtt: Some(crate::INITIAL_RTT),
+            probe_rtt_duration: PROBE_RTT_DURATION,
+            probe_rtt_based_on_bdp: false,
+            probe_rtt_cwnd_gain: 0.75,
+            rtprop_filter_len: RTPROP_FILTER_LEN,
+            probe_bw_cwnd_gain: 2.0,
             max_datagram_size: crate::DEFAULT_SEND_UDP_PAYLOAD_SIZE as u64,
         }
     }
@@ -547,7 +575,7 @@ impl Bbr {
     fn enter_probe_bw(&mut self, now: Instant) {
         self.state = BbrStateMachine::ProbeBW;
         self.pacing_gain = 1.0;
-        self.cwnd_gain = 2.0;
+        self.cwnd_gain = self.config.probe_bw_cwnd_gain;
 
         // Gain Cycling Randomization.
         // To improve mixing and fairness, and to reduce queues when multiple
@@ -643,6 +671,10 @@ impl Bbr {
 
     /// Return cwnd for ProbeRTT state.
     fn probe_rtt_cwnd(&self) -> u64 {
+        if self.config.probe_rtt_based_on_bdp {
+            return self.inflight(self.config.probe_rtt_cwnd_gain);
+        }
+
         self.config.min_cwnd
     }
 
@@ -700,7 +732,7 @@ impl Bbr {
                 self.exit_probe_rtt(now);
             }
         } else if bytes_in_flight <= self.probe_rtt_cwnd() {
-            self.probe_rtt_done_stamp = Some(now + PROBE_RTT_DURATION);
+            self.probe_rtt_done_stamp = Some(now + self.config.probe_rtt_duration);
             // ProbeRTT round passed.
             self.probe_rtt_round_done = false;
             self.round.next_round_delivered = self.delivery_rate_estimator.delivered();
@@ -760,7 +792,7 @@ impl Bbr {
         let sample_rtt = self.delivery_rate_estimator.sample_rtt();
 
         self.is_rtprop_expired =
-            now.saturating_duration_since(self.rtprop_stamp) > RTPROP_FILTER_LEN;
+            now.saturating_duration_since(self.rtprop_stamp) > self.config.rtprop_filter_len;
 
         // Use the same state to track BBR.RTprop and ProbeRTT timing.
         // In section-4.1.2.3, a zero packet.rtt is allowed, but it makes no sense.
