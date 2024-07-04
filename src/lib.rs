@@ -518,6 +518,46 @@ impl Config {
         self.recovery.min_congestion_window = packets
     }
 
+    /// Set the threshold for slow start in packets.
+    /// The default value is the maximum value of u64.
+    pub fn set_slow_start_thresh(&mut self, packets: u64) {
+        self.recovery.slow_start_thresh = packets
+    }
+
+    /// Set the minimum duration for BBR ProbeRTT state in milliseconds.
+    /// The default value is 200 milliseconds.
+    pub fn set_bbr_probe_rtt_duration(&mut self, millis: u64) {
+        self.recovery.bbr_probe_rtt_duration =
+            cmp::max(Duration::from_millis(millis), TIMER_GRANULARITY);
+    }
+
+    /// Enable using a cwnd based on bdp during ProbeRTT state.
+    /// The default value is false.
+    pub fn enable_bbr_probe_rtt_based_on_bdp(&mut self, v: bool) {
+        self.recovery.bbr_probe_rtt_based_on_bdp = v;
+    }
+
+    /// Set the cwnd gain for BBR ProbeRTT state.
+    /// This option is meaningful only when `bbr_probe_rtt_based_on_bdp` option
+    /// is set to true.
+    /// The default value is 0.75
+    pub fn set_bbr_probe_rtt_cwnd_gain(&mut self, v: f64) {
+        self.recovery.bbr_probe_rtt_cwnd_gain = v;
+    }
+
+    /// Set the length of the BBR RTProp min filter window in milliseconds.
+    /// The default value is 10000 milliseconds.
+    pub fn set_bbr_rtprop_filter_len(&mut self, millis: u64) {
+        self.recovery.bbr_rtprop_filter_len =
+            cmp::max(Duration::from_millis(millis), TIMER_GRANULARITY);
+    }
+
+    /// Set the cwnd gain for BBR ProbeBW state.
+    /// The default value is 2.0
+    pub fn set_bbr_probe_bw_cwnd_gain(&mut self, v: f64) {
+        self.recovery.bbr_probe_bw_cwnd_gain = v;
+    }
+
     /// Set the initial RTT in milliseconds. The default value is 333ms.
     ///
     /// The configuration should be changed with caution. Setting a value less than the default
@@ -723,6 +763,24 @@ pub struct RecoveryConfig {
     /// See RFC 9002 Section 7.2
     pub initial_congestion_window: u64,
 
+    /// The threshold for slow start in packets.
+    pub slow_start_thresh: u64,
+
+    /// The minimum duration for BBR ProbeRTT state
+    pub bbr_probe_rtt_duration: Duration,
+
+    /// Enable using a cwnd based on bdp during ProbeRTT state.
+    pub bbr_probe_rtt_based_on_bdp: bool,
+
+    /// The cwnd gain for BBR ProbeRTT state
+    pub bbr_probe_rtt_cwnd_gain: f64,
+
+    /// The length of the RTProp min filter window
+    pub bbr_rtprop_filter_len: Duration,
+
+    /// The cwnd gain for ProbeBW state
+    pub bbr_probe_bw_cwnd_gain: f64,
+
     /// The initial rtt, used before real rtt is estimated.
     pub initial_rtt: Duration,
 
@@ -745,6 +803,12 @@ impl Default for RecoveryConfig {
             congestion_control_algorithm: CongestionControlAlgorithm::Bbr,
             min_congestion_window: 2_u64,
             initial_congestion_window: 10_u64,
+            slow_start_thresh: u64::MAX,
+            bbr_probe_rtt_duration: Duration::from_millis(200),
+            bbr_probe_rtt_based_on_bdp: false,
+            bbr_probe_rtt_cwnd_gain: 0.75,
+            bbr_rtprop_filter_len: Duration::from_secs(10),
+            bbr_probe_bw_cwnd_gain: 2.0,
             initial_rtt: INITIAL_RTT,
             enable_pacing: true,
             pto_linear_factor: DEFAULT_PTO_LINEAR_FACTOR,

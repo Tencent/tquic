@@ -244,6 +244,48 @@ pub extern "C" fn quic_config_set_min_congestion_window(config: &mut Config, v: 
     config.set_min_congestion_window(v);
 }
 
+/// Set the threshold for slow start in packets.
+/// The default value is the maximum value of u64.
+#[no_mangle]
+pub extern "C" fn quic_config_set_slow_start_thresh(config: &mut Config, v: u64) {
+    config.set_slow_start_thresh(v);
+}
+
+/// Set the minimum duration for BBR ProbeRTT state in milliseconds.
+/// The default value is 200 milliseconds.
+#[no_mangle]
+pub extern "C" fn quic_config_set_bbr_probe_rtt_duration(config: &mut Config, v: u64) {
+    config.set_bbr_probe_rtt_duration(v);
+}
+
+/// Enable using a cwnd based on bdp during ProbeRTT state.
+/// The default value is false.
+#[no_mangle]
+pub extern "C" fn quic_config_enable_bbr_probe_rtt_based_on_bdp(config: &mut Config, v: bool) {
+    config.enable_bbr_probe_rtt_based_on_bdp(v);
+}
+
+/// Set the cwnd gain for BBR ProbeRTT state.
+/// The default value is 0.75
+#[no_mangle]
+pub extern "C" fn quic_config_set_bbr_probe_rtt_cwnd_gain(config: &mut Config, v: f64) {
+    config.set_bbr_probe_rtt_cwnd_gain(v);
+}
+
+/// Set the length of the BBR RTProp min filter window in milliseconds.
+/// The default value is 10000 milliseconds.
+#[no_mangle]
+pub extern "C" fn quic_config_set_bbr_rtprop_filter_len(config: &mut Config, v: u64) {
+    config.set_bbr_rtprop_filter_len(v);
+}
+
+/// Set the cwnd gain for BBR ProbeBW state.
+/// The default value is 2.0
+#[no_mangle]
+pub extern "C" fn quic_config_set_bbr_probe_bw_cwnd_gain(config: &mut Config, v: f64) {
+    config.set_bbr_probe_bw_cwnd_gain(v);
+}
+
 /// Set the initial RTT in milliseconds. The default value is 333ms.
 /// The configuration should be changed with caution. Setting a value less than the default
 /// will cause retransmission of handshake packets to be more aggressive.
