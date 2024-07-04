@@ -3635,11 +3635,13 @@ impl Connection {
 
     /// Set want write flag for a stream.
     pub fn stream_want_write(&mut self, stream_id: u64, want: bool) -> Result<()> {
+        self.mark_tickable(true);
         self.streams.want_write(stream_id, want)
     }
 
     /// Set want read flag for a stream.
     pub fn stream_want_read(&mut self, stream_id: u64, want: bool) -> Result<()> {
+        self.mark_tickable(true);
         self.streams.want_read(stream_id, want)
     }
 
