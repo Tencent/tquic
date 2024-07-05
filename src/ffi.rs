@@ -485,6 +485,7 @@ fn convert_application_protos(protos: *const *const c_char, proto_num: isize) ->
 /// Create a new client side TlsConfig.
 /// The caller is responsible for the memory of the TlsConfig and should properly
 /// destroy it by calling `quic_tls_config_free`.
+/// For more information about `protos`, please see `quic_tls_config_set_application_protos`.
 #[no_mangle]
 pub extern "C" fn quic_tls_config_new_client_config(
     protos: *const *const c_char,
@@ -505,6 +506,7 @@ pub extern "C" fn quic_tls_config_new_client_config(
 /// Create a new server side TlsConfig.
 /// The caller is responsible for the memory of the TlsConfig and should properly
 /// destroy it by calling `quic_tls_config_free`.
+/// For more information about `protos`, please see `quic_tls_config_set_application_protos`.
 #[no_mangle]
 pub extern "C" fn quic_tls_config_new_server_config(
     cert_file: *const c_char,
@@ -552,6 +554,9 @@ pub extern "C" fn quic_tls_config_set_early_data_enabled(tls_config: &mut TlsCon
 }
 
 /// Set the list of supported application protocols.
+/// The `protos` is a pointer that points to an array, where each element of the array is a string
+/// pointer representing an application protocol identifier. For example, you can define it as
+/// follows: const char* const protos[2] = {"h3", "http/0.9"}.
 #[no_mangle]
 pub extern "C" fn quic_tls_config_set_application_protos(
     tls_config: &mut TlsConfig,
