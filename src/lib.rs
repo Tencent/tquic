@@ -80,7 +80,7 @@ use crate::trans_param::TransportParams;
 pub const QUIC_VERSION: u32 = QUIC_VERSION_V1;
 
 /// The QUIC Version 1
-const QUIC_VERSION_V1: u32 = 0x0000_0001;
+pub const QUIC_VERSION_V1: u32 = 0x0000_0001;
 
 /// The Connection ID MUST NOT exceed 20 bytes in QUIC version 1.
 /// See RFC 9000 Section 17.2
@@ -1181,6 +1181,12 @@ mod qlog;
 
 #[cfg(feature = "ffi")]
 mod ffi;
+
+// Note: Workaround for the module path issue in cbindgen.
+// DON'T enable this feature when building with cargo.
+#[cfg(feature = "cbindgen")]
+#[path = "h3/connection.rs"]
+mod h3_connection;
 
 mod codec;
 pub mod endpoint;
