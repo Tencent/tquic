@@ -598,6 +598,7 @@ struct quic_tls_config_t *quic_tls_config_new_with_ssl_ctx(SSL_CTX *ssl_ctx);
  * Create a new client side TlsConfig.
  * The caller is responsible for the memory of the TlsConfig and should properly
  * destroy it by calling `quic_tls_config_free`.
+ * For more information about `protos`, please see `quic_tls_config_set_application_protos`.
  */
 struct quic_tls_config_t *quic_tls_config_new_client_config(const char *const *protos,
                                                             intptr_t proto_num,
@@ -607,6 +608,7 @@ struct quic_tls_config_t *quic_tls_config_new_client_config(const char *const *p
  * Create a new server side TlsConfig.
  * The caller is responsible for the memory of the TlsConfig and should properly
  * destroy it by calling `quic_tls_config_free`.
+ * For more information about `protos`, please see `quic_tls_config_set_application_protos`.
  */
 struct quic_tls_config_t *quic_tls_config_new_server_config(const char *cert_file,
                                                             const char *key_file,
@@ -626,6 +628,9 @@ void quic_tls_config_set_early_data_enabled(struct quic_tls_config_t *tls_config
 
 /**
  * Set the list of supported application protocols.
+ * The `protos` is a pointer that points to an array, where each element of the array is a string
+ * pointer representing an application protocol identifier. For example, you can define it as
+ * follows: const char* const protos[2] = {"h3", "http/0.9"}.
  */
 int quic_tls_config_set_application_protos(struct quic_tls_config_t *tls_config,
                                            const char *const *protos,
