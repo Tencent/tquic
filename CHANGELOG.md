@@ -11,6 +11,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [v0.14.0] - 2024-07-11
+
+### Added
+- Update config API for congestion control
+- Update cbindgen.toml and the generated header file
+- Tweak comments for application protos in FFI
+
+### Changed
+- Rename enum members of `quic_multipath_algorithm` in `tquic.h`
+
+### Fixed
+- Fix stream operations that should mark conn as tickable
+- Fix the issue with sending MAX_DATA frames
+- Fix the issue with pacer timer that occasionally leads to a connection timeout error
+
+
 ## [v0.13.0] - 2024-06-25
 
 ### Added
@@ -246,6 +262,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Provide example clients and servers.
 
 
+[v0.14.0]: https://github.com/tencent/tquic/compare/v0.13.0...v0.14.0
 [v0.13.0]: https://github.com/tencent/tquic/compare/v0.12.0...v0.13.0
 [v0.12.0]: https://github.com/tencent/tquic/compare/v0.11.0...v0.12.0
 [v0.11.0]: https://github.com/tencent/tquic/compare/v0.10.0...v0.11.0
