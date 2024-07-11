@@ -2158,9 +2158,7 @@ impl Connection {
         }
 
         // Create MAX_DATA frame if needed.
-        if self.streams.rx_almost_full
-            && self.streams.max_rx_data() < self.streams.max_rx_data_next()
-        {
+        if self.streams.need_send_max_data() {
             // Adjust the connection window size automatically.
             self.streams
                 .autotune_window(now, path.recovery.rtt.smoothed_rtt());
