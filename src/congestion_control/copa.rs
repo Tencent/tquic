@@ -33,6 +33,7 @@ use super::CongestionStats;
 use crate::connection::rtt::RttEstimator;
 use crate::connection::space::RateSamplePacketState;
 use crate::connection::space::SentPacket;
+use crate::RecoveryConfig;
 
 /// Delta: determines how much to weigh delay compared to throughput.
 const COPA_DELTA: f64 = 0.04;
@@ -86,12 +87,14 @@ pub struct CopaConfig {
 }
 
 impl CopaConfig {
-    pub fn new(
-        min_cwnd: u64,
-        initial_cwnd: u64,
-        initial_rtt: Option<Duration>,
-        max_datagram_size: u64,
-    ) -> Self {
+    pub fn from(conf: &RecoveryConfig) -> Self {
+        let max_datagram_size = conf.max_datagram_size as u64;
+        let min_cwnd = conf.min_congestion_window.saturating_mul(max_datagram_size);
+        let initial_cwnd = conf
+            .initial_congestion_window
+            .saturating_mul(max_datagram_size);
+        let initial_rtt = Some(conf.initial_rtt);
+
         Self {
             min_cwnd,
             initial_cwnd,

@@ -77,7 +77,6 @@ where
     }
 }
 
-#[repr(C)]
 pub struct TlsConfig {
     /// Boringssl SSL context.
     tls_ctx: boringssl::tls::Context,

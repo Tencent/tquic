@@ -23,6 +23,7 @@ use super::CongestionStats;
 use super::HystartPlusPlus;
 use crate::connection::rtt::RttEstimator;
 use crate::connection::space::SentPacket;
+use crate::RecoveryConfig;
 
 /// Cubic constant C.
 ///
@@ -65,6 +66,9 @@ pub struct CubicConfig {
     /// Initial congestion window in bytes.
     initial_congestion_window: u64,
 
+    /// The threshold for slow start in bytes.
+    slow_start_thresh: u64,
+
     /// Max datagram size in bytes.
     max_datagram_size: u64,
 
@@ -79,19 +83,21 @@ pub struct CubicConfig {
 }
 
 impl CubicConfig {
-    pub fn new(
-        min_congestion_window: u64,
-        initial_congestion_window: u64,
-        initial_rtt: Option<Duration>,
-        max_datagram_size: u64,
-    ) -> Self {
-        let c = C;
-        let beta = BETA;
+    pub fn from(conf: &RecoveryConfig) -> Self {
+        let max_datagram_size = conf.max_datagram_size as u64;
+        let min_congestion_window = conf.min_congestion_window.saturating_mul(max_datagram_size);
+        let initial_congestion_window = conf
+            .initial_congestion_window
+            .saturating_mul(max_datagram_size);
+        let slow_start_thresh = conf.slow_start_thresh.saturating_mul(max_datagram_size);
+        let initial_rtt = Some(conf.initial_rtt);
+
         Self {
-            c,
-            beta,
+            c: C,
+            beta: BETA,
             min_congestion_window,
             initial_congestion_window,
+            slow_start_thresh,
             initial_rtt,
             max_datagram_size,
             hystart_enabled: true,
@@ -149,6 +155,7 @@ impl Default for CubicConfig {
             beta: BETA,
             min_congestion_window: 2 * crate::DEFAULT_SEND_UDP_PAYLOAD_SIZE as u64,
             initial_congestion_window: 10 * crate::DEFAULT_SEND_UDP_PAYLOAD_SIZE as u64,
+            slow_start_thresh: u64::MAX,
             initial_rtt: Some(crate::INITIAL_RTT),
             max_datagram_size: crate::DEFAULT_SEND_UDP_PAYLOAD_SIZE as u64,
             hystart_enabled: true,
@@ -209,6 +216,7 @@ pub struct Cubic {
 impl Cubic {
     pub fn new(config: CubicConfig) -> Self {
         let initial_cwnd = config.initial_congestion_window;
+        let ssthresh = config.slow_start_thresh;
         let initial_rtt = std::cmp::max(
             config.initial_rtt.unwrap_or(crate::INITIAL_RTT),
             Duration::from_micros(1),
@@ -220,7 +228,7 @@ impl Cubic {
             config,
             hystart: HystartPlusPlus::new(hystart_enabled),
             cwnd: initial_cwnd,
-            ssthresh: u64::MAX,
+            ssthresh,
             w_max: 0_f64,
             k: 0_f64,
             alpha,

@@ -708,10 +708,16 @@ impl StreamMap {
         }
     }
 
+    /// Return true if we should send `MAX_DATA` frame to peer to update
+    /// the connection level flow control limit.
+    pub fn need_send_max_data(&self) -> bool {
+        self.rx_almost_full && self.max_rx_data() < self.max_rx_data_next()
+    }
+
     /// Return true if need to send stream frames.
     pub fn need_send_stream_frames(&self) -> bool {
         self.has_sendable_streams()
-            || self.rx_almost_full
+            || self.need_send_max_data()
             || self.data_blocked_at().is_some()
             || self.should_send_max_streams()
             || self.has_almost_full_streams()

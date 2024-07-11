@@ -2158,9 +2158,7 @@ impl Connection {
         }
 
         // Create MAX_DATA frame if needed.
-        if self.streams.rx_almost_full
-            && self.streams.max_rx_data() < self.streams.max_rx_data_next()
-        {
+        if self.streams.need_send_max_data() {
             // Adjust the connection window size automatically.
             self.streams
                 .autotune_window(now, path.recovery.rtt.smoothed_rtt());
@@ -3635,11 +3633,13 @@ impl Connection {
 
     /// Set want write flag for a stream.
     pub fn stream_want_write(&mut self, stream_id: u64, want: bool) -> Result<()> {
+        self.mark_tickable(true);
         self.streams.want_write(stream_id, want)
     }
 
     /// Set want read flag for a stream.
     pub fn stream_want_read(&mut self, stream_id: u64, want: bool) -> Result<()> {
+        self.mark_tickable(true);
         self.streams.want_read(stream_id, want)
     }
 

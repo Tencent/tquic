@@ -244,6 +244,48 @@ pub extern "C" fn quic_config_set_min_congestion_window(config: &mut Config, v: 
     config.set_min_congestion_window(v);
 }
 
+/// Set the threshold for slow start in packets.
+/// The default value is the maximum value of u64.
+#[no_mangle]
+pub extern "C" fn quic_config_set_slow_start_thresh(config: &mut Config, v: u64) {
+    config.set_slow_start_thresh(v);
+}
+
+/// Set the minimum duration for BBR ProbeRTT state in milliseconds.
+/// The default value is 200 milliseconds.
+#[no_mangle]
+pub extern "C" fn quic_config_set_bbr_probe_rtt_duration(config: &mut Config, v: u64) {
+    config.set_bbr_probe_rtt_duration(v);
+}
+
+/// Enable using a cwnd based on bdp during ProbeRTT state.
+/// The default value is false.
+#[no_mangle]
+pub extern "C" fn quic_config_enable_bbr_probe_rtt_based_on_bdp(config: &mut Config, v: bool) {
+    config.enable_bbr_probe_rtt_based_on_bdp(v);
+}
+
+/// Set the cwnd gain for BBR ProbeRTT state.
+/// The default value is 0.75
+#[no_mangle]
+pub extern "C" fn quic_config_set_bbr_probe_rtt_cwnd_gain(config: &mut Config, v: f64) {
+    config.set_bbr_probe_rtt_cwnd_gain(v);
+}
+
+/// Set the length of the BBR RTProp min filter window in milliseconds.
+/// The default value is 10000 milliseconds.
+#[no_mangle]
+pub extern "C" fn quic_config_set_bbr_rtprop_filter_len(config: &mut Config, v: u64) {
+    config.set_bbr_rtprop_filter_len(v);
+}
+
+/// Set the cwnd gain for BBR ProbeBW state.
+/// The default value is 2.0
+#[no_mangle]
+pub extern "C" fn quic_config_set_bbr_probe_bw_cwnd_gain(config: &mut Config, v: f64) {
+    config.set_bbr_probe_bw_cwnd_gain(v);
+}
+
 /// Set the initial RTT in milliseconds. The default value is 333ms.
 /// The configuration should be changed with caution. Setting a value less than the default
 /// will cause retransmission of handshake packets to be more aggressive.
@@ -443,6 +485,7 @@ fn convert_application_protos(protos: *const *const c_char, proto_num: isize) ->
 /// Create a new client side TlsConfig.
 /// The caller is responsible for the memory of the TlsConfig and should properly
 /// destroy it by calling `quic_tls_config_free`.
+/// For more information about `protos`, please see `quic_tls_config_set_application_protos`.
 #[no_mangle]
 pub extern "C" fn quic_tls_config_new_client_config(
     protos: *const *const c_char,
@@ -463,6 +506,7 @@ pub extern "C" fn quic_tls_config_new_client_config(
 /// Create a new server side TlsConfig.
 /// The caller is responsible for the memory of the TlsConfig and should properly
 /// destroy it by calling `quic_tls_config_free`.
+/// For more information about `protos`, please see `quic_tls_config_set_application_protos`.
 #[no_mangle]
 pub extern "C" fn quic_tls_config_new_server_config(
     cert_file: *const c_char,
@@ -510,6 +554,9 @@ pub extern "C" fn quic_tls_config_set_early_data_enabled(tls_config: &mut TlsCon
 }
 
 /// Set the list of supported application protocols.
+/// The `protos` is a pointer that points to an array, where each element of the array is a string
+/// pointer representing an application protocol identifier. For example, you can define it as
+/// follows: const char* const protos[2] = {"h3", "http/0.9"}.
 #[no_mangle]
 pub extern "C" fn quic_tls_config_set_application_protos(
     tls_config: &mut TlsConfig,

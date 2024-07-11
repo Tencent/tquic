@@ -20,6 +20,35 @@ use super::CongestionController;
 use super::CongestionStats;
 use crate::connection::rtt::RttEstimator;
 use crate::connection::space::SentPacket;
+use crate::RecoveryConfig;
+
+/// Dummpy Configuration.
+#[derive(Debug)]
+pub struct DummyConfig {
+    /// Initial congestion window in bytes.
+    initial_congestion_window: u64,
+}
+
+impl DummyConfig {
+    pub fn from(conf: &RecoveryConfig) -> Self {
+        let max_datagram_size = conf.max_datagram_size as u64;
+        let initial_congestion_window = conf
+            .initial_congestion_window
+            .saturating_mul(max_datagram_size);
+
+        Self {
+            initial_congestion_window,
+        }
+    }
+}
+
+impl Default for DummyConfig {
+    fn default() -> Self {
+        Self {
+            initial_congestion_window: 10 * crate::DEFAULT_SEND_UDP_PAYLOAD_SIZE as u64,
+        }
+    }
+}
 
 /// Dummy is a simple congestion controller with a static congestion window.
 /// It is intended to be used for testing and experiments.
@@ -33,9 +62,9 @@ pub struct Dummy {
 }
 
 impl Dummy {
-    pub fn new(initial_cwnd: u64) -> Self {
+    pub fn new(conf: DummyConfig) -> Self {
         Self {
-            cwnd: initial_cwnd,
+            cwnd: conf.initial_congestion_window,
             stats: Default::default(),
         }
     }
@@ -122,7 +151,13 @@ mod tests {
 
     #[test]
     fn dummy_init() {
-        let d = Dummy::new(1200 * 10);
+        let conf = RecoveryConfig {
+            initial_congestion_window: 10,
+            max_datagram_size: 1200,
+            ..RecoveryConfig::default()
+        };
+        let d = Dummy::new(DummyConfig::from(&conf));
+
         assert_eq!(d.name(), "DUMMY");
         assert_eq!(d.congestion_window(), 1200 * 10);
         assert_eq!(d.initial_window(), 1200 * 10);
@@ -136,7 +171,13 @@ mod tests {
 
     #[test]
     fn dummy_stats() {
-        let mut d = Dummy::new(1200 * 10);
+        let conf = RecoveryConfig {
+            initial_congestion_window: 10,
+            max_datagram_size: 1200,
+            ..RecoveryConfig::default()
+        };
+        let mut d = Dummy::new(DummyConfig::from(&conf));
+
         let rtt = Duration::from_millis(100);
         let rtt_estimator = RttEstimator::new(rtt);
         let now = Instant::now();

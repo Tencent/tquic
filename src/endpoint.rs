@@ -710,6 +710,9 @@ impl Endpoint {
                         }
                         Err(Error::Done) => {
                             self.packets.put_buffer(buf);
+                            // Return Err(Error::Done) it means we can not send packets right now,
+                            // but we still need to update timers for other events (e.g. Timer::Pacer)
+                            sent.insert(idx);
                             // When a connection runs out of packets to send,
                             // it is removed from the sendable queue.
                             conn.mark_sendable(false);

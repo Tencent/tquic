@@ -10,6 +10,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include "openssl/ssl.h"
+#include "tquic_def.h"
 
 /**
  * The current QUIC wire version.
@@ -22,13 +23,13 @@
 #define QUIC_VERSION_V1 1
 
 /**
- * Available congestion control algorithm
+ * Available congestion control algorithms.
  */
 typedef enum quic_congestion_control_algorithm {
   /**
    * CUBIC uses a cubic function instead of a linear window increase function
    * of the current TCP standards to improve scalability and stability under
-   * fast and long-distance networks..
+   * fast and long-distance networks.
    */
   QUIC_CONGESTION_CONTROL_ALGORITHM_CUBIC,
   /**
@@ -52,6 +53,11 @@ typedef enum quic_congestion_control_algorithm {
    * (Experimental)
    */
   QUIC_CONGESTION_CONTROL_ALGORITHM_COPA,
+  /**
+   * Dummy is a simple congestion controller with a static congestion window.
+   * It is intended to be used for testing and experiments.
+   */
+  QUIC_CONGESTION_CONTROL_ALGORITHM_DUMMY,
 } quic_congestion_control_algorithm;
 
 /**
@@ -64,7 +70,7 @@ typedef enum quic_multipath_algorithm {
    * load balancing, making it particularly advantageous for bulk transfer
    * applications in heterogeneous networks.
    */
-  MULTIPATH_ALGORITHM_MIN_RTT,
+  QUIC_MULTIPATH_ALGORITHM_MIN_RTT,
   /**
    * The scheduler sends all packets redundantly on all available paths. It
    * utilizes additional bandwidth to minimize latency, thereby reducing the
@@ -74,14 +80,14 @@ typedef enum quic_multipath_algorithm {
    * present, it ensures a goodput at least equivalent to the best single
    * path.
    */
-  MULTIPATH_ALGORITHM_REDUNDANT,
+  QUIC_MULTIPATH_ALGORITHM_REDUNDANT,
   /**
    * The scheduler sends packets over available paths in a round robin
    * manner. It aims to fully utilize the capacity of each path as the
    * distribution across all path is equal. It is only used for testing
    * purposes.
    */
-  MULTIPATH_ALGORITHM_ROUND_ROBIN,
+  QUIC_MULTIPATH_ALGORITHM_ROUND_ROBIN,
 } quic_multipath_algorithm;
 
 /**
@@ -358,7 +364,6 @@ void enable_dplpmtud(struct quic_config_t *config, bool v);
 /**
  * Set the maximum outgoing UDP payload size in bytes.
  * It corresponds to the maximum datagram size that DPLPMTUD tries to discovery.
- *
  * The default value is `1200` which means let DPLPMTUD choose a value.
  */
 void quic_config_set_send_udp_payload_size(struct quic_config_t *config, uintptr_t v);
@@ -429,6 +434,42 @@ void quic_config_set_initial_congestion_window(struct quic_config_t *config, uin
  * The default value is 2.
  */
 void quic_config_set_min_congestion_window(struct quic_config_t *config, uint64_t v);
+
+/**
+ * Set the threshold for slow start in packets.
+ * The default value is the maximum value of u64.
+ */
+void quic_config_set_slow_start_thresh(struct quic_config_t *config, uint64_t v);
+
+/**
+ * Set the minimum duration for BBR ProbeRTT state in milliseconds.
+ * The default value is 200 milliseconds.
+ */
+void quic_config_set_bbr_probe_rtt_duration(struct quic_config_t *config, uint64_t v);
+
+/**
+ * Enable using a cwnd based on bdp during ProbeRTT state.
+ * The default value is false.
+ */
+void quic_config_enable_bbr_probe_rtt_based_on_bdp(struct quic_config_t *config, bool v);
+
+/**
+ * Set the cwnd gain for BBR ProbeRTT state.
+ * The default value is 0.75
+ */
+void quic_config_set_bbr_probe_rtt_cwnd_gain(struct quic_config_t *config, double v);
+
+/**
+ * Set the length of the BBR RTProp min filter window in milliseconds.
+ * The default value is 10000 milliseconds.
+ */
+void quic_config_set_bbr_rtprop_filter_len(struct quic_config_t *config, uint64_t v);
+
+/**
+ * Set the cwnd gain for BBR ProbeBW state.
+ * The default value is 2.0
+ */
+void quic_config_set_bbr_probe_bw_cwnd_gain(struct quic_config_t *config, double v);
 
 /**
  * Set the initial RTT in milliseconds. The default value is 333ms.
@@ -562,6 +603,7 @@ struct quic_tls_config_t *quic_tls_config_new_with_ssl_ctx(SSL_CTX *ssl_ctx);
  * Create a new client side TlsConfig.
  * The caller is responsible for the memory of the TlsConfig and should properly
  * destroy it by calling `quic_tls_config_free`.
+ * For more information about `protos`, please see `quic_tls_config_set_application_protos`.
  */
 struct quic_tls_config_t *quic_tls_config_new_client_config(const char *const *protos,
                                                             intptr_t proto_num,
@@ -571,6 +613,7 @@ struct quic_tls_config_t *quic_tls_config_new_client_config(const char *const *p
  * Create a new server side TlsConfig.
  * The caller is responsible for the memory of the TlsConfig and should properly
  * destroy it by calling `quic_tls_config_free`.
+ * For more information about `protos`, please see `quic_tls_config_set_application_protos`.
  */
 struct quic_tls_config_t *quic_tls_config_new_server_config(const char *cert_file,
                                                             const char *key_file,
@@ -590,6 +633,9 @@ void quic_tls_config_set_early_data_enabled(struct quic_tls_config_t *tls_config
 
 /**
  * Set the list of supported application protocols.
+ * The `protos` is a pointer that points to an array, where each element of the array is a string
+ * pointer representing an application protocol identifier. For example, you can define it as
+ * follows: const char* const protos[2] = {"h3", "http/0.9"}.
  */
 int quic_tls_config_set_application_protos(struct quic_tls_config_t *tls_config,
                                            const char *const *protos,
@@ -1116,19 +1162,19 @@ int64_t http3_stream_new_with_priority(struct http3_conn_t *conn,
                                        const struct http3_priority_t *priority);
 
 /**
+ * Close the given HTTP/3 stream.
+ */
+int http3_stream_close(struct http3_conn_t *conn,
+                       struct quic_conn_t *quic_conn,
+                       uint64_t stream_id);
+
+/**
  * Set priority for an HTTP/3 stream.
  */
 int http3_stream_set_priority(struct http3_conn_t *conn,
                               struct quic_conn_t *quic_conn,
                               uint64_t stream_id,
                               const struct http3_priority_t *priority);
-
-/**
- * Close the given HTTP/3 stream.
- */
-int http3_stream_close(struct http3_conn_t *conn,
-                       struct quic_conn_t *quic_conn,
-                       uint64_t stream_id);
 
 /**
  * Send HTTP/3 request or response headers on the given stream.
@@ -1186,126 +1232,15 @@ int http3_take_priority_update(struct http3_conn_t *conn,
                                void *argp);
 
 /**
- * An enum representing the available verbosity level filters of the logger.
- */
-typedef enum quic_log_level {
-  /**
-   * A level lower than all log levels.
-   */
-  QUIC_LOG_LEVEL_OFF,
-  /**
-   * Corresponds to the `Error` log level.
-   */
-  QUIC_LOG_LEVEL_ERROR,
-  /**
-   * Corresponds to the `Warn` log level.
-   */
-  QUIC_LOG_LEVEL_WARN,
-  /**
-   * Corresponds to the `Info` log level.
-   */
-  QUIC_LOG_LEVEL_INFO,
-  /**
-   * Corresponds to the `Debug` log level.
-   */
-  QUIC_LOG_LEVEL_DEBUG,
-  /**
-   * Corresponds to the `Trace` log level.
-   */
-  QUIC_LOG_LEVEL_TRACE,
-} quic_log_level;
-
-/**
  * Set logger.
  * `cb` is a callback function that will be called for each log message.
- * `line` is a null-terminated log message and `argp` is user-defined data that will be passed to
+ * `data` is a '\n' terminated log message and `argp` is user-defined data that will be passed to
  * the callback.
  * `level` represents the log level.
  */
 void quic_set_logger(void (*cb)(const uint8_t *data, size_t data_len, void *argp),
                      void *argp,
                      quic_log_level level);
-
-typedef enum http3_error {
-    HTTP3_NO_ERROR = 0,
-
-    // There is no error or no work to do
-    HTTP3_ERR_DONE = -1,
-
-    // The endpoint detected an error in the protocol
-    HTTP3_ERR_GENERAL_PROTOCOL_ERROR = -2,
-
-    // The endpoint encountered an internal error and cannot continue with the
-    // connection
-    HTTP3_ERR_INTERNAL_ERROR = -3,
-
-    // The endpoint detected that its peer created a stream that it will not
-    // accept
-    HTTP3_ERR_STREAM_CREATION_ERROR = -4,
-
-    // A stream required by the connection was closed or reset
-    HTTP3_ERR_CLOSED_CRITICAL_STREAM = -5,
-
-    // A frame was received which is not permitted in the current state or on
-    // the current stream
-    HTTP3_ERR_FRAME_UNEXPECTED = -6,
-
-    // A frame that fails to satisfy layout requirements or with an invalid
-    // size was received
-    HTTP3_ERR_FRAME_ERROR = -7,
-
-    // The endpoint detected that its peer is exhibiting a behavior that might
-    // be generating excessive load
-    HTTP3_ERR_EXCESSIVE_LOAD = -8,
-
-    // A stream ID or push ID was used incorrectly, such as exceeding a limit,
-    // reducing a limit, or being reused
-    HTTP3_ERR_ID_ERROR = -9,
-
-    // An endpoint detected an error in the payload of a SETTINGS frame
-    HTTP3_ERR_SETTINGS_ERROR = -10,
-
-    // No SETTINGS frame was received at the beginning of the control stream
-    HTTP3_ERR_MISSING_SETTINGS = -11,
-
-    // -12 reserved
-
-    // The stream is blocked
-    HTTP3_ERR_STREAM_BLOCKED = -13,
-
-    // The server rejected the request without performing any application
-    // processing
-    HTTP3_ERR_REQUEST_REJECTED = -14,
-
-    // The request or its response (including pushed response) is cancelled
-    HTTP3_ERR_REQUEST_CANCELLED = -15,
-
-    // The client's stream terminated without containing a fully-formed request
-    HTTP3_ERR_REQUEST_INCOMPLETE = -16,
-
-    // An HTTP message was malformed and cannot be processed
-    HTTP3_ERR_MESSAGE_ERROR = -17,
-
-    // The TCP connection established in response to a CONNECT request was
-    // reset or abnormally closed
-    HTTP3_ERR_CONNECT_ERROR = -18,
-
-    // The requested operation cannot be served over HTTP/3. The peer should
-    // retry over HTTP/1.1
-    HTTP3_ERR_VERSION_FALLBACK = -19,
-
-    // The decoder failed to interpret an encoded field section and is not
-    // able to continue decoding that field section
-    HTTP3_ERR_QPACK_DECOMPRESSION_FAILED = -20,
-
-    // The decoder failed to interpret an encoder instruction received on the
-    // encoder stream
-    HTTP3_ERR_QPACK_ENCODER_STREAM_ERROR = -21,
-
-    // The encoder failed to interpret a decoder instruction received on the
-    // decoder stream
-    HTTP3_ERR_QPACK_DECODER_STREAM_ERROR = -22,
-} http3_error;
 
 #ifdef __cplusplus
 } // extern "C"
