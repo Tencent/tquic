@@ -1192,7 +1192,6 @@ impl StreamMap {
         // An endpoint that receives a MAX_STREAM_DATA frame for a receive-only stream
         // MUST terminate the connection with error STREAM_STATE_ERROR.
         if !is_local(stream_id, self.is_server) && !is_bidi(stream_id) {
-            // 针对StreamStateError做扩展，支持记录ID，以及首次发现异常的帧
             return Err(Error::StreamStateError);
         }
 
