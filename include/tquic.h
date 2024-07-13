@@ -23,6 +23,12 @@
 #define QUIC_VERSION_V1 1
 
 /**
+ * The Connection ID MUST NOT exceed 20 bytes in QUIC version 1.
+ * See RFC 9000 Section 17.2
+ */
+#define MAX_CID_LEN 20
+
+/**
  * Available congestion control algorithms.
  */
 typedef enum quic_congestion_control_algorithm {
@@ -223,6 +229,34 @@ typedef struct quic_packet_send_methods_t {
 } quic_packet_send_methods_t;
 
 typedef void *quic_packet_send_context_t;
+
+/**
+ * Connection Id is an identifier used to identify a QUIC connection
+ * at an endpoint.
+ */
+typedef struct ConnectionId {
+  /**
+   * length of cid
+   */
+  uint8_t len;
+  /**
+   * octets of cid
+   */
+  uint8_t data[MAX_CID_LEN];
+} ConnectionId;
+
+typedef struct ConnectionIdGeneratorMethods {
+  /**
+   * Generate a new CID
+   */
+  struct ConnectionId (*generate)(void *gctx);
+  /**
+   * Return the length of a CID
+   */
+  uint8_t (*cid_len)(void *gctx);
+} ConnectionIdGeneratorMethods;
+
+typedef void *ConnectionIdGeneratorContext;
 
 /**
  * Meta information of an incoming packet.
@@ -706,6 +740,14 @@ struct quic_endpoint_t *quic_endpoint_new(struct quic_config_t *config,
  * Destroy a QUIC endpoint.
  */
 void quic_endpoint_free(struct quic_endpoint_t *endpoint);
+
+/**
+ * Set the connection id generator for the endpoint.
+ * By default, the random connection id generator is used.
+ */
+void quic_endpoint_set_cid_generator(struct quic_endpoint_t *endpoint,
+                                     const struct ConnectionIdGeneratorMethods *cid_gen_methods,
+                                     ConnectionIdGeneratorContext cid_gen_ctx);
 
 /**
  * Create a client connection.

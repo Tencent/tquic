@@ -112,7 +112,6 @@ impl Endpoint {
     ) -> Self {
         let cid_gen = Box::new(crate::RandomConnectionIdGenerator {
             cid_len: config.cid_len,
-            cid_lifetime: None,
         });
         let trace_id = if is_server { "SERVER" } else { "CLIENT" };
         let buffer = PacketBuffer::new(config.zerortt_buffer_size);
@@ -800,6 +799,12 @@ impl Endpoint {
         self.timers.clear();
         self.routes.clear();
         self.conns.clear();
+    }
+
+    /// Set the connection id generator
+    /// By default, the RandomConnectionIdGenerator is used.
+    pub fn set_cid_generator(&mut self, cid_gen: Box<dyn ConnectionIdGenerator>) {
+        self.cid_gen = cid_gen;
     }
 
     /// Set the unique trace id for the endpoint

@@ -155,6 +155,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Connection Id is an identifier used to identify a QUIC connection
 /// at an endpoint.
+#[repr(C)]
 #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash, Default)]
 pub struct ConnectionId {
     /// length of cid
@@ -214,9 +215,6 @@ pub trait ConnectionIdGenerator {
     /// Return the length of a CID
     fn cid_len(&self) -> usize;
 
-    /// Return the lifetime of CID
-    fn cid_lifetime(&self) -> Option<Duration>;
-
     /// Generate a new CID and associated reset token.
     fn generate_cid_and_token(&mut self, reset_token_key: &hmac::Key) -> (ConnectionId, u128) {
         let scid = self.generate();
@@ -229,14 +227,12 @@ pub trait ConnectionIdGenerator {
 #[derive(Debug, Clone, Copy)]
 pub struct RandomConnectionIdGenerator {
     cid_len: usize,
-    cid_lifetime: Option<Duration>,
 }
 
 impl RandomConnectionIdGenerator {
-    pub fn new(cid_len: usize, cid_lifetime: Option<Duration>) -> Self {
+    pub fn new(cid_len: usize) -> Self {
         Self {
             cid_len: cmp::min(cid_len, MAX_CID_LEN),
-            cid_lifetime,
         }
     }
 }
@@ -250,10 +246,6 @@ impl ConnectionIdGenerator for RandomConnectionIdGenerator {
 
     fn cid_len(&self) -> usize {
         self.cid_len
-    }
-
-    fn cid_lifetime(&self) -> Option<Duration> {
-        self.cid_lifetime
     }
 }
 
@@ -1085,11 +1077,9 @@ mod tests {
 
     #[test]
     fn connection_id() {
-        let lifetime = Duration::from_secs(3600);
-        let mut cid_gen = RandomConnectionIdGenerator::new(8, Some(lifetime));
+        let mut cid_gen = RandomConnectionIdGenerator::new(8);
         let cid = cid_gen.generate();
         assert_eq!(cid.len(), cid_gen.cid_len());
-        assert_eq!(Some(lifetime), cid_gen.cid_lifetime());
 
         let cid = ConnectionId {
             len: 4,

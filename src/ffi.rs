@@ -725,6 +725,21 @@ pub extern "C" fn quic_endpoint_free(endpoint: *mut Endpoint) {
     };
 }
 
+/// Set the connection id generator for the endpoint.
+/// By default, the random connection id generator is used.
+#[no_mangle]
+pub extern "C" fn quic_endpoint_set_cid_generator(
+    endpoint: &mut Endpoint,
+    cid_gen_methods: *const ConnectionIdGeneratorMethods,
+    cid_gen_ctx: ConnectionIdGeneratorContext,
+) {
+    let cid_generator = Box::new(ConnectionIdGenerator {
+        methods: cid_gen_methods,
+        context: cid_gen_ctx,
+    });
+    endpoint.set_cid_generator(cid_generator);
+}
+
 /// Create a client connection.
 /// If success, the output parameter `index` carrys the index of the connection.
 /// Note: The `config` specific to the endpoint or server is irrelevant and will be disregarded.
@@ -1771,6 +1786,38 @@ pub struct PacketOutSpec {
     src_addr_len: socklen_t,
     dst_addr: *const c_void,
     dst_addr_len: socklen_t,
+}
+
+#[repr(C)]
+pub struct ConnectionIdGeneratorMethods {
+    /// Generate a new CID
+    pub generate: fn(gctx: *mut c_void) -> ConnectionId,
+
+    /// Return the length of a CID
+    pub cid_len: fn(gctx: *mut c_void) -> u8,
+}
+
+#[repr(transparent)]
+pub struct ConnectionIdGeneratorContext(*mut c_void);
+
+/// cbindgen:no-export
+#[repr(C)]
+pub struct ConnectionIdGenerator {
+    pub methods: *const ConnectionIdGeneratorMethods,
+    pub context: ConnectionIdGeneratorContext,
+}
+
+impl crate::ConnectionIdGenerator for ConnectionIdGenerator {
+    /// Generate a new CID
+    fn generate(&mut self) -> ConnectionId {
+        unsafe { ((*self.methods).generate)(self.context.0) }
+    }
+
+    /// Return the length of a CID
+    fn cid_len(&self) -> usize {
+        let cid_len = unsafe { ((*self.methods).cid_len)(self.context.0) };
+        cid_len as usize
+    }
 }
 
 /// Create default config for HTTP3.

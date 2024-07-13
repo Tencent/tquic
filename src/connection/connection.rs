@@ -4266,8 +4266,8 @@ pub(crate) mod tests {
             server_config: &mut Config,
             server_name: &str,
         ) -> Result<TestPair> {
-            let mut cli_cid_gen = RandomConnectionIdGenerator::new(client_config.cid_len, None);
-            let mut srv_cid_gen = RandomConnectionIdGenerator::new(server_config.cid_len, None);
+            let mut cli_cid_gen = RandomConnectionIdGenerator::new(client_config.cid_len);
+            let mut srv_cid_gen = RandomConnectionIdGenerator::new(server_config.cid_len);
             let client_scid = cli_cid_gen.generate();
             let server_scid = srv_cid_gen.generate();
             let client_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 9443);
