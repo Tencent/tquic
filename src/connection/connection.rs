@@ -1513,12 +1513,14 @@ impl Connection {
 
         // Prepare and encode packet header (except for the Length and Packet Number field)
         let space_id = self.get_space_id(pkt_type, path_id)?;
-        let pkt_num = self
-            .spaces
-            .get_mut(space_id)
-            .ok_or(Error::InternalError)?
-            .next_pkt_num;
-        let pkt_num_len = packet::packet_num_len(pkt_num)?;
+        let (pkt_num, pkt_num_len) = {
+            let space = self.spaces.get_mut(space_id).ok_or(Error::InternalError)?;
+            let largest_acked = space.get_largest_acked_pkt();
+            let pkt_num = space.next_pkt_num;
+            let pkt_num_len = packet::packet_num_len(pkt_num, largest_acked);
+            (pkt_num, pkt_num_len)
+        };
+
         let dcid_seq = self
             .paths
             .get(path_id)?
@@ -1573,7 +1575,7 @@ impl Connection {
         }
 
         // Encode packet number
-        let len = packet::encode_packet_num(pkt_num, &mut out[pkt_num_offset..left])?;
+        let len = packet::encode_packet_num(pkt_num, pkt_num_len, &mut out[pkt_num_offset..left])?;
         let payload_offset = pkt_num_offset + len;
 
         // Write frames into the packet payload
