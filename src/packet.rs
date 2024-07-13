@@ -595,9 +595,18 @@ pub(crate) fn decode_packet_num(largest_pn: u64, truncated_pn: u64, pkt_num_len:
     candidate_pn
 }
 
-/// Encode the truncated packet number.
-pub(crate) fn encode_packet_num(pkt_num: u64, mut buf: &mut [u8]) -> Result<usize> {
-    let len = packet_num_len(pkt_num)?;
+/// Encode the full packet number.
+///
+/// Packet numbers are encoded in 1 to 4 bytes. The number of bits required to
+/// represent the packet number is reduced by including only the least
+/// significant bits of the packet number.
+///
+/// The `pkt_num` is the full packet number of the packet being sent.
+/// The `len` is the length of encoded packet number.
+/// See RFC 9000 Section A.2 Sample Packet Number Encoding Algorithm
+pub(crate) fn encode_packet_num(pkt_num: u64, len: usize, mut buf: &mut [u8]) -> Result<usize> {
+    // Encode the integer value and truncate to the num_bytes least significant
+    // bytes.
     match len {
         1 => buf.write_u8(pkt_num as u8)?,
         2 => buf.write_u16(pkt_num as u16)?,
@@ -611,23 +620,22 @@ pub(crate) fn encode_packet_num(pkt_num: u64, mut buf: &mut [u8]) -> Result<usiz
 
 /// Return the length of encoded packet number.
 ///
-/// Packet numbers are encoded in 1 to 4 bytes. The number of bits required to
-/// represent the packet number is reduced by including only the least
-/// significant bits of the packet number.
-/// See RFC 9000 Section 17.1
-pub(crate) fn packet_num_len(pkt_num: u64) -> Result<usize> {
-    let len = if pkt_num < u64::from(u8::MAX) {
-        1
-    } else if pkt_num < u64::from(u16::MAX) {
-        2
-    } else if pkt_num < 16_777_215u64 {
-        3
-    } else if pkt_num < u64::from(u32::MAX) {
-        4
+/// The `pkt_num` is the full packet number of the packet being sent.
+/// The `largest_acked` is the largest packet number that has been acknowledged
+/// by the peer in the current packet number space, if any.
+/// See RFC 9000 Section A.2 Sample Packet Number Encoding Algorithm
+pub(crate) fn packet_num_len(pkt_num: u64, largest_acked: Option<u64>) -> usize {
+    // The number of bits must be at least one more than the base-2 logarithm
+    // of the number of contiguous unacknowledged packet numbers, including the
+    // new packet
+    let num_unacked = if let Some(largest_acked) = largest_acked {
+        pkt_num.saturating_sub(largest_acked)
     } else {
-        return Err(Error::InvalidPacket);
+        pkt_num.saturating_add(1)
     };
-    Ok(len)
+
+    let min_bits = u64::BITS - num_unacked.leading_zeros(); // log(num_unacked, 2) + 1
+    ((min_bits + 7) / 8) as usize // ceil(min_bits / 8)
 }
 
 /// Encode a Version Negotiation packet to the given buffer
@@ -1089,21 +1097,40 @@ mod tests {
     #[test]
     fn packet_num() -> Result<()> {
         let test_cases = [
-            (0, Ok(1)),
-            (254, Ok(1)),
-            (255, Ok(2)),
-            (65534, Ok(2)),
-            (65535, Ok(3)),
-            (16777214, Ok(3)),
-            (16777215, Ok(4)),
+            (0, None, 1),
+            (254, Some(0), 1),
+            (255, Some(0), 1),
+            (256, Some(0), 2),
+            (65534, Some(0), 2),
+            (65535, Some(0), 2),
+            (65536, Some(0), 3),
+            (16777214, Some(0), 3),
+            (16777215, Some(0), 3),
+            (16777216, Some(0), 4),
+            (4294967295, Some(0), 4),
+            (4294967296, Some(1), 4),
+            (4294967296, Some(4294967295), 1),
+            (4611686018427387903, Some(4611686018427387902), 1),
         ];
-
         let mut buf = [0; 4];
         for case in test_cases {
             let pkt_num = case.0;
-            let len = encode_packet_num(pkt_num, &mut buf[..]);
-            assert_eq!(len, case.1);
+            let largest_acked = case.1;
+            let pkt_num_len = packet_num_len(pkt_num, largest_acked);
+            assert_eq!(pkt_num_len, case.2);
+
+            let len = encode_packet_num(pkt_num, pkt_num_len, &mut buf[..])?;
+            assert_eq!(len, pkt_num_len);
         }
+
+        // Test case in A.2. Sample Packet Number Encoding Algorithm
+        let pkt_num_len = packet_num_len(0xac5c02, Some(0xabe8b3));
+        assert_eq!(pkt_num_len, 2);
+
+        // Test case in RFC 9000 A.3. Sample Packet Number Decoding Algorithm
+        let pkt_num = decode_packet_num(0xa82f30ea, 0x9b32, 2);
+        assert_eq!(pkt_num, 0xa82f9b32);
+
         Ok(())
     }
 
@@ -1404,7 +1431,7 @@ mod tests {
             dcid: ConnectionId::random(),
             scid: ConnectionId::default(),
             pkt_num: 10,
-            pkt_num_len: packet_num_len(10)?,
+            pkt_num_len: packet_num_len(10, Some(1)),
             token: None,
             key_phase: false,
         };
@@ -1415,7 +1442,7 @@ mod tests {
 
         // encode the packet header and payload
         let mut written = pkt_hdr.to_bytes(&mut out)?;
-        written += encode_packet_num(pkt_hdr.pkt_num, &mut out[written..])?;
+        written += encode_packet_num(pkt_hdr.pkt_num, 1, &mut out[written..])?;
         let (payload_off, payload_end) = (written, written + pkt_payload.len());
         out[payload_off..payload_end].copy_from_slice(&pkt_payload);
 
