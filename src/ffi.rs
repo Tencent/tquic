@@ -1085,6 +1085,23 @@ pub extern "C" fn quic_conn_active_path(conn: &Connection, a: &mut PathAddress) 
     false
 }
 
+/// Return the latest statistics about the specified path.
+#[no_mangle]
+pub extern "C" fn quic_conn_path_stats<'a>(
+    conn: &'a mut Connection,
+    local: &sockaddr,
+    local_len: socklen_t,
+    remote: &sockaddr,
+    remote_len: socklen_t,
+) -> Option<&'a PathStats> {
+    let local_addr = sock_addr_from_c(local, local_len);
+    let remote_addr = sock_addr_from_c(remote, remote_len);
+    if let Ok(stats) = conn.get_path_stats(local_addr, remote_addr) {
+        return Some(stats);
+    }
+    None
+}
+
 /// Return statistics about the connection.
 #[no_mangle]
 pub extern "C" fn quic_conn_stats(conn: &mut Connection) -> &ConnectionStats {
