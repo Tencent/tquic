@@ -1838,6 +1838,30 @@ impl crate::ConnectionIdGenerator for ConnectionIdGenerator {
     }
 }
 
+/// Extract the header form, version and destination connection id from the
+/// QUIC packet.
+#[no_mangle]
+pub extern "C" fn quic_packet_header_info(
+    buf: *mut u8,
+    buf_len: size_t,
+    dcid_len: u8,
+    long_header: &mut bool,
+    version: &mut u32,
+    dcid: &mut ConnectionId,
+) -> c_int {
+    let buf = unsafe { slice::from_raw_parts_mut(buf, buf_len) };
+
+    match crate::PacketHeader::header_info(buf, dcid_len as usize) {
+        Ok((long, ver, cid)) => {
+            *long_header = long;
+            *version = ver;
+            *dcid = cid;
+            return 0;
+        }
+        Err(e) => return e.to_errno() as i32,
+    }
+}
+
 /// Create default config for HTTP3.
 #[no_mangle]
 pub extern "C" fn http3_config_new() -> *mut Http3Config {
