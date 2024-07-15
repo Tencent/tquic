@@ -1036,24 +1036,21 @@ pub struct PathStats {
     /// Total congestion window limited events.
     pub cwnd_limited_count: u64,
 
-    /// Total duration of congestion windowlimited events.
-    pub cwnd_limited_duration: Duration,
-
-    /// The time for last congestion window event
-    last_cwnd_limited_time: Option<Instant>,
+    /// Total duration of congestion windowlimited events in microseconds.
+    pub cwnd_limited_duration: u64,
 
     /* Note: the following fields are lazily updated from Recovery */
-    /// Minimum roundtrip time.
-    pub min_rtt: Duration,
+    /// Minimum roundtrip time in microseconds.
+    pub min_rtt: u64,
 
-    /// Maximum roundtrip time.
-    pub max_rtt: Duration,
+    /// Maximum roundtrip time in microseconds.
+    pub max_rtt: u64,
 
-    /// Smoothed roundtrip time.
-    pub srtt: Duration,
+    /// Smoothed roundtrip time in microseconds.
+    pub srtt: u64,
 
-    /// Roundtrip time variation.
-    pub rttvar: Duration,
+    /// Roundtrip time variation in microseconds.
+    pub rttvar: u64,
 
     /// Whether the congestion controller is in slow start status.
     pub in_slow_start: bool,

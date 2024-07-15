@@ -276,6 +276,100 @@ typedef struct quic_path_address_t {
 } quic_path_address_t;
 
 /**
+ * Statistics about path
+ */
+typedef struct PathStats {
+  /**
+   * The number of QUIC packets received.
+   */
+  uint64_t recv_count;
+  /**
+   * The number of received bytes.
+   */
+  uint64_t recv_bytes;
+  /**
+   * The number of QUIC packets sent.
+   */
+  uint64_t sent_count;
+  /**
+   * The number of sent bytes.
+   */
+  uint64_t sent_bytes;
+  /**
+   * The number of QUIC packets lost.
+   */
+  uint64_t lost_count;
+  /**
+   * The number of lost bytes.
+   */
+  uint64_t lost_bytes;
+  /**
+   * Total number of bytes acked.
+   */
+  uint64_t acked_bytes;
+  /**
+   * Total number of packets acked.
+   */
+  uint64_t acked_count;
+  /**
+   * Initial congestion window in bytes.
+   */
+  uint64_t init_cwnd;
+  /**
+   * Final congestion window in bytes.
+   */
+  uint64_t final_cwnd;
+  /**
+   * Maximum congestion window in bytes.
+   */
+  uint64_t max_cwnd;
+  /**
+   * Minimum congestion window in bytes.
+   */
+  uint64_t min_cwnd;
+  /**
+   * Maximum inflight data in bytes.
+   */
+  uint64_t max_inflight;
+  /**
+   * Total loss events.
+   */
+  uint64_t loss_event_count;
+  /**
+   * Total congestion window limited events.
+   */
+  uint64_t cwnd_limited_count;
+  /**
+   * Total duration of congestion windowlimited events in microseconds.
+   */
+  uint64_t cwnd_limited_duration;
+  /**
+   * Minimum roundtrip time in microseconds.
+   */
+  uint64_t min_rtt;
+  /**
+   * Maximum roundtrip time in microseconds.
+   */
+  uint64_t max_rtt;
+  /**
+   * Smoothed roundtrip time in microseconds.
+   */
+  uint64_t srtt;
+  /**
+   * Roundtrip time variation in microseconds.
+   */
+  uint64_t rttvar;
+  /**
+   * Whether the congestion controller is in slow start status.
+   */
+  bool in_slow_start;
+  /**
+   * Pacing rate estimated by congestion control algorithm.
+   */
+  uint64_t pacing_rate;
+} PathStats;
+
+/**
  * Statistics about a QUIC connection.
  */
 typedef struct quic_conn_stats_t {
@@ -909,6 +1003,15 @@ bool quic_conn_path_iter_next(struct quic_path_address_iter_t *iter, struct quic
  * Return the address of the active path
  */
 bool quic_conn_active_path(const struct quic_conn_t *conn, struct quic_path_address_t *a);
+
+/**
+ * Return the latest statistics about the specified path.
+ */
+const struct PathStats *quic_conn_path_stats(struct quic_conn_t *conn,
+                                             const struct sockaddr *local,
+                                             socklen_t local_len,
+                                             const struct sockaddr *remote,
+                                             socklen_t remote_len);
 
 /**
  * Return statistics about the connection.

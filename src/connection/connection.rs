@@ -70,6 +70,7 @@ use crate::FourTupleIter;
 use crate::MultipathConfig;
 use crate::PacketInfo;
 use crate::PathEvent;
+use crate::PathStats;
 use crate::RecoveryConfig;
 use crate::Result;
 use crate::Shutdown;
@@ -3582,6 +3583,19 @@ impl Connection {
     /// Return an immutable reference to the active path
     pub fn get_active_path(&self) -> Result<&path::Path> {
         self.paths.get_active()
+    }
+
+    /// Return an mutable reference to the specified path
+    pub fn get_path_stats(
+        &mut self,
+        local_addr: SocketAddr,
+        remote_addr: SocketAddr,
+    ) -> Result<&crate::PathStats> {
+        let pid = self
+            .paths
+            .get_path_id(&(local_addr, remote_addr))
+            .ok_or(Error::InvalidOperation("not found".into()))?;
+        Ok(self.paths.get_mut(pid)?.stats())
     }
 
     /// Migrates the connection to the specified path.
