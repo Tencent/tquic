@@ -1216,6 +1216,17 @@ int quic_stream_set_context(struct quic_conn_t *conn, uint64_t stream_id, void *
 void *quic_stream_context(struct quic_conn_t *conn, uint64_t stream_id);
 
 /**
+ * Extract the header form, version and destination connection id from the
+ * QUIC packet.
+ */
+int quic_packet_header_info(uint8_t *buf,
+                            size_t buf_len,
+                            uint8_t dcid_len,
+                            bool *long_header,
+                            uint32_t *version,
+                            struct ConnectionId *dcid);
+
+/**
  * Create default config for HTTP3.
  */
 struct http3_config_t *http3_config_new(void);

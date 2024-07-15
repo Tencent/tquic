@@ -351,6 +351,29 @@ impl PacketHeader {
         ))
     }
 
+    /// Extract the header form, version and destination connection id.
+    ///
+    /// Return (true, version, cid) for the quic packet with a long header
+    /// Return (false, 0, cid) for the quic packet with a short header
+    /// See RFC 8999 Section 5
+    pub fn header_info(mut buf: &[u8], dcid_len: usize) -> Result<(bool, u32, ConnectionId)> {
+        let first = buf.read_u8()?;
+
+        // Decode in short header form for 1-RTT.
+        if !PacketHeader::long_header(first) {
+            let dcid = buf.read(dcid_len)?;
+            let dcid = ConnectionId::new(&dcid);
+            return Ok((false, 0, dcid));
+        }
+
+        // Decode in long header form.
+        let version = buf.read_u32()?;
+        let dcid_len = buf.read_u8()?;
+        let dcid = buf.read(dcid_len as usize)?;
+        let dcid = ConnectionId::new(&dcid);
+        Ok((true, version, dcid))
+    }
+
     /// Return true if the packet has a long header.
     fn long_header(header_first_byte: u8) -> bool {
         header_first_byte & HEADER_LONG_FORM_BIT != 0
@@ -833,7 +856,13 @@ mod tests {
             token=040404040404040404040404040404040404040404040404"
         );
         let len = initial_hdr.to_bytes(&mut buf)?;
-        assert_eq!((initial_hdr, len), PacketHeader::from_bytes(&mut buf, 20)?);
+        assert_eq!(
+            (initial_hdr.clone(), len),
+            PacketHeader::from_bytes(&mut buf, 20)?
+        );
+
+        let info = PacketHeader::header_info(&mut buf, 20)?;
+        assert_eq!(info, (true, initial_hdr.version, initial_hdr.dcid));
         Ok(())
     }
 
@@ -864,7 +893,13 @@ mod tests {
 
         let mut buf = [0; 128];
         let len = hsk_hdr.to_bytes(&mut buf)?;
-        assert_eq!((hsk_hdr, len), PacketHeader::from_bytes(&mut buf, 20)?);
+        assert_eq!(
+            (hsk_hdr.clone(), len),
+            PacketHeader::from_bytes(&mut buf, 20)?
+        );
+
+        let info = PacketHeader::header_info(&mut buf, 20)?;
+        assert_eq!(info, (true, hsk_hdr.version, hsk_hdr.dcid));
         Ok(())
     }
 
@@ -895,7 +930,13 @@ mod tests {
 
         let mut buf = [0; 128];
         let len = zero_rtt_hdr.to_bytes(&mut buf)?;
-        assert_eq!((zero_rtt_hdr, len), PacketHeader::from_bytes(&mut buf, 20)?);
+        assert_eq!(
+            (zero_rtt_hdr.clone(), len),
+            PacketHeader::from_bytes(&mut buf, 20)?
+        );
+
+        let info = PacketHeader::header_info(&mut buf, 20)?;
+        assert_eq!(info, (true, zero_rtt_hdr.version, zero_rtt_hdr.dcid));
         Ok(())
     }
 
@@ -939,6 +980,8 @@ mod tests {
         // Note: key phase is encrypted and not parsed by from_bytes()
         assert_eq!(PacketHeader::from_bytes(&mut buf, 20)?.0.key_phase, false);
 
+        let info = PacketHeader::header_info(&mut buf, 20)?;
+        assert_eq!(info, (false, one_rtt_hdr.version, one_rtt_hdr.dcid));
         Ok(())
     }
 
@@ -968,6 +1011,9 @@ mod tests {
             dcid=0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d \
             scid=0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c"
         );
+
+        let info = PacketHeader::header_info(&mut buf, 20)?;
+        assert_eq!(info, (true, hdr.version, hdr.dcid));
 
         let mut br = &buf[hdr_len..];
         let ver = br.read_u32()?;
@@ -1021,6 +1067,9 @@ mod tests {
             scid=0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c \
             token=71756963c0a8010a0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
         );
+
+        let info = PacketHeader::header_info(&mut buf, 20)?;
+        assert_eq!(info, (true, hdr.version, hdr.dcid));
 
         verify_retry_integrity_tag(&mut buf[..len], &odcid, crate::QUIC_VERSION_V1)?;
         Ok(())
