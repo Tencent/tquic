@@ -685,9 +685,14 @@ impl Config {
     }
 
     /// Set the buffer size for disordered zerortt packets on the server.
+    /// The default value is `1000`. A value of 0 will be treated as default value.
     /// Applicable to Server only.
     pub fn set_zerortt_buffer_size(&mut self, v: usize) {
-        self.zerortt_buffer_size = v;
+        if v > 0 {
+            self.zerortt_buffer_size = v;
+        } else {
+            self.zerortt_buffer_size = 1000;
+        }
     }
 
     /// Set TLS config.

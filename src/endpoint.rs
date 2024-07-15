@@ -1001,13 +1001,14 @@ const MAX_ZERORTT_PACKETS_PER_CONN: usize = 10;
 /// PacketBuffer is used for buffering early incoming ZeroRTT packets on the server.
 /// Buffered packets are indexed by odcid.
 struct PacketBuffer {
-    packets: hashlru::Cache<ConnectionId, Vec<(Vec<u8>, PacketInfo)>>,
+    packets: lru::LruCache<ConnectionId, Vec<(Vec<u8>, PacketInfo)>>,
 }
 
 impl PacketBuffer {
     fn new(cache_size: usize) -> Self {
+        let size = std::num::NonZeroUsize::new(cache_size).unwrap();
         Self {
-            packets: hashlru::Cache::new(cache_size / MAX_ZERORTT_PACKETS_PER_CONN),
+            packets: lru::LruCache::new(size),
         }
     }
 
@@ -1022,12 +1023,12 @@ impl PacketBuffer {
 
         let mut v = Vec::with_capacity(MAX_ZERORTT_PACKETS_PER_CONN);
         v.push((buffer, info));
-        self.packets.insert(dcid, v);
+        self.packets.put(dcid, v);
     }
 
     /// Remove all packets for the specified connection
     fn del(&mut self, dcid: &ConnectionId) -> Option<Vec<(Vec<u8>, PacketInfo)>> {
-        self.packets.remove(dcid)
+        self.packets.pop(dcid)
     }
 }
 

@@ -442,6 +442,7 @@ pub extern "C" fn quic_config_set_send_batch_size(config: &mut Config, v: u16) {
 }
 
 /// Set the buffer size for disordered zerortt packets on the server.
+/// The default value is `1000`. A value of 0 will be treated as default value.
 /// Applicable to Server only.
 #[no_mangle]
 pub extern "C" fn quic_config_set_zerortt_buffer_size(config: &mut Config, v: u16) {
