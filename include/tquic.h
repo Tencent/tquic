@@ -709,6 +709,7 @@ void quic_config_set_send_batch_size(struct quic_config_t *config, uint16_t v);
 
 /**
  * Set the buffer size for disordered zerortt packets on the server.
+ * The default value is `1000`. A value of 0 will be treated as default value.
  * Applicable to Server only.
  */
 void quic_config_set_zerortt_buffer_size(struct quic_config_t *config, uint16_t v);
