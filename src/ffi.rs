@@ -294,6 +294,20 @@ pub extern "C" fn quic_config_set_initial_rtt(config: &mut Config, v: u64) {
     config.set_initial_rtt(v);
 }
 
+/// Enable pacing to smooth the flow of packets sent onto the network.
+/// The default value is true.
+#[no_mangle]
+pub extern "C" fn quic_config_enable_pacing(config: &mut Config, v: bool) {
+    config.enable_pacing(v);
+}
+
+/// Set clock granularity used by the pacer.
+/// The default value is 10 milliseconds.
+#[no_mangle]
+pub extern "C" fn quic_config_set_pacing_granularity(config: &mut Config, v: u64) {
+    config.set_pacing_granularity(v);
+}
+
 /// Set the linear factor for calculating the probe timeout.
 /// The endpoint do not backoff the first `v` consecutive probe timeouts.
 /// The default value is `0`.

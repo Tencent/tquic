@@ -607,6 +607,18 @@ void quic_config_set_bbr_probe_bw_cwnd_gain(struct quic_config_t *config, double
 void quic_config_set_initial_rtt(struct quic_config_t *config, uint64_t v);
 
 /**
+ * Enable pacing to smooth the flow of packets sent onto the network.
+ * The default value is true.
+ */
+void quic_config_enable_pacing(struct quic_config_t *config, bool v);
+
+/**
+ * Set clock granularity used by the pacer.
+ * The default value is 10 milliseconds.
+ */
+void quic_config_set_pacing_granularity(struct quic_config_t *config, uint64_t v);
+
+/**
  * Set the linear factor for calculating the probe timeout.
  * The endpoint do not backoff the first `v` consecutive probe timeouts.
  * The default value is `0`.
