@@ -7,8 +7,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <sys/socket.h>
-#include <sys/types.h>
 #include "openssl/ssl.h"
 #include "tquic_def.h"
 
@@ -1105,6 +1103,7 @@ void quic_conn_set_keylog(struct quic_conn_t *conn, void (*cb)(const uint8_t *da
 
 /**
  * Set keylog file.
+ * Note: The API is not applicable for Windows.
  */
 void quic_conn_set_keylog_fd(struct quic_conn_t *conn, int fd);
 
@@ -1122,6 +1121,7 @@ void quic_conn_set_qlog(struct quic_conn_t *conn,
 
 /**
  * Set qlog file.
+ * Note: The API is not applicable for Windows.
  */
 void quic_conn_set_qlog_fd(struct quic_conn_t *conn, int fd, const char *title, const char *desc);
 

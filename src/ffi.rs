@@ -22,7 +22,6 @@ use std::net::Ipv6Addr;
 use std::net::SocketAddr;
 use std::net::SocketAddrV4;
 use std::net::SocketAddrV6;
-use std::os::fd::FromRawFd;
 use std::ptr;
 use std::rc::Rc;
 use std::slice;
@@ -31,23 +30,80 @@ use std::sync::atomic;
 use std::sync::Arc;
 use std::time::Instant;
 
+#[cfg(unix)]
+use std::os::fd::FromRawFd;
+
 use bytes::Bytes;
 use libc::c_char;
 use libc::c_int;
 use libc::c_void;
-use libc::in6_addr;
-use libc::in_addr;
-use libc::iovec;
-use libc::sa_family_t;
 use libc::size_t;
 use libc::sockaddr;
-use libc::sockaddr_in;
-use libc::sockaddr_in6;
-use libc::sockaddr_storage;
-use libc::socklen_t;
 use libc::ssize_t;
+
+#[cfg(not(windows))]
+use libc::in_addr;
+#[cfg(windows)]
+use winapi::shared::inaddr::IN_ADDR as in_addr;
+
+#[cfg(not(windows))]
+use libc::in6_addr;
+#[cfg(windows)]
+use winapi::shared::in6addr::IN6_ADDR as in6_addr;
+
+#[cfg(not(windows))]
+use libc::sa_family_t;
+#[cfg(windows)]
+use winapi::shared::ws2def::ADDRESS_FAMILY as sa_family_t;
+
+#[cfg(not(windows))]
+use libc::sockaddr_in;
+#[cfg(windows)]
+use winapi::shared::ws2def::SOCKADDR_IN as sockaddr_in;
+
+#[cfg(not(windows))]
+use libc::sockaddr_in6;
+#[cfg(windows)]
+use winapi::shared::ws2ipdef::SOCKADDR_IN6_LH as sockaddr_in6;
+
+#[cfg(not(windows))]
+use libc::sockaddr_storage;
+#[cfg(windows)]
+use winapi::shared::ws2def::SOCKADDR_STORAGE_LH as sockaddr_storage;
+
+#[cfg(windows)]
+use libc::c_int as socklen_t;
+#[cfg(not(windows))]
+use libc::socklen_t;
+
+#[cfg(not(windows))]
 use libc::AF_INET;
+#[cfg(windows)]
+use winapi::shared::ws2def::AF_INET;
+
+#[cfg(not(windows))]
 use libc::AF_INET6;
+#[cfg(windows)]
+use winapi::shared::ws2def::AF_INET6;
+
+#[cfg(windows)]
+use winapi::shared::in6addr::in6_addr_u;
+#[cfg(windows)]
+use winapi::shared::inaddr::in_addr_S_un;
+#[cfg(windows)]
+use winapi::shared::ws2ipdef::SOCKADDR_IN6_LH_u;
+
+#[cfg(not(windows))]
+use libc::iovec;
+
+/// cbindgen:ignore
+#[cfg(windows)]
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct iovec {
+    iov_base: *mut c_void, // starting address
+    iov_len: size_t,       // number of bytes to transfer
+}
 
 use crate::codec::Decoder;
 use crate::connection::ConnectionStats;
@@ -1243,7 +1299,9 @@ pub extern "C" fn quic_conn_set_keylog(
 }
 
 /// Set keylog file.
+/// Note: The API is not applicable for Windows.
 #[no_mangle]
+#[cfg(unix)]
 pub extern "C" fn quic_conn_set_keylog_fd(conn: &mut Connection, fd: c_int) {
     let file = unsafe { std::fs::File::from_raw_fd(fd) };
     let writer = std::io::BufWriter::new(file);
@@ -1275,7 +1333,9 @@ pub extern "C" fn quic_conn_set_qlog(
 }
 
 /// Set qlog file.
+/// Note: The API is not applicable for Windows.
 #[no_mangle]
+#[cfg(unix)]
 pub extern "C" fn quic_conn_set_qlog_fd(
     conn: &mut Connection,
     fd: c_int,
@@ -1733,16 +1793,34 @@ fn sock_addr_from_c(addr: &sockaddr, addr_len: socklen_t) -> SocketAddr {
         AF_INET => {
             assert!(addr_len as usize == std::mem::size_of::<sockaddr_in>());
             let in4 = unsafe { *(addr as *const _ as *const sockaddr_in) };
+
+            #[cfg(not(windows))]
             let addr = Ipv4Addr::from(u32::from_be(in4.sin_addr.s_addr));
+            #[cfg(windows)]
+            let addr = {
+                let ip = unsafe { in4.sin_addr.S_un.S_un_b() };
+                Ipv4Addr::from([ip.s_b1, ip.s_b2, ip.s_b3, ip.s_b4])
+            };
+
             let port = u16::from_be(in4.sin_port);
             SocketAddrV4::new(addr, port).into()
         }
         AF_INET6 => {
             assert!(addr_len as usize == std::mem::size_of::<sockaddr_in6>());
             let in6 = unsafe { *(addr as *const _ as *const sockaddr_in6) };
+
+            #[cfg(not(windows))]
             let addr = Ipv6Addr::from(in6.sin6_addr.s6_addr);
+            #[cfg(windows)]
+            let addr = Ipv6Addr::from(*unsafe { in6.sin6_addr.u.Byte() });
+
             let port = u16::from_be(in6.sin6_port);
+
+            #[cfg(not(windows))]
             let scope_id = in6.sin6_scope_id;
+            #[cfg(windows)]
+            let scope_id = unsafe { *in6.u.sin6_scope_id() };
+
             SocketAddrV6::new(addr, port, in6.sin6_flowinfo, scope_id).into()
         }
         _ => unimplemented!("unsupported address type"),
@@ -1756,9 +1834,17 @@ fn sock_addr_to_c(addr: &SocketAddr, out: &mut sockaddr_storage) -> socklen_t {
         SocketAddr::V4(addr) => unsafe {
             let sa_len = std::mem::size_of::<sockaddr_in>();
             let out_in = out as *mut _ as *mut sockaddr_in;
-            let sin_addr = in_addr {
-                s_addr: u32::from_ne_bytes(addr.ip().octets()),
+            let s_addr = u32::from_ne_bytes(addr.ip().octets());
+
+            #[cfg(not(windows))]
+            let sin_addr = in_addr { s_addr };
+            #[cfg(windows)]
+            let sin_addr = {
+                let mut s_un = std::mem::zeroed::<in_addr_S_un>();
+                *s_un.S_addr_mut() = s_addr;
+                in_addr { S_un: s_un }
             };
+
             *out_in = sockaddr_in {
                 sin_family: AF_INET as sa_family_t,
                 sin_addr,
@@ -1773,9 +1859,25 @@ fn sock_addr_to_c(addr: &SocketAddr, out: &mut sockaddr_storage) -> socklen_t {
         SocketAddr::V6(addr) => unsafe {
             let sa_len = std::mem::size_of::<sockaddr_in6>();
             let out_in6 = out as *mut _ as *mut sockaddr_in6;
+
+            #[cfg(not(windows))]
             let sin6_addr = in6_addr {
                 s6_addr: addr.ip().octets(),
             };
+            #[cfg(windows)]
+            let sin6_addr = {
+                let mut u = std::mem::zeroed::<in6_addr_u>();
+                *u.Byte_mut() = addr.ip().octets();
+                in6_addr { u }
+            };
+
+            #[cfg(windows)]
+            let u = {
+                let mut u = std::mem::zeroed::<SOCKADDR_IN6_LH_u>();
+                *u.sin6_scope_id_mut() = addr.scope_id();
+                u
+            };
+
             *out_in6 = sockaddr_in6 {
                 sin6_family: AF_INET6 as sa_family_t,
                 sin6_addr,
@@ -1783,7 +1885,11 @@ fn sock_addr_to_c(addr: &SocketAddr, out: &mut sockaddr_storage) -> socklen_t {
                 sin6_len: sa_len as u8,
                 sin6_port: sin_port,
                 sin6_flowinfo: addr.flowinfo(),
+
+                #[cfg(not(windows))]
                 sin6_scope_id: addr.scope_id(),
+                #[cfg(windows)]
+                u,
             };
             sa_len as socklen_t
         },

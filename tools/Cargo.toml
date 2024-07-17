@@ -21,9 +21,11 @@ rustc-hash = "1.1"
 slab = "0.4"
 rand = "0.8.5"
 statrs = "0.16"
-jemallocator = { version = "0.5", package = "tikv-jemallocator" }
 signal-hook = "0.3.17"
 tquic = { path = "..", version = "0.15.0"}
+
+[target."cfg(unix)".dependencies]
+jemallocator = { version = "0.5", package = "tikv-jemallocator" }
 
 [lib]
 crate-type = ["lib"]
