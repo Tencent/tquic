@@ -106,6 +106,9 @@ pub struct Recovery {
     /// Cache pkt size
     pub cache_pkt_size: usize,
 
+    /// The time for last congestion window event
+    last_cwnd_limited_time: Option<Instant>,
+
     /// Path level Statistics.
     pub stats: PathStats,
 
@@ -135,6 +138,7 @@ impl Recovery {
             pacer: Pacer::build_pacer_controller(conf),
             pacer_timer: None,
             cache_pkt_size: conf.max_datagram_size,
+            last_cwnd_limited_time: None,
             stats: PathStats::default(),
             last_metrics: RecoveryMetrics::default(),
             trace_id: String::from(""),
@@ -903,29 +907,30 @@ impl Recovery {
     pub(crate) fn stat_cwnd_limited(&mut self) {
         let is_cwnd_limited = !self.can_send();
         let now = Instant::now();
-        if let Some(last_cwnd_limited_time) = self.stats.last_cwnd_limited_time {
+        if let Some(last_cwnd_limited_time) = self.last_cwnd_limited_time {
             // Update duration timely, in case it stays in cwnd limited all the time.
             let duration = now.saturating_duration_since(last_cwnd_limited_time);
+            let duration = duration.as_millis() as u64;
             self.stats.cwnd_limited_duration =
                 self.stats.cwnd_limited_duration.saturating_add(duration);
             if is_cwnd_limited {
-                self.stats.last_cwnd_limited_time = Some(now);
+                self.last_cwnd_limited_time = Some(now);
             } else {
-                self.stats.last_cwnd_limited_time = None;
+                self.last_cwnd_limited_time = None;
             }
         } else if is_cwnd_limited {
             // A new cwnd limited event
             self.stats.cwnd_limited_count = self.stats.cwnd_limited_count.saturating_add(1);
-            self.stats.last_cwnd_limited_time = Some(now);
+            self.last_cwnd_limited_time = Some(now);
         }
     }
 
     /// Update with the latest values from recovery.
     pub(crate) fn stat_lazy_update(&mut self) {
-        self.stats.min_rtt = self.rtt.min_rtt();
-        self.stats.max_rtt = self.rtt.max_rtt();
-        self.stats.srtt = self.rtt.smoothed_rtt();
-        self.stats.rttvar = self.rtt.rttvar();
+        self.stats.min_rtt = self.rtt.min_rtt().as_micros() as u64;
+        self.stats.max_rtt = self.rtt.max_rtt().as_micros() as u64;
+        self.stats.srtt = self.rtt.smoothed_rtt().as_micros() as u64;
+        self.stats.rttvar = self.rtt.rttvar().as_micros() as u64;
         self.stats.in_slow_start = self.congestion.in_slow_start();
         self.stats.pacing_rate = self.congestion.pacing_rate().unwrap_or_default();
     }

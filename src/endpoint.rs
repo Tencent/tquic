@@ -112,7 +112,6 @@ impl Endpoint {
     ) -> Self {
         let cid_gen = Box::new(crate::RandomConnectionIdGenerator {
             cid_len: config.cid_len,
-            cid_lifetime: None,
         });
         let trace_id = if is_server { "SERVER" } else { "CLIENT" };
         let buffer = PacketBuffer::new(config.zerortt_buffer_size);
@@ -802,6 +801,12 @@ impl Endpoint {
         self.conns.clear();
     }
 
+    /// Set the connection id generator
+    /// By default, the RandomConnectionIdGenerator is used.
+    pub fn set_cid_generator(&mut self, cid_gen: Box<dyn ConnectionIdGenerator>) {
+        self.cid_gen = cid_gen;
+    }
+
     /// Set the unique trace id for the endpoint
     pub fn set_trace_id(&mut self, trace_id: String) {
         self.trace_id = trace_id
@@ -996,13 +1001,14 @@ const MAX_ZERORTT_PACKETS_PER_CONN: usize = 10;
 /// PacketBuffer is used for buffering early incoming ZeroRTT packets on the server.
 /// Buffered packets are indexed by odcid.
 struct PacketBuffer {
-    packets: hashlru::Cache<ConnectionId, Vec<(Vec<u8>, PacketInfo)>>,
+    packets: lru::LruCache<ConnectionId, Vec<(Vec<u8>, PacketInfo)>>,
 }
 
 impl PacketBuffer {
     fn new(cache_size: usize) -> Self {
+        let size = std::num::NonZeroUsize::new(cache_size).unwrap();
         Self {
-            packets: hashlru::Cache::new(cache_size / MAX_ZERORTT_PACKETS_PER_CONN),
+            packets: lru::LruCache::new(size),
         }
     }
 
@@ -1017,12 +1023,12 @@ impl PacketBuffer {
 
         let mut v = Vec::with_capacity(MAX_ZERORTT_PACKETS_PER_CONN);
         v.push((buffer, info));
-        self.packets.insert(dcid, v);
+        self.packets.put(dcid, v);
     }
 
     /// Remove all packets for the specified connection
     fn del(&mut self, dcid: &ConnectionId) -> Option<Vec<(Vec<u8>, PacketInfo)>> {
-        self.packets.remove(dcid)
+        self.packets.pop(dcid)
     }
 }
 

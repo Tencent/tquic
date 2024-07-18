@@ -23,6 +23,12 @@
 #define QUIC_VERSION_V1 1
 
 /**
+ * The Connection ID MUST NOT exceed 20 bytes in QUIC version 1.
+ * See RFC 9000 Section 17.2
+ */
+#define MAX_CID_LEN 20
+
+/**
  * Available congestion control algorithms.
  */
 typedef enum quic_congestion_control_algorithm {
@@ -225,6 +231,34 @@ typedef struct quic_packet_send_methods_t {
 typedef void *quic_packet_send_context_t;
 
 /**
+ * Connection Id is an identifier used to identify a QUIC connection
+ * at an endpoint.
+ */
+typedef struct ConnectionId {
+  /**
+   * length of cid
+   */
+  uint8_t len;
+  /**
+   * octets of cid
+   */
+  uint8_t data[MAX_CID_LEN];
+} ConnectionId;
+
+typedef struct ConnectionIdGeneratorMethods {
+  /**
+   * Generate a new CID
+   */
+  struct ConnectionId (*generate)(void *gctx);
+  /**
+   * Return the length of a CID
+   */
+  uint8_t (*cid_len)(void *gctx);
+} ConnectionIdGeneratorMethods;
+
+typedef void *ConnectionIdGeneratorContext;
+
+/**
  * Meta information of an incoming packet.
  */
 typedef struct quic_packet_info_t {
@@ -240,6 +274,100 @@ typedef struct quic_path_address_t {
   struct sockaddr_storage remote_addr;
   socklen_t remote_addr_len;
 } quic_path_address_t;
+
+/**
+ * Statistics about path
+ */
+typedef struct PathStats {
+  /**
+   * The number of QUIC packets received.
+   */
+  uint64_t recv_count;
+  /**
+   * The number of received bytes.
+   */
+  uint64_t recv_bytes;
+  /**
+   * The number of QUIC packets sent.
+   */
+  uint64_t sent_count;
+  /**
+   * The number of sent bytes.
+   */
+  uint64_t sent_bytes;
+  /**
+   * The number of QUIC packets lost.
+   */
+  uint64_t lost_count;
+  /**
+   * The number of lost bytes.
+   */
+  uint64_t lost_bytes;
+  /**
+   * Total number of bytes acked.
+   */
+  uint64_t acked_bytes;
+  /**
+   * Total number of packets acked.
+   */
+  uint64_t acked_count;
+  /**
+   * Initial congestion window in bytes.
+   */
+  uint64_t init_cwnd;
+  /**
+   * Final congestion window in bytes.
+   */
+  uint64_t final_cwnd;
+  /**
+   * Maximum congestion window in bytes.
+   */
+  uint64_t max_cwnd;
+  /**
+   * Minimum congestion window in bytes.
+   */
+  uint64_t min_cwnd;
+  /**
+   * Maximum inflight data in bytes.
+   */
+  uint64_t max_inflight;
+  /**
+   * Total loss events.
+   */
+  uint64_t loss_event_count;
+  /**
+   * Total congestion window limited events.
+   */
+  uint64_t cwnd_limited_count;
+  /**
+   * Total duration of congestion windowlimited events in microseconds.
+   */
+  uint64_t cwnd_limited_duration;
+  /**
+   * Minimum roundtrip time in microseconds.
+   */
+  uint64_t min_rtt;
+  /**
+   * Maximum roundtrip time in microseconds.
+   */
+  uint64_t max_rtt;
+  /**
+   * Smoothed roundtrip time in microseconds.
+   */
+  uint64_t srtt;
+  /**
+   * Roundtrip time variation in microseconds.
+   */
+  uint64_t rttvar;
+  /**
+   * Whether the congestion controller is in slow start status.
+   */
+  bool in_slow_start;
+  /**
+   * Pacing rate estimated by congestion control algorithm.
+   */
+  uint64_t pacing_rate;
+} PathStats;
 
 /**
  * Statistics about a QUIC connection.
@@ -479,6 +607,18 @@ void quic_config_set_bbr_probe_bw_cwnd_gain(struct quic_config_t *config, double
 void quic_config_set_initial_rtt(struct quic_config_t *config, uint64_t v);
 
 /**
+ * Enable pacing to smooth the flow of packets sent onto the network.
+ * The default value is true.
+ */
+void quic_config_enable_pacing(struct quic_config_t *config, bool v);
+
+/**
+ * Set clock granularity used by the pacer.
+ * The default value is 10 milliseconds.
+ */
+void quic_config_set_pacing_granularity(struct quic_config_t *config, uint64_t v);
+
+/**
  * Set the linear factor for calculating the probe timeout.
  * The endpoint do not backoff the first `v` consecutive probe timeouts.
  * The default value is `0`.
@@ -581,6 +721,7 @@ void quic_config_set_send_batch_size(struct quic_config_t *config, uint16_t v);
 
 /**
  * Set the buffer size for disordered zerortt packets on the server.
+ * The default value is `1000`. A value of 0 will be treated as default value.
  * Applicable to Server only.
  */
 void quic_config_set_zerortt_buffer_size(struct quic_config_t *config, uint16_t v);
@@ -706,6 +847,14 @@ struct quic_endpoint_t *quic_endpoint_new(struct quic_config_t *config,
  * Destroy a QUIC endpoint.
  */
 void quic_endpoint_free(struct quic_endpoint_t *endpoint);
+
+/**
+ * Set the connection id generator for the endpoint.
+ * By default, the random connection id generator is used.
+ */
+void quic_endpoint_set_cid_generator(struct quic_endpoint_t *endpoint,
+                                     const struct ConnectionIdGeneratorMethods *cid_gen_methods,
+                                     ConnectionIdGeneratorContext cid_gen_ctx);
 
 /**
  * Create a client connection.
@@ -867,6 +1016,15 @@ bool quic_conn_path_iter_next(struct quic_path_address_iter_t *iter, struct quic
  * Return the address of the active path
  */
 bool quic_conn_active_path(const struct quic_conn_t *conn, struct quic_path_address_t *a);
+
+/**
+ * Return the latest statistics about the specified path.
+ */
+const struct PathStats *quic_conn_path_stats(struct quic_conn_t *conn,
+                                             const struct sockaddr *local,
+                                             socklen_t local_len,
+                                             const struct sockaddr *remote,
+                                             socklen_t remote_len);
 
 /**
  * Return statistics about the connection.
@@ -1068,6 +1226,17 @@ int quic_stream_set_context(struct quic_conn_t *conn, uint64_t stream_id, void *
  * Return the stream’s user context.
  */
 void *quic_stream_context(struct quic_conn_t *conn, uint64_t stream_id);
+
+/**
+ * Extract the header form, version and destination connection id from the
+ * QUIC packet.
+ */
+int quic_packet_header_info(uint8_t *buf,
+                            size_t buf_len,
+                            uint8_t dcid_len,
+                            bool *long_header,
+                            uint32_t *version,
+                            struct ConnectionId *dcid);
 
 /**
  * Create default config for HTTP3.

@@ -294,6 +294,20 @@ pub extern "C" fn quic_config_set_initial_rtt(config: &mut Config, v: u64) {
     config.set_initial_rtt(v);
 }
 
+/// Enable pacing to smooth the flow of packets sent onto the network.
+/// The default value is true.
+#[no_mangle]
+pub extern "C" fn quic_config_enable_pacing(config: &mut Config, v: bool) {
+    config.enable_pacing(v);
+}
+
+/// Set clock granularity used by the pacer.
+/// The default value is 10 milliseconds.
+#[no_mangle]
+pub extern "C" fn quic_config_set_pacing_granularity(config: &mut Config, v: u64) {
+    config.set_pacing_granularity(v);
+}
+
 /// Set the linear factor for calculating the probe timeout.
 /// The endpoint do not backoff the first `v` consecutive probe timeouts.
 /// The default value is `0`.
@@ -442,6 +456,7 @@ pub extern "C" fn quic_config_set_send_batch_size(config: &mut Config, v: u16) {
 }
 
 /// Set the buffer size for disordered zerortt packets on the server.
+/// The default value is `1000`. A value of 0 will be treated as default value.
 /// Applicable to Server only.
 #[no_mangle]
 pub extern "C" fn quic_config_set_zerortt_buffer_size(config: &mut Config, v: u16) {
@@ -723,6 +738,21 @@ pub extern "C" fn quic_endpoint_free(endpoint: *mut Endpoint) {
     unsafe {
         let _ = Box::from_raw(endpoint);
     };
+}
+
+/// Set the connection id generator for the endpoint.
+/// By default, the random connection id generator is used.
+#[no_mangle]
+pub extern "C" fn quic_endpoint_set_cid_generator(
+    endpoint: &mut Endpoint,
+    cid_gen_methods: *const ConnectionIdGeneratorMethods,
+    cid_gen_ctx: ConnectionIdGeneratorContext,
+) {
+    let cid_generator = Box::new(ConnectionIdGenerator {
+        methods: cid_gen_methods,
+        context: cid_gen_ctx,
+    });
+    endpoint.set_cid_generator(cid_generator);
 }
 
 /// Create a client connection.
@@ -1068,6 +1098,23 @@ pub extern "C" fn quic_conn_active_path(conn: &Connection, a: &mut PathAddress) 
         return true;
     }
     false
+}
+
+/// Return the latest statistics about the specified path.
+#[no_mangle]
+pub extern "C" fn quic_conn_path_stats<'a>(
+    conn: &'a mut Connection,
+    local: &sockaddr,
+    local_len: socklen_t,
+    remote: &sockaddr,
+    remote_len: socklen_t,
+) -> Option<&'a PathStats> {
+    let local_addr = sock_addr_from_c(local, local_len);
+    let remote_addr = sock_addr_from_c(remote, remote_len);
+    if let Ok(stats) = conn.get_path_stats(local_addr, remote_addr) {
+        return Some(stats);
+    }
+    None
 }
 
 /// Return statistics about the connection.
@@ -1771,6 +1818,62 @@ pub struct PacketOutSpec {
     src_addr_len: socklen_t,
     dst_addr: *const c_void,
     dst_addr_len: socklen_t,
+}
+
+#[repr(C)]
+pub struct ConnectionIdGeneratorMethods {
+    /// Generate a new CID
+    pub generate: fn(gctx: *mut c_void) -> ConnectionId,
+
+    /// Return the length of a CID
+    pub cid_len: fn(gctx: *mut c_void) -> u8,
+}
+
+#[repr(transparent)]
+pub struct ConnectionIdGeneratorContext(*mut c_void);
+
+/// cbindgen:no-export
+#[repr(C)]
+pub struct ConnectionIdGenerator {
+    pub methods: *const ConnectionIdGeneratorMethods,
+    pub context: ConnectionIdGeneratorContext,
+}
+
+impl crate::ConnectionIdGenerator for ConnectionIdGenerator {
+    /// Generate a new CID
+    fn generate(&mut self) -> ConnectionId {
+        unsafe { ((*self.methods).generate)(self.context.0) }
+    }
+
+    /// Return the length of a CID
+    fn cid_len(&self) -> usize {
+        let cid_len = unsafe { ((*self.methods).cid_len)(self.context.0) };
+        cid_len as usize
+    }
+}
+
+/// Extract the header form, version and destination connection id from the
+/// QUIC packet.
+#[no_mangle]
+pub extern "C" fn quic_packet_header_info(
+    buf: *mut u8,
+    buf_len: size_t,
+    dcid_len: u8,
+    long_header: &mut bool,
+    version: &mut u32,
+    dcid: &mut ConnectionId,
+) -> c_int {
+    let buf = unsafe { slice::from_raw_parts_mut(buf, buf_len) };
+
+    match crate::PacketHeader::header_info(buf, dcid_len as usize) {
+        Ok((long, ver, cid)) => {
+            *long_header = long;
+            *version = ver;
+            *dcid = cid;
+            return 0;
+        }
+        Err(e) => return e.to_errno() as i32,
+    }
 }
 
 /// Create default config for HTTP3.

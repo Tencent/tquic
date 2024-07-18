@@ -155,6 +155,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Connection Id is an identifier used to identify a QUIC connection
 /// at an endpoint.
+#[repr(C)]
 #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash, Default)]
 pub struct ConnectionId {
     /// length of cid
@@ -214,9 +215,6 @@ pub trait ConnectionIdGenerator {
     /// Return the length of a CID
     fn cid_len(&self) -> usize;
 
-    /// Return the lifetime of CID
-    fn cid_lifetime(&self) -> Option<Duration>;
-
     /// Generate a new CID and associated reset token.
     fn generate_cid_and_token(&mut self, reset_token_key: &hmac::Key) -> (ConnectionId, u128) {
         let scid = self.generate();
@@ -229,14 +227,12 @@ pub trait ConnectionIdGenerator {
 #[derive(Debug, Clone, Copy)]
 pub struct RandomConnectionIdGenerator {
     cid_len: usize,
-    cid_lifetime: Option<Duration>,
 }
 
 impl RandomConnectionIdGenerator {
-    pub fn new(cid_len: usize, cid_lifetime: Option<Duration>) -> Self {
+    pub fn new(cid_len: usize) -> Self {
         Self {
             cid_len: cmp::min(cid_len, MAX_CID_LEN),
-            cid_lifetime,
         }
     }
 }
@@ -250,10 +246,6 @@ impl ConnectionIdGenerator for RandomConnectionIdGenerator {
 
     fn cid_len(&self) -> usize {
         self.cid_len
-    }
-
-    fn cid_lifetime(&self) -> Option<Duration> {
-        self.cid_lifetime
     }
 }
 
@@ -567,9 +559,16 @@ impl Config {
     }
 
     /// Enable pacing to smooth the flow of packets sent onto the network.
-    /// default value is true.
+    /// The default value is true.
     pub fn enable_pacing(&mut self, v: bool) {
         self.recovery.enable_pacing = v;
+    }
+
+    /// Set clock granularity used by the pacer.
+    /// The default value is 1 milliseconds.
+    pub fn set_pacing_granularity(&mut self, millis: u64) {
+        self.recovery.pacing_granularity =
+            cmp::max(Duration::from_millis(millis), TIMER_GRANULARITY);
     }
 
     /// Set the linear factor for calculating the probe timeout.
@@ -693,9 +692,14 @@ impl Config {
     }
 
     /// Set the buffer size for disordered zerortt packets on the server.
+    /// The default value is `1000`. A value of 0 will be treated as default value.
     /// Applicable to Server only.
     pub fn set_zerortt_buffer_size(&mut self, v: usize) {
-        self.zerortt_buffer_size = v;
+        if v > 0 {
+            self.zerortt_buffer_size = v;
+        } else {
+            self.zerortt_buffer_size = 1000;
+        }
     }
 
     /// Set TLS config.
@@ -787,6 +791,9 @@ pub struct RecoveryConfig {
     /// Enable pacing to smooth the flow of packets sent onto the network.
     pub enable_pacing: bool,
 
+    /// Clock granularity used by the pacer.
+    pub pacing_granularity: Duration,
+
     /// Linear factor for calculating the probe timeout.
     pub pto_linear_factor: u64,
 
@@ -811,6 +818,7 @@ impl Default for RecoveryConfig {
             bbr_probe_bw_cwnd_gain: 2.0,
             initial_rtt: INITIAL_RTT,
             enable_pacing: true,
+            pacing_granularity: time::Duration::from_millis(1),
             pto_linear_factor: DEFAULT_PTO_LINEAR_FACTOR,
             max_pto: MAX_PTO,
         }
@@ -1044,24 +1052,21 @@ pub struct PathStats {
     /// Total congestion window limited events.
     pub cwnd_limited_count: u64,
 
-    /// Total duration of congestion windowlimited events.
-    pub cwnd_limited_duration: Duration,
-
-    /// The time for last congestion window event
-    last_cwnd_limited_time: Option<Instant>,
+    /// Total duration of congestion windowlimited events in microseconds.
+    pub cwnd_limited_duration: u64,
 
     /* Note: the following fields are lazily updated from Recovery */
-    /// Minimum roundtrip time.
-    pub min_rtt: Duration,
+    /// Minimum roundtrip time in microseconds.
+    pub min_rtt: u64,
 
-    /// Maximum roundtrip time.
-    pub max_rtt: Duration,
+    /// Maximum roundtrip time in microseconds.
+    pub max_rtt: u64,
 
-    /// Smoothed roundtrip time.
-    pub srtt: Duration,
+    /// Smoothed roundtrip time in microseconds.
+    pub srtt: u64,
 
-    /// Roundtrip time variation.
-    pub rttvar: Duration,
+    /// Roundtrip time variation in microseconds.
+    pub rttvar: u64,
 
     /// Whether the congestion controller is in slow start status.
     pub in_slow_start: bool,
@@ -1085,11 +1090,9 @@ mod tests {
 
     #[test]
     fn connection_id() {
-        let lifetime = Duration::from_secs(3600);
-        let mut cid_gen = RandomConnectionIdGenerator::new(8, Some(lifetime));
+        let mut cid_gen = RandomConnectionIdGenerator::new(8);
         let cid = cid_gen.generate();
         assert_eq!(cid.len(), cid_gen.cid_len());
-        assert_eq!(Some(lifetime), cid_gen.cid_lifetime());
 
         let cid = ConnectionId {
             len: 4,
@@ -1158,6 +1161,7 @@ pub use crate::connection::Connection;
 pub use crate::endpoint::Endpoint;
 pub use crate::error::Error;
 pub use crate::multipath_scheduler::MultipathAlgorithm;
+pub use crate::packet::PacketHeader;
 pub use crate::tls::TlsConfig;
 pub use crate::tls::TlsConfigSelector;
 

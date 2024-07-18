@@ -199,6 +199,15 @@ impl PacketNumSpace {
     pub fn need_send_buffered_frames(&self) -> bool {
         !self.buffered.is_empty()
     }
+
+    /// Return the largest packet number acknowledged in the packet number space.
+    pub fn get_largest_acked_pkt(&self) -> Option<u64> {
+        if self.largest_acked_pkt != u64::MAX {
+            Some(self.largest_acked_pkt)
+        } else {
+            None
+        }
+    }
 }
 
 /// All packet number spaces on a QUIC connection

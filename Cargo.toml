@@ -1,6 +1,6 @@
 [package]
 name = "tquic"
-version = "0.14.0"
+version = "0.15.0"
 edition = "2021"
 rust-version = "1.70.0"
 license = "Apache-2.0"
@@ -42,7 +42,7 @@ strum = "0.24"
 strum_macros = "0.24"
 rand = "0.8.5"
 smallvec = { version = "1.10", features = ["serde", "union"] }
-hashlru = "0.11"
+lru = "0.12"
 serde = { version = "1.0.139", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 serde_derive = "1.0"

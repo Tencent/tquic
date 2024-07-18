@@ -11,6 +11,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [v0.15.0] - 2024-07-18
+
+### Added
+- Support building for the `aarch64-apple-ios-sim` target
+- Support customized connection id generators
+- Add `quic_packet_header_info()` to extract cid-related info from quic packets
+- Add `quic_conn_path_stats` to get path level stats
+- Add configuration for pacing granularity
+- Tweak packet number encoding
+
+### Fixed
+- Replace the hashlru crate with the lru crate
+
+
 ## [v0.14.0] - 2024-07-11
 
 ### Added
@@ -262,6 +276,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Provide example clients and servers.
 
 
+[v0.15.0]: https://github.com/tencent/tquic/compare/v0.14.0...v0.15.0
 [v0.14.0]: https://github.com/tencent/tquic/compare/v0.13.0...v0.14.0
 [v0.13.0]: https://github.com/tencent/tquic/compare/v0.12.0...v0.13.0
 [v0.12.0]: https://github.com/tencent/tquic/compare/v0.11.0...v0.12.0

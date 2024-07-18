@@ -19,7 +19,7 @@ sys_includes = ["sys/socket.h", "sys/types.h"]
 includes = ["openssl/ssl.h", "tquic_def.h"]
 
 [export]
-exclude = ["MAX_CID_LEN", "MIN_CLIENT_INITIAL_LEN", "VINT_MAX"]
+exclude = ["MIN_CLIENT_INITIAL_LEN", "VINT_MAX"]
 
 [export.rename]
 "Config" = "quic_config_t"

@@ -23,23 +23,43 @@ const CMAKE_PARAMS_ANDROID_NDK: &[(&str, &[(&str, &str)])] = &[
 /// Additional parameters for iOS
 const CMAKE_PARAMS_IOS: &[(&str, &[(&str, &str)])] = &[
     (
-        "aarch64",
+        "aarch64-apple-ios",
         &[
             ("CMAKE_OSX_ARCHITECTURES", "arm64"),
             ("CMAKE_OSX_SYSROOT", "iphoneos"),
+            ("CMAKE_ASM_FLAGS", "-fembed-bitcode -target arm64-apple-ios"),
         ],
     ),
     (
-        "x86_64",
+        "aarch64-apple-ios-sim",
+        &[
+            ("CMAKE_OSX_ARCHITECTURES", "arm64"),
+            ("CMAKE_OSX_SYSROOT", "iphonesimulator"),
+            (
+                "CMAKE_ASM_FLAGS",
+                "-fembed-bitcode -target arm64-apple-ios-simulator",
+            ),
+            ("CMAKE_THREAD_LIBS_INIT", "-lpthread"),
+            ("CMAKE_HAVE_THREADS_LIBRARY", "1"),
+            ("THREADS_PREFER_PTHREAD_FLAG", "ON"),
+        ],
+    ),
+    (
+        "x86_64-apple-ios",
         &[
             ("CMAKE_OSX_ARCHITECTURES", "x86_64"),
             ("CMAKE_OSX_SYSROOT", "iphonesimulator"),
+            (
+                "CMAKE_ASM_FLAGS",
+                "-fembed-bitcode -target x86_64-apple-ios-simulator",
+            ),
         ],
     ),
 ];
 
 /// Create a cmake::Config for building BoringSSL.
 fn new_boringssl_cmake_config() -> cmake::Config {
+    let target = std::env::var("TARGET").unwrap();
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
     let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
 
@@ -68,21 +88,17 @@ fn new_boringssl_cmake_config() -> cmake::Config {
         }
 
         "ios" => {
-            for (ios_arch, params) in CMAKE_PARAMS_IOS {
-                if *ios_arch == arch {
+            for (ios_target, params) in CMAKE_PARAMS_IOS {
+                if *ios_target == target {
                     for (name, value) in *params {
                         boringssl_cmake.define(name, value);
+                        if *name == "CMAKE_ASM_FLAGS" {
+                            boringssl_cmake.cflag(value);
+                        }
                     }
                     break;
                 }
             }
-
-            let mut cflag = "-fembed-bitcode".to_string();
-            if arch == "x86_64" {
-                cflag.push_str(" -target x86_64-apple-ios-simulator");
-            }
-            boringssl_cmake.define("CMAKE_ASM_FLAGS", &cflag);
-            boringssl_cmake.cflag(&cflag);
         }
 
         _ => (),
