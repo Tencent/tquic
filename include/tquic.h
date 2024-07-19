@@ -278,7 +278,7 @@ typedef struct quic_path_address_t {
 /**
  * Statistics about path
  */
-typedef struct PathStats {
+typedef struct quic_path_stats_t {
   /**
    * The number of QUIC packets received.
    */
@@ -304,13 +304,13 @@ typedef struct PathStats {
    */
   uint64_t lost_bytes;
   /**
-   * Total number of bytes acked.
-   */
-  uint64_t acked_bytes;
-  /**
    * Total number of packets acked.
    */
   uint64_t acked_count;
+  /**
+   * Total number of bytes acked.
+   */
+  uint64_t acked_bytes;
   /**
    * Initial congestion window in bytes.
    */
@@ -367,7 +367,7 @@ typedef struct PathStats {
    * Pacing rate estimated by congestion control algorithm.
    */
   uint64_t pacing_rate;
-} PathStats;
+} quic_path_stats_t;
 
 /**
  * Statistics about a QUIC connection.
@@ -1020,11 +1020,11 @@ bool quic_conn_active_path(const struct quic_conn_t *conn, struct quic_path_addr
 /**
  * Return the latest statistics about the specified path.
  */
-const struct PathStats *quic_conn_path_stats(struct quic_conn_t *conn,
-                                             const struct sockaddr *local,
-                                             socklen_t local_len,
-                                             const struct sockaddr *remote,
-                                             socklen_t remote_len);
+const struct quic_path_stats_t *quic_conn_path_stats(struct quic_conn_t *conn,
+                                                     const struct sockaddr *local,
+                                                     socklen_t local_len,
+                                                     const struct sockaddr *remote,
+                                                     socklen_t remote_len);
 
 /**
  * Return statistics about the connection.

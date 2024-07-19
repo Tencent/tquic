@@ -1025,11 +1025,11 @@ pub struct PathStats {
     /// The number of lost bytes.
     pub lost_bytes: u64,
 
-    /// Total number of bytes acked.
-    pub acked_bytes: u64,
-
     /// Total number of packets acked.
     pub acked_count: u64,
+
+    /// Total number of bytes acked.
+    pub acked_bytes: u64,
 
     /// Initial congestion window in bytes.
     pub init_cwnd: u64,
