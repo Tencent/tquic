@@ -1,6 +1,20 @@
 #ifndef _TQUIC_DEF_H_
 #define _TQUIC_DEF_H_
 
+#if defined(WIN32) || defined(_WIN32) || defined(__WIN32__) || defined(__NT__)
+#include <winsock2.h>
+#include <ws2tcpip.h>
+typedef SSIZE_T ssize_t;
+struct iovec {
+  void  *iov_base;    // starting address
+  size_t iov_len;     // number of bytes to transfer
+};
+#else
+#include <sys/socket.h>
+#include <sys/types.h>
+#endif
+
+
 /**
  * An enum representing the available verbosity level filters of the logger.
  */

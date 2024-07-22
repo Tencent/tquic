@@ -107,6 +107,29 @@ fn new_boringssl_cmake_config() -> cmake::Config {
     boringssl_cmake
 }
 
+/// Return the build sub-dir for boringssl.
+fn get_boringssl_build_sub_dir() -> &'static str {
+    if !cfg!(target_env = "msvc") {
+        return "";
+    }
+
+    // Note: MSVC outputs static libs in a sub-directory.
+    let debug = std::env::var("DEBUG").expect("DEBUG not set");
+    let opt_level = std::env::var("OPT_LEVEL").expect("OPT_LEVEL not set");
+
+    match &opt_level[..] {
+        "1" | "2" | "3" => {
+            if &debug[..] == "true" {
+                "RelWithDebInfo"
+            } else {
+                "Release"
+            }
+        }
+        "s" | "z" => "MinSizeRel",
+        _ => "Debug",
+    }
+}
+
 fn main() {
     if let Ok(boringssl_lib_dir) = std::env::var("BORINGSSL_LIB_DIR") {
         // Build with static boringssl lib.
@@ -121,7 +144,8 @@ fn main() {
             cfg.build_target("ssl").build();
             cfg.build_target("crypto").build().display().to_string()
         };
-        let build_dir = format!("{boringssl_dir}/build/");
+        let sub_dir = get_boringssl_build_sub_dir();
+        let build_dir = format!("{boringssl_dir}/build/{sub_dir}");
         println!("cargo:rustc-link-search=native={build_dir}");
     }
 

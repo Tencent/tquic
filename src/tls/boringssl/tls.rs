@@ -48,6 +48,12 @@ struct SslCipher(c_void);
 struct SslSession(c_void);
 
 #[repr(transparent)]
+struct X509Store(c_void);
+
+#[repr(transparent)]
+struct X509(c_void);
+
+#[repr(transparent)]
 struct X509VerifyParam(c_void);
 
 #[repr(transparent)]
@@ -277,6 +283,7 @@ impl Context {
     }
 
     /// Load trust anchors from directory in OpenSSL's hashed directory format.
+    #[cfg(not(windows))]
     fn set_default_verify_paths(&mut self) -> Result<()> {
         match unsafe { SSL_CTX_set_default_verify_paths(self.as_mut_ptr()) } {
             1 => Ok(()),
@@ -284,6 +291,48 @@ impl Context {
                 "set default verify paths failed".to_string(),
             )),
         }
+    }
+
+    #[cfg(windows)]
+    fn set_default_verify_paths(&mut self) -> Result<()> {
+        unsafe {
+            // Open system certificate store
+            let cstr = ffi::CString::new("Root")
+                .map_err(|_| Error::TlsFail("CString::new".to_string()))?;
+            let sys_store = winapi::um::wincrypt::CertOpenSystemStoreA(
+                0,
+                cstr.as_ptr() as winapi::um::winnt::LPCSTR,
+            );
+            if sys_store.is_null() {
+                return Err(Error::TlsFail("open system store".to_string()));
+            }
+
+            // Get the certificate store for the current SSLContext
+            let crt_store = SSL_CTX_get_cert_store(self.as_mut_ptr());
+            if crt_store.is_null() {
+                winapi::um::wincrypt::CertCloseStore(sys_store, 0);
+                return Err(Error::TlsFail("get cert store".to_string()));
+            }
+
+            // Retrieve certificates in the system certificate store and add them
+            // to the X509_STORE for the current SSLContext.
+            let mut ctx_p =
+                winapi::um::wincrypt::CertEnumCertificatesInStore(sys_store, ptr::null());
+            while !ctx_p.is_null() {
+                let in_p = (*ctx_p).pbCertEncoded as *const u8;
+                let cert = d2i_X509(ptr::null_mut(), &in_p, (*ctx_p).cbCertEncoded as i32);
+                if !cert.is_null() {
+                    X509_STORE_add_cert(crt_store, cert);
+                    X509_free(cert);
+                }
+                ctx_p = winapi::um::wincrypt::CertEnumCertificatesInStore(sys_store, ctx_p);
+            }
+
+            winapi::um::wincrypt::CertFreeCertificateContext(ctx_p);
+            winapi::um::wincrypt::CertCloseStore(sys_store, 0);
+        }
+
+        Ok(())
     }
 
     /// Set the callback function that is called whenever a new session was negotiated.
@@ -1257,6 +1306,9 @@ extern "C" {
     /// Load trust anchors from directory in OpenSSL's hashed directory format.
     fn SSL_CTX_set_default_verify_paths(ctx: *mut SslCtx) -> c_int;
 
+    /// Return ctx's certificate store.
+    fn SSL_CTX_get_cert_store(ctx: *mut SslCtx) -> *mut X509Store;
+
     /// Configure certificate verification behavior.
     fn SSL_CTX_set_verify(ctx: *mut SslCtx, mode: c_int, cb: *const c_void);
 
@@ -1501,6 +1553,16 @@ extern "C" {
     /// Decrements the reference count of session.
     /// If it reaches zero, all data referenced by session and session itself are released.
     fn SSL_SESSION_free(session: *mut SslSession);
+
+    /// Add the cert object to the X509_STORE's local storage.
+    fn X509_STORE_add_cert(ctx: *mut X509Store, x: *mut X509) -> c_int;
+
+    /// Decrement the reference count of X509 structure a and frees it up if
+    /// the reference count is zero.
+    fn X509_free(x: *mut X509);
+
+    /// Decode input bytes and return a pointer to the X509 structure
+    fn d2i_X509(px: *mut X509, input: *const *const u8, len: c_int) -> *mut X509;
 
     /// Set cerfificate verification hostname.
     fn X509_VERIFY_PARAM_set1_host(

@@ -53,6 +53,27 @@ jobs:
           . "$HOME/.cargo/env"
           cargo build --all -F ffi --verbose && cargo test
 
+  build_windows:
+    name: Build for Windows
+    runs-on: windows-2022
+    env:
+      TARGET: "x86_64-pc-windows-msvc"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+      - name: Install rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: ${{ env.TARGET }}
+      - name: Install dependencies
+        uses: crazy-max/ghaction-chocolatey@v3
+        with:
+          args: install nasm
+      - name: Build TQUIC library and tools
+        run: cargo build --all -F ffi --verbose && cargo test
+
   build_ios:
     name: Build for iOS
     runs-on: macos-latest
