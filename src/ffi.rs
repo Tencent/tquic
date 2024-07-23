@@ -1048,6 +1048,35 @@ pub extern "C" fn quic_conn_early_data_reason(
     }
 }
 
+/// Send a Ping frame on the active path(s) for keep-alive.
+#[no_mangle]
+pub extern "C" fn quic_conn_ping(conn: &mut Connection) -> c_int {
+    match conn.ping(None) {
+        Ok(_) => return 0,
+        Err(e) => return e.to_errno() as c_int,
+    }
+}
+
+/// Send a Ping frame on the specified path for keep-alive.
+/// The API is only applicable to multipath quic connections.
+#[no_mangle]
+pub extern "C" fn quic_conn_ping_path(
+    conn: &mut Connection,
+    local: &sockaddr,
+    local_len: socklen_t,
+    remote: &sockaddr,
+    remote_len: socklen_t,
+) -> c_int {
+    let addr = FourTuple {
+        local: sock_addr_from_c(local, local_len),
+        remote: sock_addr_from_c(remote, remote_len),
+    };
+    match conn.ping(Some(addr)) {
+        Ok(_) => return 0,
+        Err(e) => return e.to_errno() as c_int,
+    }
+}
+
 /// Add a new path on the client connection.
 #[no_mangle]
 pub extern "C" fn quic_conn_add_path(
