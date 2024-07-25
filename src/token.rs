@@ -143,6 +143,7 @@ impl AddressToken {
     ///   token.
     /// - ResumeToken: the odcid is copied from the dcid of the Initial packet
     ///   with resume token; the rscid is None and not applicable.
+    ///
     /// See RFC 9000 Figure 7/8: Use of Connection IDs in a Handshake.
     pub fn decode(
         key: &aead::LessSafeKey,
