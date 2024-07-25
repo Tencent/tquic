@@ -967,6 +967,21 @@ void quic_conn_session(struct quic_conn_t *conn, const uint8_t **out, size_t *ou
 int quic_conn_early_data_reason(struct quic_conn_t *conn, const uint8_t **out, size_t *out_len);
 
 /**
+ * Send a Ping frame on the active path(s) for keep-alive.
+ */
+int quic_conn_ping(struct quic_conn_t *conn);
+
+/**
+ * Send a Ping frame on the specified path for keep-alive.
+ * The API is only applicable to multipath quic connections.
+ */
+int quic_conn_ping_path(struct quic_conn_t *conn,
+                        const struct sockaddr *local,
+                        socklen_t local_len,
+                        const struct sockaddr *remote,
+                        socklen_t remote_len);
+
+/**
  * Add a new path on the client connection.
  */
 int quic_conn_add_path(struct quic_conn_t *conn,

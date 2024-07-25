@@ -28,6 +28,7 @@ use super::timer;
 use crate::connection::SpaceId;
 use crate::error::Error;
 use crate::multipath_scheduler::MultipathScheduler;
+use crate::FourTuple;
 use crate::PathStats;
 use crate::RecoveryConfig;
 use crate::Result;
@@ -92,6 +93,9 @@ pub struct Path {
     /// The current pmtu probing state of the path.
     pub(super) dplpmtud: Dplpmtud,
 
+    /// Whether a Ping frame should be sent on the path.
+    pub(super) need_send_ping: bool,
+
     /// Trace id.
     trace_id: String,
 
@@ -140,6 +144,7 @@ impl Path {
             peer_verified_local_address: false,
             anti_ampl_limit: 0,
             dplpmtud,
+            need_send_ping: false,
             trace_id: trace_id.to_string(),
             space_id: SpaceId::Data,
             is_abandon: false,
@@ -605,6 +610,33 @@ impl PathMap {
             }
         }
         left
+    }
+
+    /// Schedule a Ping frame on the specified path or all active paths.
+    pub fn mark_ping(&mut self, path_addr: Option<FourTuple>) -> Result<()> {
+        // If multipath is not enabled, schedule a Ping frame on the current
+        // active path.
+        if !self.is_multipath {
+            self.get_active_mut()?.need_send_ping = true;
+            return Ok(());
+        }
+
+        // If multipath is enabled, schedule a Ping frame on the specified path
+        // or all the active paths.
+        if let Some(a) = path_addr {
+            let pid = match self.get_path_id(&(a.local, a.remote)) {
+                Some(pid) => pid,
+                None => return Ok(()),
+            };
+            self.get_mut(pid)?.need_send_ping = true;
+            return Ok(());
+        }
+        for (_, path) in self.paths.iter_mut() {
+            if path.active() {
+                path.need_send_ping = true;
+            }
+        }
+        Ok(())
     }
 
     /// Promote to multipath mode.
