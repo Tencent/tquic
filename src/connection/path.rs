@@ -19,6 +19,7 @@ use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::time;
 use std::time::Duration;
+use std::time::Instant;
 
 use slab::Slab;
 
@@ -70,7 +71,7 @@ pub struct Path {
     recv_chals: VecDeque<[u8; 8]>,
 
     /// Pending challenge data with the size of the packet containing them.
-    sent_chals: VecDeque<([u8; 8], usize, time::Instant)>,
+    sent_chals: VecDeque<([u8; 8], usize, time::Instant, time::Instant)>,
 
     /// Whether it requires sending PATH_CHALLENGE?
     need_send_challenge: bool,
@@ -190,9 +191,13 @@ impl Path {
 
         // The 4-tuple is reachable, but we didn't check Path MTU yet.
         let mut challenge_size = 0;
-        self.sent_chals.retain(|(d, s, _)| {
+        self.sent_chals.retain(|(d, s, st, _)| {
             if *d == data {
                 challenge_size = *s;
+                let chal_sent_time = *st;
+                let now = Instant::now();
+                let path_init_rtt = now.duration_since(chal_sent_time);
+                self.recovery.rtt.set_init_rtt(path_init_rtt);
                 false
             } else {
                 true
@@ -243,7 +248,7 @@ impl Path {
         let loss_time =
             sent_time + time::Duration::from_millis(INITIAL_CHAL_TIMEOUT << self.lost_chal);
 
-        self.sent_chals.push_back((data, pkt_size, loss_time));
+        self.sent_chals.push_back((data, pkt_size, sent_time, loss_time));
     }
 
     /// Handle timeout of PATH_CHALLENGE
@@ -254,7 +259,7 @@ impl Path {
 
         // Remove the lost challenges.
         while let Some(first_chal) = self.sent_chals.front() {
-            if first_chal.2 > now {
+            if first_chal.3 > now {
                 return;
             }
 
@@ -563,8 +568,8 @@ impl PathMap {
         self.paths
             .iter()
             .filter_map(|(_, p)| p.sent_chals.front())
-            .min_by_key(|&(_, _, loss_time)| loss_time)
-            .map(|&(_, _, loss_time)| loss_time)
+            .min_by_key(|&(_, _, _, loss_time)| loss_time)
+            .map(|&(_, _, _, loss_time)| loss_time)
     }
 
     /// Return the maximum PTO among all paths.

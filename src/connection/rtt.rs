@@ -81,6 +81,16 @@ impl RttEstimator {
         self.smoothed_rtt() + cmp::max(4 * self.rttvar, TIMER_GRANULARITY)
     }
 
+    /// Set initial RTT when receive PATH_RESPONSE frame
+    pub fn set_init_rtt(&mut self, init_rtt: Duration) {
+        
+        self.latest_rtt = init_rtt;
+        self.smoothed_rtt = Some(init_rtt);
+        self.rttvar = init_rtt / 2;
+        self.min_rtt = init_rtt;
+        self.max_rtt = init_rtt;
+    }
+
     /// Update estimator with the given RTT sample
     pub fn update(&mut self, ack_delay: Duration, rtt: Duration) {
         self.latest_rtt = rtt;
