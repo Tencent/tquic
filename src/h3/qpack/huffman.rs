@@ -156,7 +156,7 @@ impl HuffmanDecoder {
 /// Each row in the table defines the code used to represent a symbol:
 /// - len: The number of bits for the code representing the symbol.
 /// - bits: The Huffman code for the symbol, represented as a hexadecimal integer,
-/// aligned on the least significant bit (LSB).
+///   aligned on the least significant bit (LSB).
 const ENCODE_TABLE: [(usize, u64); 257] = [
     // (len, bits)
     (13, 0x1ff8),
