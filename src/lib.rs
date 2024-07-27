@@ -50,6 +50,7 @@
 
 #![allow(unused_imports)]
 #![allow(dead_code)]
+#![allow(unexpected_cfgs)]
 
 use std::cmp;
 use std::collections::VecDeque;
