@@ -603,8 +603,7 @@ pub extern "C" fn quic_tls_config_new_server_config(
             Err(_) => return ptr::null_mut(),
         }
     };
-    match TlsConfig::new_server_config(&cert_file, &key_file, application_protos, enable_early_data)
-    {
+    match TlsConfig::new_server_config(cert_file, key_file, application_protos, enable_early_data) {
         Ok(tls_config) => Box::into_raw(Box::new(tls_config)),
         Err(_) => ptr::null_mut(),
     }
@@ -653,7 +652,7 @@ pub extern "C" fn quic_tls_config_set_ticket_key(
     ticket_key_len: size_t,
 ) -> c_int {
     let ticket_key = unsafe { slice::from_raw_parts(ticket_key, ticket_key_len) };
-    match tls_config.set_ticket_key(&ticket_key) {
+    match tls_config.set_ticket_key(ticket_key) {
         Ok(_) => 0,
         Err(e) => e.to_errno() as c_int,
     }
@@ -681,7 +680,7 @@ pub extern "C" fn quic_tls_config_set_certificate_file(
             Err(_) => return -1,
         }
     };
-    match tls_config.set_certificate_file(&cert_file) {
+    match tls_config.set_certificate_file(cert_file) {
         Ok(_) => 0,
         Err(e) => e.to_errno() as c_int,
     }
@@ -703,7 +702,7 @@ pub extern "C" fn quic_tls_config_set_private_key_file(
             Err(_) => return -1,
         }
     };
-    match tls_config.set_private_key_file(&key_file) {
+    match tls_config.set_private_key_file(key_file) {
         Ok(_) => 0,
         Err(e) => e.to_errno() as c_int,
     }
@@ -725,7 +724,7 @@ pub extern "C" fn quic_tls_config_set_ca_certs(
             Err(_) => return -1,
         }
     };
-    match tls_config.set_ca_certs(&ca_path) {
+    match tls_config.set_ca_certs(ca_path) {
         Ok(_) => 0,
         Err(e) => e.to_errno() as c_int,
     }
@@ -893,7 +892,7 @@ pub extern "C" fn quic_endpoint_recv(
 pub extern "C" fn quic_endpoint_timeout(endpoint: &Endpoint) -> u64 {
     match endpoint.timeout() {
         Some(v) => v.as_millis() as u64,
-        None => std::u64::MAX,
+        None => u64::MAX,
     }
 }
 
@@ -1052,8 +1051,8 @@ pub extern "C" fn quic_conn_early_data_reason(
 #[no_mangle]
 pub extern "C" fn quic_conn_ping(conn: &mut Connection) -> c_int {
     match conn.ping(None) {
-        Ok(_) => return 0,
-        Err(e) => return e.to_errno() as c_int,
+        Ok(_) => 0,
+        Err(e) => e.to_errno() as c_int,
     }
 }
 
@@ -1072,8 +1071,8 @@ pub extern "C" fn quic_conn_ping_path(
         remote: sock_addr_from_c(remote, remote_len),
     };
     match conn.ping(Some(addr)) {
-        Ok(_) => return 0,
-        Err(e) => return e.to_errno() as c_int,
+        Ok(_) => 0,
+        Err(e) => e.to_errno() as c_int,
     }
 }
 
@@ -1766,6 +1765,7 @@ pub struct PacketSendHandler {
 }
 
 impl crate::PacketSendHandler for PacketSendHandler {
+    #[allow(clippy::comparison_chain)]
     fn on_packets_send(&self, pkts: &[(Vec<u8>, crate::PacketInfo)]) -> Result<usize> {
         let mut pkt_specs: Vec<PacketOutSpec> = Vec::with_capacity(pkts.len());
         let mut iovecs: Vec<iovec> = Vec::with_capacity(pkts.len());
@@ -2005,9 +2005,9 @@ pub extern "C" fn quic_packet_header_info(
             *long_header = long;
             *version = ver;
             *dcid = cid;
-            return 0;
+            0
         }
-        Err(e) => return e.to_errno() as i32,
+        Err(e) => e.to_errno() as i32,
     }
 }
 
@@ -2252,7 +2252,7 @@ pub extern "C" fn http3_send_body(
     body_len: size_t,
     fin: bool,
 ) -> ssize_t {
-    if body_len > <ssize_t>::max_value() as usize {
+    if body_len > <ssize_t>::MAX as usize {
         panic!("The provided buffer is too large");
     }
 
@@ -2272,7 +2272,7 @@ pub extern "C" fn http3_recv_body(
     out: *mut u8,
     out_len: size_t,
 ) -> ssize_t {
-    if out_len > <ssize_t>::max_value() as usize {
+    if out_len > <ssize_t>::MAX as usize {
         panic!("The provided buffer is too large");
     }
 
