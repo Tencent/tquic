@@ -140,6 +140,8 @@ jobs:
         typos -c ./typos.toml
     - name: Code lint check
       run: cargo clippy --all -- -D warnings
+    - name: Code lint check (FFI)
+      run: cargo clippy --all -F ffi -- -D warnings
 
   unit_testing:
     name: Unit testing
