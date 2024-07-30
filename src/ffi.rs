@@ -2360,19 +2360,25 @@ fn headers_from_ptr<'a>(ptr: *const Header, len: size_t) -> Vec<h3::HeaderRef<'a
 
 /// Set logger.
 /// `cb` is a callback function that will be called for each log message.
-/// `data` is a '\n' terminated log message and `argp` is user-defined data that will be passed to
-/// the callback.
-/// `level` represents the log level.
+/// `data` is a '\n' terminated log message and `argp` is user-defined data that
+/// will be passed to the callback.
+/// `level` is a case-insensitive string used for specifying the log level. Valid
+/// values are "OFF", "ERROR", "WARN", "INFO", "DEBUG", and "TRACE". If its value
+/// is NULL or invalid, the default log level is "OFF".
 #[no_mangle]
 pub extern "C" fn quic_set_logger(
     cb: extern "C" fn(data: *const u8, data_len: size_t, argp: *mut c_void),
     argp: *mut c_void,
-    level: log::LevelFilter,
+    level: *const c_char,
 ) {
     let argp = atomic::AtomicPtr::new(argp);
     let logger = Box::new(LogWriter { cb, argp });
     let _ = log::set_boxed_logger(logger);
-    log::set_max_level(level);
+
+    let level = unsafe { ffi::CStr::from_ptr(level).to_str().unwrap_or_default() };
+    if let Ok(level_filter) = log::LevelFilter::from_str(level) {
+        log::set_max_level(level_filter);
+    }
 }
 
 #[repr(C)]

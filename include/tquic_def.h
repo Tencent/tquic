@@ -14,38 +14,6 @@ struct iovec {
 #include <sys/types.h>
 #endif
 
-
-/**
- * An enum representing the available verbosity level filters of the logger.
- */
-typedef enum quic_log_level {
-  /**
-   * A level lower than all log levels.
-   */
-  QUIC_LOG_LEVEL_OFF,
-  /**
-   * Corresponds to the `Error` log level.
-   */
-  QUIC_LOG_LEVEL_ERROR,
-  /**
-   * Corresponds to the `Warn` log level.
-   */
-  QUIC_LOG_LEVEL_WARN,
-  /**
-   * Corresponds to the `Info` log level.
-   */
-  QUIC_LOG_LEVEL_INFO,
-  /**
-   * Corresponds to the `Debug` log level.
-   */
-  QUIC_LOG_LEVEL_DEBUG,
-  /**
-   * Corresponds to the `Trace` log level.
-   */
-  QUIC_LOG_LEVEL_TRACE,
-} quic_log_level;
-
-
 typedef enum http3_error {
     HTTP3_NO_ERROR = 0,
 

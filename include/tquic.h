@@ -1418,13 +1418,15 @@ int http3_take_priority_update(struct http3_conn_t *conn,
 /**
  * Set logger.
  * `cb` is a callback function that will be called for each log message.
- * `data` is a '\n' terminated log message and `argp` is user-defined data that will be passed to
- * the callback.
- * `level` represents the log level.
+ * `data` is a '\n' terminated log message and `argp` is user-defined data that
+ * will be passed to the callback.
+ * `level` is a case-insensitive string used for specifying the log level. Valid
+ * values are "OFF", "ERROR", "WARN", "INFO", "DEBUG", and "TRACE". If its value
+ * is NULL or invalid, the default log level is "OFF".
  */
 void quic_set_logger(void (*cb)(const uint8_t *data, size_t data_len, void *argp),
                      void *argp,
-                     quic_log_level level);
+                     const char *level);
 
 #ifdef __cplusplus
 } // extern "C"
