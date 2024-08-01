@@ -372,7 +372,6 @@ impl Config {
     /// # Ok::<(), tquic::error::Error>(())
     /// ```
     pub fn new() -> Result<Self> {
-        // TODO: review default value
         let local_transport_params = TransportParams {
             initial_max_data: 10485760,
             initial_max_stream_data_bidi_local: 5242880,

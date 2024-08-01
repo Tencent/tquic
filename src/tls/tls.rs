@@ -221,7 +221,6 @@ pub(crate) struct DefaultTlsConfigSelector {
 }
 
 impl TlsConfigSelector for DefaultTlsConfigSelector {
-    // TODO: support local and peer address.
     /// Get default TLS config.
     fn get_default(&self) -> Option<Arc<TlsConfig>> {
         Some(self.tls_config.clone())
