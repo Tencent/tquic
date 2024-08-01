@@ -22,7 +22,6 @@ use std::net::Ipv6Addr;
 use std::net::SocketAddr;
 use std::net::SocketAddrV4;
 use std::net::SocketAddrV6;
-use std::os::fd::FromRawFd;
 use std::ptr;
 use std::rc::Rc;
 use std::slice;
@@ -31,23 +30,80 @@ use std::sync::atomic;
 use std::sync::Arc;
 use std::time::Instant;
 
+#[cfg(unix)]
+use std::os::fd::FromRawFd;
+
 use bytes::Bytes;
 use libc::c_char;
 use libc::c_int;
 use libc::c_void;
-use libc::in6_addr;
-use libc::in_addr;
-use libc::iovec;
-use libc::sa_family_t;
 use libc::size_t;
 use libc::sockaddr;
-use libc::sockaddr_in;
-use libc::sockaddr_in6;
-use libc::sockaddr_storage;
-use libc::socklen_t;
 use libc::ssize_t;
+
+#[cfg(not(windows))]
+use libc::in_addr;
+#[cfg(windows)]
+use winapi::shared::inaddr::IN_ADDR as in_addr;
+
+#[cfg(not(windows))]
+use libc::in6_addr;
+#[cfg(windows)]
+use winapi::shared::in6addr::IN6_ADDR as in6_addr;
+
+#[cfg(not(windows))]
+use libc::sa_family_t;
+#[cfg(windows)]
+use winapi::shared::ws2def::ADDRESS_FAMILY as sa_family_t;
+
+#[cfg(not(windows))]
+use libc::sockaddr_in;
+#[cfg(windows)]
+use winapi::shared::ws2def::SOCKADDR_IN as sockaddr_in;
+
+#[cfg(not(windows))]
+use libc::sockaddr_in6;
+#[cfg(windows)]
+use winapi::shared::ws2ipdef::SOCKADDR_IN6_LH as sockaddr_in6;
+
+#[cfg(not(windows))]
+use libc::sockaddr_storage;
+#[cfg(windows)]
+use winapi::shared::ws2def::SOCKADDR_STORAGE_LH as sockaddr_storage;
+
+#[cfg(windows)]
+use libc::c_int as socklen_t;
+#[cfg(not(windows))]
+use libc::socklen_t;
+
+#[cfg(not(windows))]
 use libc::AF_INET;
+#[cfg(windows)]
+use winapi::shared::ws2def::AF_INET;
+
+#[cfg(not(windows))]
 use libc::AF_INET6;
+#[cfg(windows)]
+use winapi::shared::ws2def::AF_INET6;
+
+#[cfg(windows)]
+use winapi::shared::in6addr::in6_addr_u;
+#[cfg(windows)]
+use winapi::shared::inaddr::in_addr_S_un;
+#[cfg(windows)]
+use winapi::shared::ws2ipdef::SOCKADDR_IN6_LH_u;
+
+#[cfg(not(windows))]
+use libc::iovec;
+
+/// cbindgen:ignore
+#[cfg(windows)]
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct iovec {
+    iov_base: *mut c_void, // starting address
+    iov_len: size_t,       // number of bytes to transfer
+}
 
 use crate::codec::Decoder;
 use crate::connection::ConnectionStats;
@@ -547,8 +603,7 @@ pub extern "C" fn quic_tls_config_new_server_config(
             Err(_) => return ptr::null_mut(),
         }
     };
-    match TlsConfig::new_server_config(&cert_file, &key_file, application_protos, enable_early_data)
-    {
+    match TlsConfig::new_server_config(cert_file, key_file, application_protos, enable_early_data) {
         Ok(tls_config) => Box::into_raw(Box::new(tls_config)),
         Err(_) => ptr::null_mut(),
     }
@@ -597,7 +652,7 @@ pub extern "C" fn quic_tls_config_set_ticket_key(
     ticket_key_len: size_t,
 ) -> c_int {
     let ticket_key = unsafe { slice::from_raw_parts(ticket_key, ticket_key_len) };
-    match tls_config.set_ticket_key(&ticket_key) {
+    match tls_config.set_ticket_key(ticket_key) {
         Ok(_) => 0,
         Err(e) => e.to_errno() as c_int,
     }
@@ -625,7 +680,7 @@ pub extern "C" fn quic_tls_config_set_certificate_file(
             Err(_) => return -1,
         }
     };
-    match tls_config.set_certificate_file(&cert_file) {
+    match tls_config.set_certificate_file(cert_file) {
         Ok(_) => 0,
         Err(e) => e.to_errno() as c_int,
     }
@@ -647,7 +702,7 @@ pub extern "C" fn quic_tls_config_set_private_key_file(
             Err(_) => return -1,
         }
     };
-    match tls_config.set_private_key_file(&key_file) {
+    match tls_config.set_private_key_file(key_file) {
         Ok(_) => 0,
         Err(e) => e.to_errno() as c_int,
     }
@@ -669,7 +724,7 @@ pub extern "C" fn quic_tls_config_set_ca_certs(
             Err(_) => return -1,
         }
     };
-    match tls_config.set_ca_certs(&ca_path) {
+    match tls_config.set_ca_certs(ca_path) {
         Ok(_) => 0,
         Err(e) => e.to_errno() as c_int,
     }
@@ -837,7 +892,7 @@ pub extern "C" fn quic_endpoint_recv(
 pub extern "C" fn quic_endpoint_timeout(endpoint: &Endpoint) -> u64 {
     match endpoint.timeout() {
         Some(v) => v.as_millis() as u64,
-        None => std::u64::MAX,
+        None => u64::MAX,
     }
 }
 
@@ -989,6 +1044,35 @@ pub extern "C" fn quic_conn_early_data_reason(
             0
         }
         Err(e) => e.to_errno() as i32,
+    }
+}
+
+/// Send a Ping frame on the active path(s) for keep-alive.
+#[no_mangle]
+pub extern "C" fn quic_conn_ping(conn: &mut Connection) -> c_int {
+    match conn.ping(None) {
+        Ok(_) => 0,
+        Err(e) => e.to_errno() as c_int,
+    }
+}
+
+/// Send a Ping frame on the specified path for keep-alive.
+/// The API is only applicable to multipath quic connections.
+#[no_mangle]
+pub extern "C" fn quic_conn_ping_path(
+    conn: &mut Connection,
+    local: &sockaddr,
+    local_len: socklen_t,
+    remote: &sockaddr,
+    remote_len: socklen_t,
+) -> c_int {
+    let addr = FourTuple {
+        local: sock_addr_from_c(local, local_len),
+        remote: sock_addr_from_c(remote, remote_len),
+    };
+    match conn.ping(Some(addr)) {
+        Ok(_) => 0,
+        Err(e) => e.to_errno() as c_int,
     }
 }
 
@@ -1243,7 +1327,9 @@ pub extern "C" fn quic_conn_set_keylog(
 }
 
 /// Set keylog file.
+/// Note: The API is not applicable for Windows.
 #[no_mangle]
+#[cfg(unix)]
 pub extern "C" fn quic_conn_set_keylog_fd(conn: &mut Connection, fd: c_int) {
     let file = unsafe { std::fs::File::from_raw_fd(fd) };
     let writer = std::io::BufWriter::new(file);
@@ -1275,7 +1361,9 @@ pub extern "C" fn quic_conn_set_qlog(
 }
 
 /// Set qlog file.
+/// Note: The API is not applicable for Windows.
 #[no_mangle]
+#[cfg(unix)]
 pub extern "C" fn quic_conn_set_qlog_fd(
     conn: &mut Connection,
     fd: c_int,
@@ -1677,6 +1765,7 @@ pub struct PacketSendHandler {
 }
 
 impl crate::PacketSendHandler for PacketSendHandler {
+    #[allow(clippy::comparison_chain)]
     fn on_packets_send(&self, pkts: &[(Vec<u8>, crate::PacketInfo)]) -> Result<usize> {
         let mut pkt_specs: Vec<PacketOutSpec> = Vec::with_capacity(pkts.len());
         let mut iovecs: Vec<iovec> = Vec::with_capacity(pkts.len());
@@ -1733,16 +1822,34 @@ fn sock_addr_from_c(addr: &sockaddr, addr_len: socklen_t) -> SocketAddr {
         AF_INET => {
             assert!(addr_len as usize == std::mem::size_of::<sockaddr_in>());
             let in4 = unsafe { *(addr as *const _ as *const sockaddr_in) };
+
+            #[cfg(not(windows))]
             let addr = Ipv4Addr::from(u32::from_be(in4.sin_addr.s_addr));
+            #[cfg(windows)]
+            let addr = {
+                let ip = unsafe { in4.sin_addr.S_un.S_un_b() };
+                Ipv4Addr::from([ip.s_b1, ip.s_b2, ip.s_b3, ip.s_b4])
+            };
+
             let port = u16::from_be(in4.sin_port);
             SocketAddrV4::new(addr, port).into()
         }
         AF_INET6 => {
             assert!(addr_len as usize == std::mem::size_of::<sockaddr_in6>());
             let in6 = unsafe { *(addr as *const _ as *const sockaddr_in6) };
+
+            #[cfg(not(windows))]
             let addr = Ipv6Addr::from(in6.sin6_addr.s6_addr);
+            #[cfg(windows)]
+            let addr = Ipv6Addr::from(*unsafe { in6.sin6_addr.u.Byte() });
+
             let port = u16::from_be(in6.sin6_port);
+
+            #[cfg(not(windows))]
             let scope_id = in6.sin6_scope_id;
+            #[cfg(windows)]
+            let scope_id = unsafe { *in6.u.sin6_scope_id() };
+
             SocketAddrV6::new(addr, port, in6.sin6_flowinfo, scope_id).into()
         }
         _ => unimplemented!("unsupported address type"),
@@ -1756,9 +1863,17 @@ fn sock_addr_to_c(addr: &SocketAddr, out: &mut sockaddr_storage) -> socklen_t {
         SocketAddr::V4(addr) => unsafe {
             let sa_len = std::mem::size_of::<sockaddr_in>();
             let out_in = out as *mut _ as *mut sockaddr_in;
-            let sin_addr = in_addr {
-                s_addr: u32::from_ne_bytes(addr.ip().octets()),
+            let s_addr = u32::from_ne_bytes(addr.ip().octets());
+
+            #[cfg(not(windows))]
+            let sin_addr = in_addr { s_addr };
+            #[cfg(windows)]
+            let sin_addr = {
+                let mut s_un = std::mem::zeroed::<in_addr_S_un>();
+                *s_un.S_addr_mut() = s_addr;
+                in_addr { S_un: s_un }
             };
+
             *out_in = sockaddr_in {
                 sin_family: AF_INET as sa_family_t,
                 sin_addr,
@@ -1773,9 +1888,25 @@ fn sock_addr_to_c(addr: &SocketAddr, out: &mut sockaddr_storage) -> socklen_t {
         SocketAddr::V6(addr) => unsafe {
             let sa_len = std::mem::size_of::<sockaddr_in6>();
             let out_in6 = out as *mut _ as *mut sockaddr_in6;
+
+            #[cfg(not(windows))]
             let sin6_addr = in6_addr {
                 s6_addr: addr.ip().octets(),
             };
+            #[cfg(windows)]
+            let sin6_addr = {
+                let mut u = std::mem::zeroed::<in6_addr_u>();
+                *u.Byte_mut() = addr.ip().octets();
+                in6_addr { u }
+            };
+
+            #[cfg(windows)]
+            let u = {
+                let mut u = std::mem::zeroed::<SOCKADDR_IN6_LH_u>();
+                *u.sin6_scope_id_mut() = addr.scope_id();
+                u
+            };
+
             *out_in6 = sockaddr_in6 {
                 sin6_family: AF_INET6 as sa_family_t,
                 sin6_addr,
@@ -1783,7 +1914,11 @@ fn sock_addr_to_c(addr: &SocketAddr, out: &mut sockaddr_storage) -> socklen_t {
                 sin6_len: sa_len as u8,
                 sin6_port: sin_port,
                 sin6_flowinfo: addr.flowinfo(),
+
+                #[cfg(not(windows))]
                 sin6_scope_id: addr.scope_id(),
+                #[cfg(windows)]
+                u,
             };
             sa_len as socklen_t
         },
@@ -1870,9 +2005,9 @@ pub extern "C" fn quic_packet_header_info(
             *long_header = long;
             *version = ver;
             *dcid = cid;
-            return 0;
+            0
         }
-        Err(e) => return e.to_errno() as i32,
+        Err(e) => e.to_errno() as i32,
     }
 }
 
@@ -2117,7 +2252,7 @@ pub extern "C" fn http3_send_body(
     body_len: size_t,
     fin: bool,
 ) -> ssize_t {
-    if body_len > <ssize_t>::max_value() as usize {
+    if body_len > <ssize_t>::MAX as usize {
         panic!("The provided buffer is too large");
     }
 
@@ -2137,7 +2272,7 @@ pub extern "C" fn http3_recv_body(
     out: *mut u8,
     out_len: size_t,
 ) -> ssize_t {
-    if out_len > <ssize_t>::max_value() as usize {
+    if out_len > <ssize_t>::MAX as usize {
         panic!("The provided buffer is too large");
     }
 
@@ -2225,19 +2360,25 @@ fn headers_from_ptr<'a>(ptr: *const Header, len: size_t) -> Vec<h3::HeaderRef<'a
 
 /// Set logger.
 /// `cb` is a callback function that will be called for each log message.
-/// `data` is a '\n' terminated log message and `argp` is user-defined data that will be passed to
-/// the callback.
-/// `level` represents the log level.
+/// `data` is a '\n' terminated log message and `argp` is user-defined data that
+/// will be passed to the callback.
+/// `level` is a case-insensitive string used for specifying the log level. Valid
+/// values are "OFF", "ERROR", "WARN", "INFO", "DEBUG", and "TRACE". If its value
+/// is NULL or invalid, the default log level is "OFF".
 #[no_mangle]
 pub extern "C" fn quic_set_logger(
     cb: extern "C" fn(data: *const u8, data_len: size_t, argp: *mut c_void),
     argp: *mut c_void,
-    level: log::LevelFilter,
+    level: *const c_char,
 ) {
     let argp = atomic::AtomicPtr::new(argp);
     let logger = Box::new(LogWriter { cb, argp });
     let _ = log::set_boxed_logger(logger);
-    log::set_max_level(level);
+
+    let level = unsafe { ffi::CStr::from_ptr(level).to_str().unwrap_or_default() };
+    if let Ok(level_filter) = log::LevelFilter::from_str(level) {
+        log::set_max_level(level_filter);
+    }
 }
 
 #[repr(C)]

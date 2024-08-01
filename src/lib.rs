@@ -50,6 +50,7 @@
 
 #![allow(unused_imports)]
 #![allow(dead_code)]
+#![allow(unexpected_cfgs)]
 
 use std::cmp;
 use std::collections::VecDeque;
@@ -371,7 +372,6 @@ impl Config {
     /// # Ok::<(), tquic::error::Error>(())
     /// ```
     pub fn new() -> Result<Self> {
-        // TODO: review default value
         let local_transport_params = TransportParams {
             initial_max_data: 10485760,
             initial_max_stream_data_bidi_local: 5242880,
@@ -1025,11 +1025,11 @@ pub struct PathStats {
     /// The number of lost bytes.
     pub lost_bytes: u64,
 
-    /// Total number of bytes acked.
-    pub acked_bytes: u64,
-
     /// Total number of packets acked.
     pub acked_count: u64,
+
+    /// Total number of bytes acked.
+    pub acked_bytes: u64,
 
     /// Initial congestion window in bytes.
     pub init_cwnd: u64,

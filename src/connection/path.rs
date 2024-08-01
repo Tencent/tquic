@@ -19,6 +19,7 @@ use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::time;
 use std::time::Duration;
+use std::time::Instant;
 
 use slab::Slab;
 
@@ -28,6 +29,7 @@ use super::timer;
 use crate::connection::SpaceId;
 use crate::error::Error;
 use crate::multipath_scheduler::MultipathScheduler;
+use crate::FourTuple;
 use crate::PathStats;
 use crate::RecoveryConfig;
 use crate::Result;
@@ -69,7 +71,7 @@ pub struct Path {
     recv_chals: VecDeque<[u8; 8]>,
 
     /// Pending challenge data with the size of the packet containing them.
-    sent_chals: VecDeque<([u8; 8], usize, time::Instant)>,
+    sent_chals: VecDeque<([u8; 8], usize, time::Instant, time::Instant)>,
 
     /// Whether it requires sending PATH_CHALLENGE?
     need_send_challenge: bool,
@@ -91,6 +93,9 @@ pub struct Path {
 
     /// The current pmtu probing state of the path.
     pub(super) dplpmtud: Dplpmtud,
+
+    /// Whether a Ping frame should be sent on the path.
+    pub(super) need_send_ping: bool,
 
     /// Trace id.
     trace_id: String,
@@ -140,6 +145,7 @@ impl Path {
             peer_verified_local_address: false,
             anti_ampl_limit: 0,
             dplpmtud,
+            need_send_ping: false,
             trace_id: trace_id.to_string(),
             space_id: SpaceId::Data,
             is_abandon: false,
@@ -185,9 +191,14 @@ impl Path {
 
         // The 4-tuple is reachable, but we didn't check Path MTU yet.
         let mut challenge_size = 0;
-        self.sent_chals.retain(|(d, s, _)| {
+        self.sent_chals.retain(|(d, s, sent_time, _)| {
             if *d == data {
                 challenge_size = *s;
+                // Use the delay between sending a PATH_CHALLENGE and receiving a PATH_RESPONSE
+                // to set the initial RTT for the new path. This delay should not be considered
+                // an RTT sample.
+                let initial_rtt = Instant::now().duration_since(*sent_time);
+                self.recovery.rtt.try_set_init_rtt(initial_rtt);
                 false
             } else {
                 true
@@ -238,7 +249,8 @@ impl Path {
         let loss_time =
             sent_time + time::Duration::from_millis(INITIAL_CHAL_TIMEOUT << self.lost_chal);
 
-        self.sent_chals.push_back((data, pkt_size, loss_time));
+        self.sent_chals
+            .push_back((data, pkt_size, sent_time, loss_time));
     }
 
     /// Handle timeout of PATH_CHALLENGE
@@ -249,7 +261,7 @@ impl Path {
 
         // Remove the lost challenges.
         while let Some(first_chal) = self.sent_chals.front() {
-            if first_chal.2 > now {
+            if first_chal.3 > now {
                 return;
             }
 
@@ -558,8 +570,8 @@ impl PathMap {
         self.paths
             .iter()
             .filter_map(|(_, p)| p.sent_chals.front())
-            .min_by_key(|&(_, _, loss_time)| loss_time)
-            .map(|&(_, _, loss_time)| loss_time)
+            .min_by_key(|&(_, _, _, loss_time)| loss_time)
+            .map(|&(_, _, _, loss_time)| loss_time)
     }
 
     /// Return the maximum PTO among all paths.
@@ -605,6 +617,33 @@ impl PathMap {
             }
         }
         left
+    }
+
+    /// Schedule a Ping frame on the specified path or all active paths.
+    pub fn mark_ping(&mut self, path_addr: Option<FourTuple>) -> Result<()> {
+        // If multipath is not enabled, schedule a Ping frame on the current
+        // active path.
+        if !self.is_multipath {
+            self.get_active_mut()?.need_send_ping = true;
+            return Ok(());
+        }
+
+        // If multipath is enabled, schedule a Ping frame on the specified path
+        // or all the active paths.
+        if let Some(a) = path_addr {
+            let pid = match self.get_path_id(&(a.local, a.remote)) {
+                Some(pid) => pid,
+                None => return Ok(()),
+            };
+            self.get_mut(pid)?.need_send_ping = true;
+            return Ok(());
+        }
+        for (_, path) in self.paths.iter_mut() {
+            if path.active() {
+                path.need_send_ping = true;
+            }
+        }
+        Ok(())
     }
 
     /// Promote to multipath mode.

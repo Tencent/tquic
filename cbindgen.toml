@@ -15,7 +15,6 @@ cpp_compat = true
 documentation = true
 
 # A list of headers to #include (with quotes)
-sys_includes = ["sys/socket.h", "sys/types.h"]
 includes = ["openssl/ssl.h", "tquic_def.h"]
 
 [export]
@@ -31,6 +30,7 @@ exclude = ["MIN_CLIENT_INITIAL_LEN", "VINT_MAX"]
 "PacketOutSpec" = "quic_packet_out_spec_t"
 "PacketInfo" = "quic_packet_info_t"
 "PathAddress" = "quic_path_address_t"
+"PathStats" = "quic_path_stats_t"
 "FourTupleIter" = "quic_path_address_iter_t"
 "Shutdown" = "quic_shutdown"
 "TransportHandler" = "quic_transport_handler_t"

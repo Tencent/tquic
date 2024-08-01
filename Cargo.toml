@@ -1,6 +1,6 @@
 [package]
 name = "tquic"
-version = "0.15.0"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.70.0"
 license = "Apache-2.0"
@@ -50,6 +50,9 @@ serde_with = "3.0.0"
 hex = "0.4"
 priority-queue = "1.3.2"
 sfv = { version = "0.9" }
+
+[target."cfg(windows)".dependencies]
+winapi = { version = "0.3", features = ["wincrypt", "ws2def", "ws2ipdef", "ws2tcpip"] }
 
 [dev-dependencies]
 env_logger = "0.10.0"

@@ -7,8 +7,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <sys/socket.h>
-#include <sys/types.h>
 #include "openssl/ssl.h"
 #include "tquic_def.h"
 
@@ -278,7 +276,7 @@ typedef struct quic_path_address_t {
 /**
  * Statistics about path
  */
-typedef struct PathStats {
+typedef struct quic_path_stats_t {
   /**
    * The number of QUIC packets received.
    */
@@ -304,13 +302,13 @@ typedef struct PathStats {
    */
   uint64_t lost_bytes;
   /**
-   * Total number of bytes acked.
-   */
-  uint64_t acked_bytes;
-  /**
    * Total number of packets acked.
    */
   uint64_t acked_count;
+  /**
+   * Total number of bytes acked.
+   */
+  uint64_t acked_bytes;
   /**
    * Initial congestion window in bytes.
    */
@@ -367,7 +365,7 @@ typedef struct PathStats {
    * Pacing rate estimated by congestion control algorithm.
    */
   uint64_t pacing_rate;
-} PathStats;
+} quic_path_stats_t;
 
 /**
  * Statistics about a QUIC connection.
@@ -969,6 +967,21 @@ void quic_conn_session(struct quic_conn_t *conn, const uint8_t **out, size_t *ou
 int quic_conn_early_data_reason(struct quic_conn_t *conn, const uint8_t **out, size_t *out_len);
 
 /**
+ * Send a Ping frame on the active path(s) for keep-alive.
+ */
+int quic_conn_ping(struct quic_conn_t *conn);
+
+/**
+ * Send a Ping frame on the specified path for keep-alive.
+ * The API is only applicable to multipath quic connections.
+ */
+int quic_conn_ping_path(struct quic_conn_t *conn,
+                        const struct sockaddr *local,
+                        socklen_t local_len,
+                        const struct sockaddr *remote,
+                        socklen_t remote_len);
+
+/**
  * Add a new path on the client connection.
  */
 int quic_conn_add_path(struct quic_conn_t *conn,
@@ -1020,11 +1033,11 @@ bool quic_conn_active_path(const struct quic_conn_t *conn, struct quic_path_addr
 /**
  * Return the latest statistics about the specified path.
  */
-const struct PathStats *quic_conn_path_stats(struct quic_conn_t *conn,
-                                             const struct sockaddr *local,
-                                             socklen_t local_len,
-                                             const struct sockaddr *remote,
-                                             socklen_t remote_len);
+const struct quic_path_stats_t *quic_conn_path_stats(struct quic_conn_t *conn,
+                                                     const struct sockaddr *local,
+                                                     socklen_t local_len,
+                                                     const struct sockaddr *remote,
+                                                     socklen_t remote_len);
 
 /**
  * Return statistics about the connection.
@@ -1105,6 +1118,7 @@ void quic_conn_set_keylog(struct quic_conn_t *conn, void (*cb)(const uint8_t *da
 
 /**
  * Set keylog file.
+ * Note: The API is not applicable for Windows.
  */
 void quic_conn_set_keylog_fd(struct quic_conn_t *conn, int fd);
 
@@ -1122,6 +1136,7 @@ void quic_conn_set_qlog(struct quic_conn_t *conn,
 
 /**
  * Set qlog file.
+ * Note: The API is not applicable for Windows.
  */
 void quic_conn_set_qlog_fd(struct quic_conn_t *conn, int fd, const char *title, const char *desc);
 
@@ -1403,13 +1418,15 @@ int http3_take_priority_update(struct http3_conn_t *conn,
 /**
  * Set logger.
  * `cb` is a callback function that will be called for each log message.
- * `data` is a '\n' terminated log message and `argp` is user-defined data that will be passed to
- * the callback.
- * `level` represents the log level.
+ * `data` is a '\n' terminated log message and `argp` is user-defined data that
+ * will be passed to the callback.
+ * `level` is a case-insensitive string used for specifying the log level. Valid
+ * values are "OFF", "ERROR", "WARN", "INFO", "DEBUG", and "TRACE". If its value
+ * is NULL or invalid, the default log level is "OFF".
  */
 void quic_set_logger(void (*cb)(const uint8_t *data, size_t data_len, void *argp),
                      void *argp,
-                     quic_log_level level);
+                     const char *level);
 
 #ifdef __cplusplus
 } // extern "C"

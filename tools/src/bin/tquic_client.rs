@@ -69,6 +69,7 @@ use tquic_tools::ApplicationProto;
 use tquic_tools::QuicSocket;
 use tquic_tools::Result;
 
+#[cfg(unix)]
 #[global_allocator]
 static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 

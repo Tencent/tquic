@@ -693,8 +693,6 @@ impl Connection {
 
         self.flags.insert(NeedSendAckEliciting);
 
-        // TODO: notify pacer on the path
-
         Ok(read)
     }
 
@@ -1468,7 +1466,7 @@ impl Connection {
         let info = PacketInfo {
             src: path.local_addr(),
             dst: path.remote_addr(),
-            time: time::Instant::now(), // TODO: Set an appropriate sending time
+            time: time::Instant::now(),
         };
         Ok((done, info))
     }
@@ -1843,11 +1841,15 @@ impl Connection {
         self.try_write_new_token_frame(out, st, pkt_type, path_id)?;
 
         // Write a PING frame
-        if st.ack_elicit_required && !st.ack_eliciting && !self.is_closing() {
+        if ((st.ack_elicit_required && !st.ack_eliciting)
+            || self.paths.get_mut(path_id)?.need_send_ping)
+            && !self.is_closing()
+        {
             let frame = Frame::Ping { pmtu_probe: None };
             Connection::write_frame_to_packet(frame, out, st)?;
             st.ack_eliciting = true;
             st.in_flight = true;
+            self.paths.get_mut(path_id)?.need_send_ping = false;
         }
 
         // No frames to be sent
@@ -2832,6 +2834,9 @@ impl Connection {
                         if space.need_send_buffered_frames() && path.recovery.can_send() {
                             return Ok(pid);
                         }
+                        if path.need_send_ping {
+                            return Ok(pid);
+                        }
                         continue;
                     }
                     None => continue,
@@ -2924,6 +2929,7 @@ impl Connection {
                 || self.local_error.as_ref().map_or(false, |e| e.is_app)
                 || path.need_send_validation_frames(self.is_server)
                 || path.dplpmtud.should_probe()
+                || path.need_send_ping
                 || self.cids.need_send_cid_control_frames()
                 || self.streams.need_send_stream_frames()
                 || self.spaces.need_send_buffered_frames())
@@ -3169,7 +3175,7 @@ impl Connection {
         // current Probe Timeout (PTO).
         // See RFC 9000 Section 10.1
         let path_pto = match self.paths.get_active_mut() {
-            Ok(p) => p.recovery.rtt.pto_base(), // TODO: revisit
+            Ok(p) => p.recovery.rtt.pto_base(),
             Err(_) => time::Duration::ZERO,
         };
         let idle_timeout = cmp::max(idle_timeout, 3 * path_pto);
@@ -3497,6 +3503,14 @@ impl Connection {
             stream.send.write(Bytes::copy_from_slice(data), false)?;
             Ok(())
         })
+    }
+
+    /// Send a Ping frame for keep-alive.
+    ///
+    /// If `path_addr` is `None`, a Ping frame will be sent on each active path.
+    /// Otherwise, a Ping frame will be on the specified path.
+    pub fn ping(&mut self, path_addr: Option<FourTuple>) -> Result<()> {
+        self.paths.mark_ping(path_addr)
     }
 
     /// Client add a new path on the connection.
@@ -5936,6 +5950,46 @@ pub(crate) mod tests {
                 case.1
             );
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn ping() -> Result<()> {
+        let mut client_config = TestPair::new_test_config(false)?;
+        client_config.enable_dplpmtud(false);
+        client_config.local_transport_params = TransportParams {
+            max_idle_timeout: 15000,
+            ..TransportParams::default()
+        };
+        let mut server_config = TestPair::new_test_config(true)?;
+        server_config.enable_dplpmtud(false);
+        server_config.local_transport_params = TransportParams {
+            max_idle_timeout: 15000,
+            ..TransportParams::default()
+        };
+        let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
+        test_pair.handshake()?;
+
+        // Move both connections to idle state
+        test_pair.move_forward()?;
+
+        // Enable qlog for Server
+        let slog = NamedTempFile::new().unwrap();
+        let mut sfile = slog.reopen().unwrap();
+        test_pair
+            .server
+            .set_qlog(Box::new(slog), "title".into(), "desc".into());
+
+        // Client send a Ping frame
+        test_pair.client.ping(None)?;
+        let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+        TestPair::conn_packets_in(&mut test_pair.server, packets.clone())?;
+
+        let mut slog_content = String::new();
+        sfile.read_to_string(&mut slog_content).unwrap();
+        assert_eq!(slog_content.contains("quic:packet_received"), true);
+        assert_eq!(slog_content.contains("frame_type\":\"ping"), true);
 
         Ok(())
     }
