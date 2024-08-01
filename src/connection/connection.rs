@@ -693,8 +693,6 @@ impl Connection {
 
         self.flags.insert(NeedSendAckEliciting);
 
-        // TODO: notify pacer on the path
-
         Ok(read)
     }
 
@@ -1468,7 +1466,7 @@ impl Connection {
         let info = PacketInfo {
             src: path.local_addr(),
             dst: path.remote_addr(),
-            time: time::Instant::now(), // TODO: Set an appropriate sending time
+            time: time::Instant::now(),
         };
         Ok((done, info))
     }
@@ -3177,7 +3175,7 @@ impl Connection {
         // current Probe Timeout (PTO).
         // See RFC 9000 Section 10.1
         let path_pto = match self.paths.get_active_mut() {
-            Ok(p) => p.recovery.rtt.pto_base(), // TODO: revisit
+            Ok(p) => p.recovery.rtt.pto_base(),
             Err(_) => time::Duration::ZERO,
         };
         let idle_timeout = cmp::max(idle_timeout, 3 * path_pto);

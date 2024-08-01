@@ -165,7 +165,7 @@ impl Recovery {
         let ack_eliciting = pkt.ack_eliciting;
         let sent_size = pkt.sent_size;
 
-        pkt.time_sent = now; // TODO: REVISIT
+        pkt.time_sent = now;
         let space = match spaces.get_mut(space_id) {
             Some(space) => space,
             None => return,
@@ -286,7 +286,7 @@ impl Recovery {
             self.congestion.end_ack();
         }
 
-        self.pto_count = 0; // TODO: REVISIT
+        self.pto_count = 0;
         self.set_loss_detection_timer(space_id, spaces, handshake_status, now);
         Ok((lost_packets, lost_bytes))
     }
