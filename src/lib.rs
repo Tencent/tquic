@@ -117,9 +117,6 @@ const MAX_ACK_RANGES: usize = 68;
 /// Default outgoing udp datagram payloads size.
 const DEFAULT_SEND_UDP_PAYLOAD_SIZE: usize = 1200;
 
-/// The maximum number of undecryptable packets that can be buffered.
-const MAX_UNDECRYPTABLE_PACKETS: usize = 10;
-
 /// An endpoint MUST limit the amount of data it sends to the unvalidated
 /// address to three times the amount of data received from that address.
 const ANTI_AMPLIFICATION_FACTOR: usize = 3;
@@ -346,6 +343,9 @@ pub struct Config {
     /// Buffer size for early incoming zero rtt packets, in packets.
     zerortt_buffer_size: usize,
 
+    /// The maximum number of undecryptable packets that can be stored by one connection, in packets.
+    max_undecryptable_packets: usize,
+
     /// Configurations about loss recovery, congestion control, and pmtu discovery.
     recovery: RecoveryConfig,
 
@@ -399,6 +399,7 @@ impl Config {
             anti_amplification_factor: ANTI_AMPLIFICATION_FACTOR,
             send_batch_size: 64,
             zerortt_buffer_size: 1000,
+            max_undecryptable_packets: 10,
             recovery: RecoveryConfig::default(),
             multipath: MultipathConfig::default(),
             tls_config_selector: None,
@@ -699,6 +700,16 @@ impl Config {
             self.zerortt_buffer_size = v;
         } else {
             self.zerortt_buffer_size = 1000;
+        }
+    }
+
+    /// Set the maximum number of undecryptable packets that can be stored by one connection.
+    /// The default value is `10`. A value of 0 will be treated as default value.
+    pub fn set_max_undecryptable_packets(&mut self, v: usize) {
+        if v > 0 {
+            self.max_undecryptable_packets = v;
+        } else {
+            self.max_undecryptable_packets = 10;
         }
     }
 
