@@ -519,6 +519,13 @@ pub extern "C" fn quic_config_set_zerortt_buffer_size(config: &mut Config, v: u1
     config.set_zerortt_buffer_size(v as usize);
 }
 
+/// Set the maximum number of undecryptable packets that can be stored by one connection.
+/// The default value is `10`. A value of 0 will be treated as default value.
+#[no_mangle]
+pub extern "C" fn quic_config_set_max_undecryptable_packets(config: &mut Config, v: u16) {
+    config.set_max_undecryptable_packets(v as usize);
+}
+
 /// Create a new TlsConfig.
 /// The caller is responsible for the memory of the TlsConfig and should properly
 /// destroy it by calling `quic_tls_config_free`.
