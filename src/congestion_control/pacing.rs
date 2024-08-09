@@ -82,7 +82,7 @@ impl Pacer {
     /// Build a pacer controller.
     pub fn build_pacer_controller(conf: &RecoveryConfig) -> Self {
         Pacer::new(
-            true,
+            conf.enable_pacing,
             conf.initial_rtt,
             conf.initial_congestion_window
                 .saturating_mul(conf.max_datagram_size as u64),

@@ -39,7 +39,7 @@ impl RoundRobinScheduler {
 
 impl RoundRobinScheduler {
     /// Iterate and find the last used path
-    fn find_last(&self, iter: &mut slab::Iter<Path>, last: usize) -> bool {
+    fn find_last(&self, iter: &mut slab::IterMut<Path>, last: usize) -> bool {
         for (pid, _) in iter.by_ref() {
             if pid != last {
                 continue;
@@ -50,7 +50,7 @@ impl RoundRobinScheduler {
     }
 
     /// Try to select an available path
-    fn select(&mut self, iter: &mut slab::Iter<Path>) -> Option<usize> {
+    fn select(&mut self, iter: &mut slab::IterMut<Path>) -> Option<usize> {
         for (pid, path) in iter.by_ref() {
             // Skip the path that is not ready for sending non-probing packets.
             if !path.active() || !path.recovery.can_send() {
@@ -72,7 +72,7 @@ impl MultipathScheduler for RoundRobinScheduler {
         spaces: &mut PacketNumSpaceMap,
         streams: &mut StreamMap,
     ) -> Result<usize> {
-        let mut iter = paths.iter();
+        let mut iter = paths.iter_mut();
         let mut exist_last = false;
 
         // Iterate and find the last used path
@@ -81,7 +81,7 @@ impl MultipathScheduler for RoundRobinScheduler {
                 exist_last = true;
             } else {
                 // The last path has been abandoned
-                iter = paths.iter();
+                iter = paths.iter_mut();
             }
         }
 
@@ -93,7 +93,7 @@ impl MultipathScheduler for RoundRobinScheduler {
             return Err(Error::Done);
         }
 
-        let mut iter = paths.iter();
+        let mut iter = paths.iter_mut();
         if let Some(pid) = self.select(&mut iter) {
             return Ok(pid);
         }
