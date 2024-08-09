@@ -825,12 +825,13 @@ impl Recovery {
         self.max_datagram_size = max_datagram_size;
     }
 
-    /// Check whether the congestion window is still sufficient for sending packets.
-    pub(crate) fn can_send(&self) -> bool {
+    /// Check whether this path can still send packets.
+    pub(crate) fn can_send(&mut self) -> bool {
         self.bytes_in_flight < self.congestion.congestion_window() as usize
+            && (!self.pacer.enabled() || self.can_pacing())
     }
 
-    pub fn can_pacing(&mut self) -> bool {
+    fn can_pacing(&mut self) -> bool {
         let now = time::Instant::now();
         let cwnd = self.congestion.congestion_window();
         let srtt = self.rtt.smoothed_rtt() as Duration;
@@ -905,7 +906,7 @@ impl Recovery {
 
     /// Update statistics for the congestion window limited event
     pub(crate) fn stat_cwnd_limited(&mut self) {
-        let is_cwnd_limited = !self.can_send();
+        let is_cwnd_limited = self.bytes_in_flight >= self.congestion.congestion_window() as usize;
         let now = Instant::now();
         if let Some(last_cwnd_limited_time) = self.last_cwnd_limited_time {
             // Update duration timely, in case it stays in cwnd limited all the time.

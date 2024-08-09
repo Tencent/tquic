@@ -1824,15 +1824,8 @@ impl Connection {
         // count toward congestion control limits. (RFC 9002 Section 3)
         // - Probe packets are allowed to temporarily exceed the congestion
         // window. (RFC 9002 Section 4.7)
-        if !st.is_probe {
-            if !r.can_send() {
-                return Err(Error::Done);
-            }
-
-            // Check the pacer
-            if self.recovery_conf.enable_pacing && !r.can_pacing() {
-                return Err(Error::Done);
-            }
+        if !st.is_probe && !r.can_send() {
+            return Err(Error::Done);
         }
 
         // Write PMTU probe frames
