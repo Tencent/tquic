@@ -1824,7 +1824,7 @@ impl Connection {
         // count toward congestion control limits. (RFC 9002 Section 3)
         // - Probe packets are allowed to temporarily exceed the congestion
         // window. (RFC 9002 Section 4.7)
-        if !st.is_probe && !r.can_send() {
+        if !st.is_probe && r.is_cwnd_full() {
             return Err(Error::Done);
         }
 

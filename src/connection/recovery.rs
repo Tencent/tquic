@@ -825,6 +825,11 @@ impl Recovery {
         self.max_datagram_size = max_datagram_size;
     }
 
+    /// Check whether cwnd is full
+    pub(super) fn is_cwnd_full(&self) -> bool {
+        self.bytes_in_flight >= self.congestion.congestion_window() as usize
+    }
+
     /// Check whether this path can still send packets.
     pub(crate) fn can_send(&mut self) -> bool {
         self.bytes_in_flight < self.congestion.congestion_window() as usize
