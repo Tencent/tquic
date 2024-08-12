@@ -138,7 +138,7 @@ test_multipath() {
     local_addresses=`seq -s, -f "127.0.0.%g" 1 $PATH_NUM`
     RUST_BACKTRACE=1 $BIN_DIR/tquic_client -c 127.0.8.8:8443 --enable-multipath --multipath-algor $algor \
         --local-addresses $local_addresses --active-cid-limit $CID_LIMIT \
-        --qlog-dir $qlog_dir --log-level $LOG_LEVEL \
+        --qlog-dir $qlog_dir --log-file $test_dir/client.log --log-level $LOG_LEVEL \
         --dump-dir $dump_dir \
         https://example.org/$TEST_FILE
 
