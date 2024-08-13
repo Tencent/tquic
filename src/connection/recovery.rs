@@ -212,6 +212,9 @@ impl Recovery {
 
             self.set_loss_detection_timer(space_id, spaces, handshake_status, now);
         }
+
+        // Update pacing tokens number.
+        self.pacer.on_sent(self.max_datagram_size as u64);
     }
 
     /// Handle packet acknowledgment event.
@@ -825,36 +828,29 @@ impl Recovery {
         self.max_datagram_size = max_datagram_size;
     }
 
-    /// Check whether the congestion window is still sufficient for sending packets.
-    pub(crate) fn can_send(&self) -> bool {
+    /// Check whether this path can still send packets.
+    pub(crate) fn can_send(&mut self) -> bool {
         self.bytes_in_flight < self.congestion.congestion_window() as usize
+            && (!self.pacer.enabled() || self.can_pacing())
     }
 
-    pub fn can_pacing(&mut self) -> bool {
+    fn can_pacing(&mut self) -> bool {
         let now = time::Instant::now();
         let cwnd = self.congestion.congestion_window();
         let srtt = self.rtt.smoothed_rtt() as Duration;
 
         if let Some(pr) = self.congestion.pacing_rate() {
-            if let Some(pacer_timer) = self.pacer.schedule(
+            self.pacer_timer = self.pacer.schedule(
                 self.cache_pkt_size as u64,
                 pr,
                 srtt,
                 cwnd,
                 self.max_datagram_size as u64,
                 now,
-            ) {
-                trace!("{} pacer will be ready at {:?}", self.trace_id, pacer_timer);
-                self.pacer_timer = Some(pacer_timer);
-                return false;
-            } else {
-                self.pacer.on_sent(self.max_datagram_size as u64);
-                self.pacer_timer = None;
-                return true;
-            }
+            );
         }
-        trace!("{} pacing is disabled", self.trace_id);
-        true
+        trace!("{} pacing timer is {:?}", self.trace_id, self.pacer_timer);
+        self.pacer_timer.is_none()
     }
 
     /// Update statistics for the packet sent event
@@ -905,7 +901,7 @@ impl Recovery {
 
     /// Update statistics for the congestion window limited event
     pub(crate) fn stat_cwnd_limited(&mut self) {
-        let is_cwnd_limited = !self.can_send();
+        let is_cwnd_limited = self.bytes_in_flight >= self.congestion.congestion_window() as usize;
         let now = Instant::now();
         if let Some(last_cwnd_limited_time) = self.last_cwnd_limited_time {
             // Update duration timely, in case it stays in cwnd limited all the time.
