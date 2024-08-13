@@ -212,6 +212,9 @@ impl Recovery {
 
             self.set_loss_detection_timer(space_id, spaces, handshake_status, now);
         }
+
+        // Update pacing tokens number.
+        self.pacer.on_sent(self.max_datagram_size as u64);
     }
 
     /// Handle packet acknowledgment event.
@@ -825,11 +828,6 @@ impl Recovery {
         self.max_datagram_size = max_datagram_size;
     }
 
-    /// Check whether cwnd is full
-    pub(super) fn is_cwnd_full(&self) -> bool {
-        self.bytes_in_flight >= self.congestion.congestion_window() as usize
-    }
-
     /// Check whether this path can still send packets.
     pub(crate) fn can_send(&mut self) -> bool {
         self.bytes_in_flight < self.congestion.congestion_window() as usize
@@ -842,25 +840,17 @@ impl Recovery {
         let srtt = self.rtt.smoothed_rtt() as Duration;
 
         if let Some(pr) = self.congestion.pacing_rate() {
-            if let Some(pacer_timer) = self.pacer.schedule(
+            self.pacer_timer = self.pacer.schedule(
                 self.cache_pkt_size as u64,
                 pr,
                 srtt,
                 cwnd,
                 self.max_datagram_size as u64,
                 now,
-            ) {
-                trace!("{} pacer will be ready at {:?}", self.trace_id, pacer_timer);
-                self.pacer_timer = Some(pacer_timer);
-                return false;
-            } else {
-                self.pacer.on_sent(self.max_datagram_size as u64);
-                self.pacer_timer = None;
-                return true;
-            }
+            );
         }
-        trace!("{} pacing is disabled", self.trace_id);
-        true
+        trace!("{} pacing timer is {:?}", self.trace_id, self.pacer_timer);
+        self.pacer_timer.is_none()
     }
 
     /// Update statistics for the packet sent event
