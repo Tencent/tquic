@@ -849,8 +849,12 @@ impl Recovery {
                 now,
             );
         }
-        trace!("{} pacing timer is {:?}", self.trace_id, self.pacer_timer);
-        self.pacer_timer.is_none()
+        if self.pacer_timer.is_none(){
+            return true;
+        } else {
+            trace!("{} pacing timer is {:?}", self.trace_id, self.pacer_timer);
+            return false;
+        }
     }
 
     /// Update statistics for the packet sent event
