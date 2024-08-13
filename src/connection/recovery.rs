@@ -849,6 +849,7 @@ impl Recovery {
                 now,
             );
         }
+
         if self.pacer_timer.is_none() {
             true
         } else {
