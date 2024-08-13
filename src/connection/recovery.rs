@@ -849,11 +849,11 @@ impl Recovery {
                 now,
             );
         }
-        if self.pacer_timer.is_none(){
-            return true;
+        if self.pacer_timer.is_none() {
+            true
         } else {
             trace!("{} pacing timer is {:?}", self.trace_id, self.pacer_timer);
-            return false;
+            false
         }
     }
 
