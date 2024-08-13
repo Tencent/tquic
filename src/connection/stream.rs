@@ -1343,8 +1343,17 @@ impl StreamMap {
             return Err(Error::FlowControlError);
         }
 
-        if !was_readable && stream.is_readable() {
+        let is_readable = stream.is_readable();
+        let is_complete = stream.is_complete();
+        let local = stream.local;
+
+        if !was_readable && is_readable {
             self.mark_readable(stream_id, true);
+        }
+
+        // Mark closed if the stream is complete and not readable.
+        if is_complete && !is_readable {
+            self.mark_closed(stream_id, local);
         }
 
         self.flow_control.increase_recv_off(max_rx_off_delta);
