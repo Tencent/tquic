@@ -45,7 +45,7 @@ impl MultipathScheduler for MinRttScheduler {
     ) -> Result<usize> {
         let mut best = None;
 
-        for (pid, path) in paths.iter() {
+        for (pid, path) in paths.iter_mut() {
             // Skip the path that is not ready for sending non-probing packets.
             if !path.active() || !path.recovery.can_send() {
                 continue;
