@@ -3666,7 +3666,7 @@ impl Connection {
         }
     }
 
-    /// Return an iterator over streams that have data to read.
+    /// Return an iterator over streams that have data to read or an error to collect.
     pub fn stream_readable_iter(&self) -> StreamIter {
         self.streams.readable_iter()
     }
@@ -3794,7 +3794,7 @@ impl Connection {
         self.streams.stream_writable(stream_id, len)
     }
 
-    /// Return true if the stream has data that can be read.
+    /// Return true if the stream has data to be read or an error to be collected.
     pub fn stream_readable(&self, stream_id: u64) -> bool {
         self.streams.stream_readable(stream_id)
     }
