@@ -4364,6 +4364,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::multipath_scheduler::MultipathAlgorithm;
     use crate::packet;
+    use crate::ranges::RangeSet;
     use crate::tls::tests::ServerConfigSelector;
     use crate::tls::TlsConfig;
     use crate::tls::TlsConfigSelector;
@@ -7157,11 +7158,62 @@ pub(crate) mod tests {
             Err(Error::StreamReset(2))
         );
 
-        // Client send RESET_STREAM
+        // Client send ACK/RESET_STREAM
         let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
 
-        // Server recv RESET_STREAM
+        // Server recv ACK/RESET_STREAM
         TestPair::conn_packets_in(&mut test_pair.server, packets)?;
+        assert_eq!(test_pair.server.streams.is_closed(sid), true);
+        assert_eq!(test_pair.server.stream_readable(sid), false);
+        assert_eq!(
+            test_pair.server.stream_read(sid, &mut buf),
+            Err(Error::StreamStateError)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn stream_shutdown_abnormal() -> Result<()> {
+        let mut test_pair = TestPair::new_with_test_config()?;
+        assert_eq!(test_pair.handshake(), Ok(()));
+        let mut buf = vec![0; 16];
+
+        // Client send data on a stream
+        let (sid, data) = (0, TestPair::new_test_data(10));
+        test_pair.client.stream_write(sid, data.clone(), false)?;
+        let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+
+        // Server shutdown the stream (Read/Write)
+        TestPair::conn_packets_in(&mut test_pair.server, packets)?;
+        test_pair.server.stream_shutdown(sid, Shutdown::Read, 1)?;
+        test_pair.server.stream_shutdown(sid, Shutdown::Write, 2)?;
+        let packets = TestPair::conn_packets_out(&mut test_pair.server)?;
+
+        // Client recv STOP_SENDING/RESET_STREAM
+        TestPair::conn_packets_in(&mut test_pair.client, packets)?;
+
+        // Client send ACK
+        let mut ack_ranges = RangeSet::new(1);
+        ack_ranges.insert(0..2);
+        let frame = frame::Frame::Ack {
+            ack_delay: 0,
+            ack_ranges,
+            ecn_counts: None,
+        };
+        test_pair.build_packet_and_send(PacketType::OneRTT, &[frame], false)?;
+        assert_eq!(test_pair.server.streams.is_closed(sid), false);
+
+        // Client send RESET_STREAM
+        let frame = frame::Frame::ResetStream {
+            stream_id: 0,
+            error_code: 1,
+            final_size: 10,
+        };
+        test_pair.build_packet_and_send(PacketType::OneRTT, &[frame], false)?;
+
+        // Server stream 0 should be closed now
+        assert_eq!(test_pair.server.streams.is_closed(sid), true);
         assert_eq!(test_pair.server.stream_readable(sid), false);
         assert_eq!(
             test_pair.server.stream_read(sid, &mut buf),
