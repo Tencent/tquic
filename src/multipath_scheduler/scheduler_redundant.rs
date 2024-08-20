@@ -49,7 +49,7 @@ impl MultipathScheduler for RedundantScheduler {
         spaces: &mut PacketNumSpaceMap,
         streams: &mut StreamMap,
     ) -> Result<usize> {
-        for (pid, path) in paths.iter() {
+        for (pid, path) in paths.iter_mut() {
             // Skip the path that is not ready for sending non-probing packets.
             if !path.active() || !path.recovery.can_send() {
                 continue;

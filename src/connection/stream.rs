@@ -235,9 +235,7 @@ impl StreamMap {
     /// Read contiguous data from the stream's receive buffer into the given buffer.
     ///
     /// Return the number of bytes read and the `fin` flag if read successfully.
-    ///
     /// Return `StreamStateError` if the stream closed or never opened.
-    ///
     /// Return `Done` if the stream is not readable.
     pub fn stream_read(&mut self, stream_id: u64, out: &mut [u8]) -> Result<(usize, bool)> {
         // Local initiated unidirectional streams are send-only, so we can't read from them.
@@ -1343,8 +1341,17 @@ impl StreamMap {
             return Err(Error::FlowControlError);
         }
 
-        if !was_readable && stream.is_readable() {
+        let is_readable = stream.is_readable();
+        let is_complete = stream.is_complete();
+        let local = stream.local;
+
+        if !was_readable && is_readable {
             self.mark_readable(stream_id, true);
+        }
+
+        // Mark closed if the stream is complete and not readable.
+        if is_complete && !is_readable {
+            self.mark_closed(stream_id, local);
         }
 
         self.flow_control.increase_recv_off(max_rx_off_delta);
@@ -1847,7 +1854,7 @@ impl Stream {
         self.recv.trace_id = trace_id.to_string();
     }
 
-    /// Return true if the stream has data to be read.
+    /// Return true if the stream has data to be read or an error to be collected.
     pub fn is_readable(&self) -> bool {
         self.recv.ready()
     }
@@ -2212,7 +2219,8 @@ impl RecvBuf {
         Ok((len, self.is_fin()))
     }
 
-    /// Return true if the stream has buffered data waiting to be read by application.
+    /// Return true if the stream has buffered data to be read or an error to
+    /// be collected.
     fn ready(&self) -> bool {
         match self.data.first_key_value() {
             Some((_, buf)) => buf.off() == self.read_off,
@@ -2221,6 +2229,10 @@ impl RecvBuf {
     }
 
     /// Receive RESET_STREAM frame from peer, reset the stream at the given offset.
+    ///
+    /// If the recv side is not shutdown by the application, an empty buffer with
+    /// FIN will be written to the recv buffer to notify the application that it
+    /// has been reset by its peer.
     pub fn reset(&mut self, error_code: u64, final_size: u64) -> Result<usize> {
         // Once a final size for a stream is known, it cannot change. If a RESET_STREAM
         // frame is received indicating a change in the final size for the stream,
@@ -2262,8 +2274,9 @@ impl RecvBuf {
         Ok(max_rx_off_delta as usize)
     }
 
-    /// Shutdown the stream's receive-side, all subsequent data received on the stream
-    /// will be discarded.
+    /// Shutdown the stream's receive-side.
+    ///
+    /// After this operation, any subsequent data received on the stream will be discarded.
     fn shutdown(&mut self) -> Result<u64> {
         if self.shutdown {
             return Err(Error::Done);

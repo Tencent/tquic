@@ -1,6 +1,6 @@
 [package]
 name = "tquic_tools"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 rust-version = "1.70.0"
 license = "Apache-2.0"
@@ -22,7 +22,7 @@ slab = "0.4"
 rand = "0.8.5"
 statrs = "0.16"
 signal-hook = "0.3.17"
-tquic = { path = "..", version = "1.0.0"}
+tquic = { path = "..", version = "1.1.0"}
 
 [target."cfg(unix)".dependencies]
 jemallocator = { version = "0.5", package = "tikv-jemallocator" }

@@ -111,7 +111,7 @@ pub struct Connection {
     crypto_streams: Rc<RefCell<CryptoStreams>>,
 
     /// Raw packets that were received before decryption keys are available.
-    undecryptable_pkts: VecDeque<(Vec<u8>, PacketInfo)>,
+    undecryptable_packets: UndecryptablePackets,
 
     /// Peer transport parameters.
     peer_transport_params: TransportParams,
@@ -256,7 +256,7 @@ impl Connection {
             streams,
             tls_session,
             crypto_streams: Rc::new(RefCell::new(CryptoStreams::new())),
-            undecryptable_pkts: VecDeque::new(),
+            undecryptable_packets: UndecryptablePackets::new(conf.max_undecryptable_packets),
             peer_transport_params: TransportParams::default(),
             local_transport_params: conf.local_transport_params.clone(),
             recovery_conf: conf.recovery.clone(),
@@ -434,8 +434,10 @@ impl Connection {
             left -= read;
         }
 
-        // Try to process undecryptable 0-RTT packets
-        self.try_process_undecryptable_packets()?;
+        // Try to process undecryptable packets
+        if !self.is_established() {
+            self.try_process_undecryptable_packets();
+        }
 
         Ok(len - left)
     }
@@ -520,21 +522,9 @@ impl Connection {
         let key = match &key.open {
             Some(open) => open,
             None => {
-                // Buffer undecryptable packets when the key is not yet available.
-                if hdr.pkt_type == PacketType::ZeroRTT
-                    && !self.is_established()
-                    && self.undecryptable_pkts.len() < crate::MAX_UNDECRYPTABLE_PACKETS
-                {
-                    let pkt = buf[..read + length].to_vec();
-                    self.undecryptable_pkts.push_back((pkt, *info));
-                } else {
-                    trace!(
-                        "{} key not yet available, drop packet {:?}",
-                        self.trace_id,
-                        hdr
-                    );
-                }
-                return Err(Error::Done);
+                let pkt = buf[..read + length].to_vec();
+                self.try_buffer_undecryptable_packets(&hdr, pkt, info);
+                return Ok(read + length);
             }
         };
         packet::decrypt_header(buf, pkt_num_offset, &mut hdr, key).map_err(|_| Error::Done)?;
@@ -1131,8 +1121,8 @@ impl Connection {
         if self.tls_session.is_completed() {
             self.flags.insert(HandshakeCompleted);
             self.events.add(Event::ConnectionEstablished);
-            self.undecryptable_pkts.clear();
             self.timers.stop(Timer::Handshake);
+            self.try_process_undecryptable_packets();
 
             if self.is_server {
                 // The TLS handshake is considered confirmed at the server when
@@ -1253,20 +1243,68 @@ impl Connection {
         }
     }
 
-    /// A server could receive packets protected with 0-RTT keys prior to
-    /// receiving a TLS ClientHello. The server MAY retain these packets for
-    /// later decryption in anticipation of receiving a ClientHello.
-    /// See RFC 9001 Section 5.7
-    fn try_process_undecryptable_packets(&mut self) -> Result<()> {
-        if self.tls_session.get_keys(Level::ZeroRTT).open.is_some() {
-            while let Some((mut pkt, info)) = self.undecryptable_pkts.pop_front() {
+    /// Try to buffer undecryptable packets when the keys are not yet available.
+    fn try_buffer_undecryptable_packets(
+        &mut self,
+        hdr: &PacketHeader,
+        pkt: Vec<u8>,
+        info: &PacketInfo,
+    ) {
+        if self.is_established()
+            || (self.is_server
+                && hdr.pkt_type != PacketType::ZeroRTT
+                && hdr.pkt_type != PacketType::OneRTT)
+            || (!self.is_server
+                && hdr.pkt_type != PacketType::Handshake
+                && hdr.pkt_type != PacketType::OneRTT)
+        {
+            trace!("{} drop packet {:?}", self.trace_id, hdr);
+            return;
+        }
+
+        if self.undecryptable_packets.push(&hdr.pkt_type, pkt, info) {
+            trace!("{} buffer undecryptable packets: {:?}", self.trace_id, hdr);
+        } else {
+            trace!(
+                "{} key not yet available, drop packet {:?}",
+                self.trace_id,
+                hdr
+            );
+        }
+    }
+
+    /// Try to process undecryptable packets.
+    fn try_process_undecryptable_packets(&mut self) {
+        if self.undecryptable_packets.all_empty() {
+            return;
+        }
+
+        let pkt_types = if self.is_server {
+            vec![PacketType::ZeroRTT, PacketType::OneRTT]
+        } else {
+            vec![PacketType::Handshake, PacketType::OneRTT]
+        };
+
+        for pkt_type in pkt_types {
+            if self.undecryptable_packets.is_empty(&pkt_type) {
+                continue;
+            }
+
+            let level = pkt_type.to_level().unwrap();
+            let key = self.tls_session.get_keys(level);
+            if key.open.is_none() {
+                continue;
+            }
+
+            while let Some((mut pkt, info)) = self.undecryptable_packets.pop(&pkt_type) {
                 if let Err(e) = self.recv(&mut pkt, &info) {
-                    self.undecryptable_pkts.clear();
-                    return Err(e);
+                    error!(
+                        "{} try process undecryptable packet error {:?} type {:?}",
+                        self.trace_id, e, pkt_type
+                    );
                 }
             }
         }
-        Ok(())
     }
 
     /// Process acknowledged frames in each packet number space
@@ -1786,15 +1824,8 @@ impl Connection {
         // count toward congestion control limits. (RFC 9002 Section 3)
         // - Probe packets are allowed to temporarily exceed the congestion
         // window. (RFC 9002 Section 4.7)
-        if !st.is_probe {
-            if !r.can_send() {
-                return Err(Error::Done);
-            }
-
-            // Check the pacer
-            if self.recovery_conf.enable_pacing && !r.can_pacing() {
-                return Err(Error::Done);
-            }
+        if !st.is_probe && !r.can_send() {
+            return Err(Error::Done);
         }
 
         // Write PMTU probe frames
@@ -3635,7 +3666,7 @@ impl Connection {
         }
     }
 
-    /// Return an iterator over streams that have data to read.
+    /// Return an iterator over streams that have data to read or an error to collect.
     pub fn stream_readable_iter(&self) -> StreamIter {
         self.streams.readable_iter()
     }
@@ -3763,7 +3794,7 @@ impl Connection {
         self.streams.stream_writable(stream_id, len)
     }
 
-    /// Return true if the stream has data that can be read.
+    /// Return true if the stream has data to be read or an error to be collected.
     pub fn stream_readable(&self, stream_id: u64) -> bool {
         self.streams.stream_readable(stream_id)
     }
@@ -4109,6 +4140,79 @@ impl CryptoStreams {
     }
 }
 
+/// Collection of packets which were received before decryption keys are available.
+struct UndecryptablePackets {
+    zerortt_pkts: VecDeque<(Vec<u8>, PacketInfo)>,
+    handshake_pkts: VecDeque<(Vec<u8>, PacketInfo)>,
+    onertt_pkts: VecDeque<(Vec<u8>, PacketInfo)>,
+    capacity: usize,
+}
+
+impl UndecryptablePackets {
+    fn new(capacity: usize) -> Self {
+        Self {
+            zerortt_pkts: VecDeque::with_capacity(capacity),
+            handshake_pkts: VecDeque::with_capacity(capacity),
+            onertt_pkts: VecDeque::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    fn push(&mut self, pkt_type: &PacketType, pkt: Vec<u8>, info: &PacketInfo) -> bool {
+        match pkt_type {
+            PacketType::ZeroRTT => {
+                if self.zerortt_pkts.len() > self.capacity {
+                    false
+                } else {
+                    self.zerortt_pkts.push_back((pkt, *info));
+                    true
+                }
+            }
+            PacketType::Handshake => {
+                if self.handshake_pkts.len() > self.capacity {
+                    false
+                } else {
+                    self.handshake_pkts.push_back((pkt, *info));
+                    true
+                }
+            }
+            PacketType::OneRTT => {
+                if self.onertt_pkts.len() > self.capacity {
+                    false
+                } else {
+                    self.onertt_pkts.push_back((pkt, *info));
+                    true
+                }
+            }
+            _ => false,
+        }
+    }
+
+    fn pop(&mut self, pkt_type: &PacketType) -> Option<(Vec<u8>, PacketInfo)> {
+        match pkt_type {
+            PacketType::ZeroRTT => self.zerortt_pkts.pop_front(),
+            PacketType::Handshake => self.handshake_pkts.pop_front(),
+            PacketType::OneRTT => self.onertt_pkts.pop_front(),
+            _ => None,
+        }
+    }
+
+    fn is_empty(&self, pkt_type: &PacketType) -> bool {
+        match pkt_type {
+            PacketType::ZeroRTT => self.zerortt_pkts.is_empty(),
+            PacketType::Handshake => self.handshake_pkts.is_empty(),
+            PacketType::OneRTT => self.onertt_pkts.is_empty(),
+            _ => true,
+        }
+    }
+
+    fn all_empty(&self) -> bool {
+        self.zerortt_pkts.is_empty()
+            && self.handshake_pkts.is_empty()
+            && self.onertt_pkts.is_empty()
+    }
+}
+
 /// Various flags of QUIC connection
 #[bitflags]
 #[repr(u32)]
@@ -4260,6 +4364,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::multipath_scheduler::MultipathAlgorithm;
     use crate::packet;
+    use crate::ranges::RangeSet;
     use crate::tls::tests::ServerConfigSelector;
     use crate::tls::TlsConfig;
     use crate::tls::TlsConfigSelector;
@@ -5027,7 +5132,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn handshake_with_0rtt_reordered() -> Result<()> {
+    fn handshake_with_0rtt_reordered_server_side() -> Result<()> {
         let mut client_config = TestPair::new_test_config(false)?;
         let mut server_config = TestPair::new_test_config(true)?;
 
@@ -5044,25 +5149,34 @@ pub(crate) mod tests {
         assert!(test_pair.client.is_in_early_data());
         assert!(!packets.is_empty());
 
-        // Client send ZeorRTT packet
+        // Client send ZeroRTT packet
         let content = "client zero rtt data before initial";
+        let mut frames = vec![];
         let frame = TestPair::new_test_stream_frame(content.as_bytes());
+        frames.push(frame);
         let packet =
-            TestPair::conn_build_packet(&mut test_pair.client, PacketType::ZeroRTT, &[frame])?;
+            TestPair::conn_build_packet(&mut test_pair.client, PacketType::ZeroRTT, &frames)?;
         let info = packets.first().unwrap().1;
 
         // Server recv ZeroRTT packet before Initial packet
         TestPair::conn_packets_in(&mut test_pair.server, vec![(packet, info)])?;
-        assert_eq!(test_pair.client.is_in_early_data(), true);
-        assert_eq!(test_pair.server.streams.has_readable_streams(), false);
-        assert_eq!(test_pair.server.undecryptable_pkts.is_empty(), false);
+        assert!(test_pair.client.is_in_early_data());
+        assert!(!test_pair.server.streams.has_readable_streams());
+        assert!(!test_pair
+            .server
+            .undecryptable_packets
+            .zerortt_pkts
+            .is_empty());
 
         // Server recv the reordered Initial packet
         TestPair::conn_packets_in(&mut test_pair.server, packets)?;
         assert_eq!(test_pair.client.is_in_early_data(), true);
-        assert_eq!(test_pair.server.streams.has_readable_streams(), true);
-        assert_eq!(test_pair.server.undecryptable_pkts.is_empty(), true);
-
+        assert!(test_pair
+            .server
+            .undecryptable_packets
+            .zerortt_pkts
+            .is_empty());
+        assert!(test_pair.server.streams.has_readable_streams());
         let stream = test_pair.server.streams.get_mut(0).unwrap();
         let mut buf = vec![0; 128];
         assert_eq!(stream.recv.read(&mut buf)?, (content.len(), false));
@@ -5072,7 +5186,60 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn handshake_with_initial_reordered() -> Result<()> {
+    fn handshake_with_1rtt_reordered_server_side() -> Result<()> {
+        let mut test_pair = TestPair::new_with_test_config()?;
+
+        // Client send and server recv Initial.
+        let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+        TestPair::conn_packets_in(&mut test_pair.server, packets)?;
+
+        // Server send and client recv Initial and Handshake.
+        let packets = TestPair::conn_packets_out(&mut test_pair.server)?;
+        TestPair::conn_packets_in(&mut test_pair.client, packets)?;
+        assert!(test_pair.client.is_established());
+
+        // Client send OneRTT packet.
+        let content = "client one rtt data before handshake";
+        let mut frames = vec![];
+        let frame = TestPair::new_test_stream_frame(content.as_bytes());
+        frames.push(frame);
+        let packet =
+            TestPair::conn_build_packet(&mut test_pair.client, PacketType::OneRTT, &frames)?;
+
+        // Client send Handshake packets.
+        let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+        let info = packets.first().unwrap().1;
+
+        // Server recv OneRTT packet before Handshake packets.
+        TestPair::conn_packets_in(&mut test_pair.server, vec![(packet, info)])?;
+        assert!(!test_pair.server.is_confirmed());
+        assert!(!test_pair
+            .server
+            .undecryptable_packets
+            .onertt_pkts
+            .is_empty());
+
+        // Server recv the reordered Handshake packets.
+        TestPair::conn_packets_in(&mut test_pair.server, packets)?;
+        assert!(test_pair.server.is_confirmed());
+        assert!(test_pair
+            .server
+            .tls_session
+            .get_keys(Level::OneRTT)
+            .open
+            .is_some());
+        assert!(test_pair.server.streams.has_readable_streams());
+        let stream = test_pair.server.streams.get_mut(0).unwrap();
+        assert!(stream.is_readable());
+        let mut buf = vec![0; 128];
+        assert_eq!(stream.recv.read(&mut buf)?, (content.len(), false));
+        assert_eq!(content.as_bytes(), &buf[..content.len()]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn handshake_with_handshake_reordered_client_side() -> Result<()> {
         let mut test_pair = TestPair::new_with_test_config()?;
 
         // Client send Initial
@@ -5080,27 +5247,27 @@ pub(crate) mod tests {
         TestPair::conn_packets_in(&mut test_pair.server, packets)?;
 
         // Server send Initial and Handshake
-        let mut packets = TestPair::conn_packets_out(&mut test_pair.server)?;
+        let packets = TestPair::conn_packets_out(&mut test_pair.server)?;
         assert_eq!(test_pair.client.is_established(), false);
         assert_eq!(test_pair.client.flags.contains(HandshakeConfirmed), false);
         assert_eq!(test_pair.server.is_established(), false);
         assert_eq!(test_pair.server.flags.contains(HandshakeConfirmed), false);
 
-        // Client recv disordered Initial/Handshake packets. The Handshake
-        // packets arriving before the Initial packet are dropped by the client.
-        packets.reverse();
-        TestPair::conn_packets_in(&mut test_pair.client, packets)?;
+        // Client recv Handshake before Initial.
+        TestPair::conn_packets_in(&mut test_pair.client, vec![packets[1].clone()])?;
         assert_eq!(test_pair.client.is_established(), false);
+        let undecryptable_handshake_packets =
+            &test_pair.client.undecryptable_packets.handshake_pkts;
+        assert_eq!(undecryptable_handshake_packets.is_empty(), false);
+        TestPair::conn_packets_in(&mut test_pair.client, vec![packets[0].clone()])?;
+        assert_eq!(test_pair.client.is_established(), true);
+        let undecryptable_handshake_packets =
+            &test_pair.client.undecryptable_packets.handshake_pkts;
+        assert_eq!(undecryptable_handshake_packets.is_empty(), true);
 
         // Client send Initial/Handshake(ack)
         let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
         TestPair::conn_packets_in(&mut test_pair.server, packets)?;
-
-        // Fake timing out server's timer
-        let timeout = test_pair.server.timeout();
-        assert!(timeout.is_some());
-        let now = time::Instant::now() + timeout.unwrap();
-        test_pair.server.on_timeout(now);
 
         // Continue handshake
         test_pair.handshake()?;
@@ -6991,11 +7158,62 @@ pub(crate) mod tests {
             Err(Error::StreamReset(2))
         );
 
-        // Client send RESET_STREAM
+        // Client send ACK/RESET_STREAM
         let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
 
-        // Server recv RESET_STREAM
+        // Server recv ACK/RESET_STREAM
         TestPair::conn_packets_in(&mut test_pair.server, packets)?;
+        assert_eq!(test_pair.server.streams.is_closed(sid), true);
+        assert_eq!(test_pair.server.stream_readable(sid), false);
+        assert_eq!(
+            test_pair.server.stream_read(sid, &mut buf),
+            Err(Error::StreamStateError)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn stream_shutdown_abnormal() -> Result<()> {
+        let mut test_pair = TestPair::new_with_test_config()?;
+        assert_eq!(test_pair.handshake(), Ok(()));
+        let mut buf = vec![0; 16];
+
+        // Client send data on a stream
+        let (sid, data) = (0, TestPair::new_test_data(10));
+        test_pair.client.stream_write(sid, data.clone(), false)?;
+        let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+
+        // Server shutdown the stream (Read/Write)
+        TestPair::conn_packets_in(&mut test_pair.server, packets)?;
+        test_pair.server.stream_shutdown(sid, Shutdown::Read, 1)?;
+        test_pair.server.stream_shutdown(sid, Shutdown::Write, 2)?;
+        let packets = TestPair::conn_packets_out(&mut test_pair.server)?;
+
+        // Client recv STOP_SENDING/RESET_STREAM
+        TestPair::conn_packets_in(&mut test_pair.client, packets)?;
+
+        // Client send ACK
+        let mut ack_ranges = RangeSet::new(1);
+        ack_ranges.insert(0..2);
+        let frame = frame::Frame::Ack {
+            ack_delay: 0,
+            ack_ranges,
+            ecn_counts: None,
+        };
+        test_pair.build_packet_and_send(PacketType::OneRTT, &[frame], false)?;
+        assert_eq!(test_pair.server.streams.is_closed(sid), false);
+
+        // Client send RESET_STREAM
+        let frame = frame::Frame::ResetStream {
+            stream_id: 0,
+            error_code: 1,
+            final_size: 10,
+        };
+        test_pair.build_packet_and_send(PacketType::OneRTT, &[frame], false)?;
+
+        // Server stream 0 should be closed now
+        assert_eq!(test_pair.server.streams.is_closed(sid), true);
         assert_eq!(test_pair.server.stream_readable(sid), false);
         assert_eq!(
             test_pair.server.stream_read(sid, &mut buf),
