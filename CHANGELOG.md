@@ -11,6 +11,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [v1.1.0] - 2024-08-20
+
+### Added
+- Buffer undecryptable Handshake and OneRtt packets during the handshake phase
+- Update some comments about stream
+
+### Fixed
+- Fix the closure of the stream that was reset by the peer
+- Fix the suboptimal performance in multipath transmission caused by pacing
+
+
 ## [v1.0.0] - 2024-08-01
 
 ### Added
