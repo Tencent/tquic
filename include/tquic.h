@@ -712,6 +712,14 @@ void quic_config_enable_stateless_reset(struct quic_config_t *config, bool enabl
 void quic_config_set_cid_len(struct quic_config_t *config, uint8_t v);
 
 /**
+ * Set the anti-amplification factor.
+ *
+ * The server limits the data sent to an unvalidated address to
+ * `anti_amplification_factor` times the received data.
+ */
+void quic_config_set_anti_amplification_factor(struct quic_config_t *config, uint8_t v);
+
+/**
  * Set the batch size for sending packets.
  * Applicable to Endpoint only.
  */

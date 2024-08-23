@@ -504,6 +504,15 @@ pub extern "C" fn quic_config_set_cid_len(config: &mut Config, v: u8) {
     config.set_cid_len(v as usize);
 }
 
+/// Set the anti-amplification factor.
+///
+/// The server limits the data sent to an unvalidated address to
+/// `anti_amplification_factor` times the received data.
+#[no_mangle]
+pub extern "C" fn quic_config_set_anti_amplification_factor(config: &mut Config, v: u8) {
+    config.set_anti_amplification_factor(v as usize);
+}
+
 /// Set the batch size for sending packets.
 /// Applicable to Endpoint only.
 #[no_mangle]
