@@ -1,63 +1,83 @@
 #!/usr/bin/env python3
 
+# This tool is used to analyze TQUIC debug logs and produce a time-offset figure
+# for the specified QUIC stream.
+
 import re
 
 from datetime import datetime
 import argparse
 import matplotlib.pyplot as plt
 
-# Set up the command line argument parser
-parser = argparse.ArgumentParser(description='Analyze TQUIC logs to get the relationship between stream offset and time.')
-parser.add_argument('log_file', type=str, help='Path to the TQUIC log file')
-parser.add_argument('connection_trace_id', type=str, help='Connection trace id, eg. SERVER-c6d45bc005585f42')
-parser.add_argument('stream_id', type=int, help='Stream id, eg. 0')
-args = parser.parse_args()
 
 def parse_log(log_file, cid, stream_id):
-    with open(log_file, 'r') as file:
+    with open(log_file, "r") as file:
         log_data = file.readlines()
 
     timestamps = []
     offsets = []
 
     # Refine the regular expression to match timestamps and stream offsets
-    timestamp_pattern = re.compile(r'\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3})Z')
-    connection_stream_pattern = re.compile(r'{} sent packet OneRTT.*?STREAM id={} off=(\d+) len=\d+ fin=(?:true|false)'.format(cid, stream_id))
-    
+    timestamp_pattern = re.compile(r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3})Z")
+    connection_stream_pattern = re.compile(
+        r"{} sent packet OneRTT.*?STREAM id={} off=(\d+) len=\d+ fin=(?:true|false)".format(
+            cid, stream_id
+        )
+    )
+
     for line in log_data:
-            
-            timestamp_match = timestamp_pattern.search(line)
-            if not timestamp_match:
-                continue
+        timestamp_match = timestamp_pattern.search(line)
+        if not timestamp_match:
+            continue
 
-            connection_stream_frame_match = connection_stream_pattern.search(line)
-            if connection_stream_frame_match:
-                timestamp_str = timestamp_match.group(1)
-                timestamp = datetime.strptime(timestamp_str, '%Y-%m-%dT%H:%M:%S.%f')
-                current_offset = int(connection_stream_frame_match.group(1))
+        connection_stream_frame_match = connection_stream_pattern.search(line)
+        if not connection_stream_frame_match:
+            continue
 
-                timestamps.append(timestamp)
-                offsets.append(current_offset)
+        timestamp_str = timestamp_match.group(1)
+        timestamp = datetime.strptime(timestamp_str, "%Y-%m-%dT%H:%M:%S.%f")
+        current_offset = int(connection_stream_frame_match.group(1))
+        timestamps.append(timestamp)
+        offsets.append(current_offset)
 
     return timestamps, offsets
 
-def plot_offsets(timestamps, offsets, connection_trace_id, stream_id):
 
-    #Get connection id and set output file name
-    cid = connection_trace_id.split('-')[1]
+def plot_offsets(timestamps, offsets, connection_trace_id, stream_id):
+    # Get connection id and set output file name
+    cid = connection_trace_id.split("-")[1]
     output_file_name = "tquic_time_offset_{}_{}.png".format(cid, stream_id)
 
     plt.figure(figsize=(20, 6))
-    plt.plot(timestamps, offsets,marker='.', linewidth=0.5)
-    plt.xlabel('Time')
-    plt.ylabel('Stream Offset')
-    plt.title(f'Stream {stream_id} Offset by Time in Connection {cid}')
-    plt.gca().xaxis.set_major_formatter(plt.matplotlib.dates.DateFormatter('%H:%M:%S'))
-    #plt.show()
+    plt.plot(timestamps, offsets, marker=".", linewidth=0.5)
+    plt.xlabel("Time")
+    plt.ylabel("Stream Offset")
+    plt.title(f"Stream {stream_id} Offset by Time in Connection {cid}")
+    plt.gca().xaxis.set_major_formatter(
+        plt.matplotlib.dates.DateFormatter("%H:%M:%S.%f")
+    )
     plt.savefig(output_file_name)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
+    # Set up the command line argument parser
+    parser = argparse.ArgumentParser(
+        description="Analyze TQUIC logs to get the relationship between stream offset and time."
+    )
+    parser.add_argument(
+        "--log_file", type=str, help="Path to the TQUIC debug log file", required=True
+    )
+    parser.add_argument(
+        "--connection_trace_id",
+        type=str,
+        help="Connection trace id, eg. SERVER-c6d45bc005585f42",
+        required=True,
+    )
+    parser.add_argument("--stream_id", type=int, help="Stream id, eg. 0", required=True)
+    args = parser.parse_args()
 
     # Calling with command-line arguments
-    timestamps, offsets = parse_log(args.log_file, args.connection_trace_id, args.stream_id)
+    timestamps, offsets = parse_log(
+        args.log_file, args.connection_trace_id, args.stream_id
+    )
     plot_offsets(timestamps, offsets, args.connection_trace_id, args.stream_id)
