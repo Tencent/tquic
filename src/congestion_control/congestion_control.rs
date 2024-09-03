@@ -30,6 +30,7 @@ pub use bbr3::Bbr3;
 pub use bbr3::Bbr3Config;
 pub use copa::Copa;
 pub use copa::CopaConfig;
+pub use copa::COPA_DELTA;
 pub use cubic::Cubic;
 pub use cubic::CubicConfig;
 pub use dummy::Dummy;
