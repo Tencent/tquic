@@ -342,6 +342,24 @@ pub extern "C" fn quic_config_set_bbr_probe_bw_cwnd_gain(config: &mut Config, v:
     config.set_bbr_probe_bw_cwnd_gain(v);
 }
 
+/// Set the delta in copa slow start state.
+#[no_mangle]
+pub extern "C" fn quic_config_set_copa_slow_start_delta(config: &mut Config, v: f64) {
+    config.set_copa_slow_start_delta(v);
+}
+
+/// Set the delta in coap steady state.
+#[no_mangle]
+pub extern "C" fn quic_config_set_copa_steady_delta(config: &mut Config, v: f64) {
+    config.set_copa_steady_delta(v);
+}
+
+/// Enable Using the rtt standing instead of the latest rtt to calculate queueing delay.
+#[no_mangle]
+pub extern "C" fn quic_config_enable_copa_use_standing_rtt(config: &mut Config, v: bool) {
+    config.enable_copa_use_standing_rtt(v);
+}
+
 /// Set the initial RTT in milliseconds. The default value is 333ms.
 /// The configuration should be changed with caution. Setting a value less than the default
 /// will cause retransmission of handshake packets to be more aggressive.

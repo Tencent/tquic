@@ -551,6 +551,21 @@ impl Config {
         self.recovery.bbr_probe_bw_cwnd_gain = v;
     }
 
+    /// Set the delta in copa slow start state.
+    pub fn set_copa_slow_start_delta(&mut self, v: f64) {
+        self.recovery.copa_slow_start_delta = v;
+    }
+
+    /// Set the delta in coap steady state.
+    pub fn set_copa_steady_delta(&mut self, v: f64) {
+        self.recovery.copa_steady_delta = v;
+    }
+
+    /// Enable Using the rtt standing instead of the latest rtt to calculate queueing delay.
+    pub fn enable_copa_use_standing_rtt(&mut self, v: bool) {
+        self.recovery.copa_use_standing_rtt = v;
+    }
+
     /// Set the initial RTT in milliseconds. The default value is 333ms.
     ///
     /// The configuration should be changed with caution. Setting a value less than the default
@@ -796,6 +811,15 @@ pub struct RecoveryConfig {
     /// The cwnd gain for ProbeBW state
     pub bbr_probe_bw_cwnd_gain: f64,
 
+    /// Delta in copa slow start state.
+    pub copa_slow_start_delta: f64,
+
+    /// Delta in coap steady state.
+    pub copa_steady_delta: f64,
+
+    /// Use rtt standing instead of latest rtt to calculate queueing delay
+    pub copa_use_standing_rtt: bool,
+
     /// The initial rtt, used before real rtt is estimated.
     pub initial_rtt: Duration,
 
@@ -827,6 +851,9 @@ impl Default for RecoveryConfig {
             bbr_probe_rtt_cwnd_gain: 0.75,
             bbr_rtprop_filter_len: Duration::from_secs(10),
             bbr_probe_bw_cwnd_gain: 2.0,
+            copa_slow_start_delta: congestion_control::COPA_DELTA,
+            copa_steady_delta: congestion_control::COPA_DELTA,
+            copa_use_standing_rtt: true,
             initial_rtt: INITIAL_RTT,
             enable_pacing: true,
             pacing_granularity: time::Duration::from_millis(1),
