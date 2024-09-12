@@ -214,7 +214,7 @@ impl Recovery {
         }
 
         // Update pacing tokens number.
-        self.pacer.on_sent(self.max_datagram_size as u64);
+        self.pacer.on_sent(sent_size as u64);
     }
 
     /// Handle packet acknowledgment event.
