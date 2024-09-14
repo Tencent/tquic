@@ -89,6 +89,9 @@ pub struct PacketNumSpace {
     /// Highest received non-probing packet number.
     pub largest_rx_non_probing_pkt_num: u64,
 
+    /// Highest received ack-eliciting packet number.
+    pub largest_rx_ack_eliciting_pkt_num: u64,
+
     /// The packet numbers to acknowledge.
     pub recv_pkt_num_need_ack: RangeSet,
 
@@ -97,6 +100,12 @@ pub struct PacketNumSpace {
 
     /// Whether an ACK frame should be generated and sent to the peer.
     pub need_send_ack: bool,
+
+    /// Number of ack-eliciting packets received since last ACK was sent
+    pub ack_eliciting_pkts_since_last_sent_ack: u64,
+
+    /// Timer used for sending a delayed ACK frame.
+    pub ack_timer: Option<Instant>,
 
     /// Sent packets metadata for loss recovery and congestion control.
     /// See RFC 9002 Section 9.1
@@ -147,9 +156,12 @@ impl PacketNumSpace {
             first_pkt_num_sent: None,
             largest_rx_pkt_time: Instant::now(),
             largest_rx_non_probing_pkt_num: 0,
+            largest_rx_ack_eliciting_pkt_num: 0,
             recv_pkt_num_need_ack: RangeSet::new(crate::MAX_ACK_RANGES),
             recv_pkt_num_win: SeqNumWindow::default(),
             need_send_ack: false,
+            ack_eliciting_pkts_since_last_sent_ack: 0,
+            ack_timer: None,
             sent: VecDeque::new(),
             lost: Vec::new(),
             acked: Vec::new(),
@@ -284,6 +296,11 @@ impl PacketNumSpaceMap {
             }
         }
         false
+    }
+
+    /// Return the lowest ack timer value among all spaces.
+    pub fn min_ack_timer(&self) -> Option<Instant> {
+        self.spaces.iter().filter_map(|(_, s)| s.ack_timer).min()
     }
 }
 
