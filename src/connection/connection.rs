@@ -3022,7 +3022,9 @@ impl Connection {
         // If there are sendable, reset, stopped, almost full, blocked streams,
         // or need to update concurrency limits, use the 0RTT/1RTT packet.
         let path = self.paths.get(pid)?;
-        if (self.is_established() || self.tls_session.is_in_early_data())
+        if (self.is_established()
+            || self.tls_session.get_keys(Level::OneRTT).seal.is_some()
+            || self.tls_session.is_in_early_data())
             && (self.need_send_handshake_done_frame()
                 || self.need_send_new_token_frame()
                 || self.local_error.as_ref().map_or(false, |e| e.is_app)
