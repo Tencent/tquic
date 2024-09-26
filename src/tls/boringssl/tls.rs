@@ -414,6 +414,13 @@ impl Context {
             SSL_CTX_set_early_data_enabled(self.as_mut_ptr(), enabled);
         }
     }
+
+    /// Set the lifetime, in seconds, of TLS 1.3 sessions created in ctx to timeout.
+    pub fn set_session_psk_dhe_timeout(&mut self, timeout: u32) {
+        unsafe {
+            SSL_CTX_set_session_psk_dhe_timeout(self.as_mut_ptr(), timeout);
+        }
+    }
 }
 
 fn get_ctx_data_from_ptr<'a, T>(ptr: *mut SslCtx, idx: c_int) -> Option<&'a mut T> {
@@ -1344,6 +1351,9 @@ extern "C" {
 
     /// Set whether early data is allowed.
     fn SSL_CTX_set_early_data_enabled(ctx: *mut SslCtx, enabled: i32);
+
+    /// Set the lifetime, in seconds, of TLS 1.3 sessions created in ctx to timeout.
+    fn SSL_CTX_set_session_psk_dhe_timeout(ctx: *mut SslCtx, timeout: u32);
 
     /// Set the session cache mode.
     fn SSL_CTX_set_session_cache_mode(ctx: *mut SslCtx, mode: c_int) -> c_int;

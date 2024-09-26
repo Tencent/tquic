@@ -800,6 +800,11 @@ void quic_tls_config_free(struct quic_tls_config_t *tls_config);
 void quic_tls_config_set_early_data_enabled(struct quic_tls_config_t *tls_config, bool enable);
 
 /**
+ * Set the session lifetime in seconds
+ */
+void quic_tls_config_set_session_timeout(struct quic_tls_config_t *tls_config, uint32_t timeout);
+
+/**
  * Set the list of supported application protocols.
  * The `protos` is a pointer that points to an array, where each element of the array is a string
  * pointer representing an application protocol identifier. For example, you can define it as

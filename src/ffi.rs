@@ -657,6 +657,12 @@ pub extern "C" fn quic_tls_config_set_early_data_enabled(tls_config: &mut TlsCon
     tls_config.set_early_data_enabled(enable)
 }
 
+/// Set the session lifetime in seconds
+#[no_mangle]
+pub extern "C" fn quic_tls_config_set_session_timeout(tls_config: &mut TlsConfig, timeout: u32) {
+    tls_config.set_session_timeout(timeout)
+}
+
 /// Set the list of supported application protocols.
 /// The `protos` is a pointer that points to an array, where each element of the array is a string
 /// pointer representing an application protocol identifier. For example, you can define it as
