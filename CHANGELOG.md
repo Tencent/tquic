@@ -11,6 +11,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [v1.2.0] - 2024-09-26
+
+### Added
+- Improve acknowledgement strategy
+- Optimize pacing for small packets
+- Add quic_tls_config_set_session_timeout() and change default session timeout
+- Add config API for copa algorithm
+- Add FFI set_anti_amplification_factor
+- Add a tool for analyzing TQUIC debug logs and produce a time-offset figure
+
+
 ## [v1.1.0] - 2024-08-20
 
 ### Added
@@ -299,6 +310,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Provide example clients and servers.
 
 
+[v1.2.0]: https://github.com/tencent/tquic/compare/v1.1.0...v1.2.0
 [v1.1.0]: https://github.com/tencent/tquic/compare/v1.0.0...v1.1.0
 [v1.0.0]: https://github.com/tencent/tquic/compare/v0.15.0...v1.0.0
 [v0.15.0]: https://github.com/tencent/tquic/compare/v0.14.0...v0.15.0
