@@ -493,6 +493,13 @@ impl Config {
         self.local_transport_params.max_ack_delay = cmp::min(v, VINT_MAX);
     }
 
+    /// Set the maximum number of ack-eliciting packets the endpoint receives before
+    /// sending an acknowledgment.
+    /// The default value is `2`.
+    pub fn set_ack_eliciting_threshold(&mut self, v: u64) {
+        self.recovery.ack_eliciting_threshold = v;
+    }
+
     /// Set congestion control algorithm that the connection would use.
     /// The default value is Bbr.
     pub fn set_congestion_control_algorithm(&mut self, cca: CongestionControlAlgorithm) {
@@ -549,6 +556,21 @@ impl Config {
     /// The default value is 2.0
     pub fn set_bbr_probe_bw_cwnd_gain(&mut self, v: f64) {
         self.recovery.bbr_probe_bw_cwnd_gain = v;
+    }
+
+    /// Set the delta in copa slow start state.
+    pub fn set_copa_slow_start_delta(&mut self, v: f64) {
+        self.recovery.copa_slow_start_delta = v;
+    }
+
+    /// Set the delta in coap steady state.
+    pub fn set_copa_steady_delta(&mut self, v: f64) {
+        self.recovery.copa_steady_delta = v;
+    }
+
+    /// Enable Using the rtt standing instead of the latest rtt to calculate queueing delay.
+    pub fn enable_copa_use_standing_rtt(&mut self, v: bool) {
+        self.recovery.copa_use_standing_rtt = v;
     }
 
     /// Set the initial RTT in milliseconds. The default value is 333ms.
@@ -763,6 +785,10 @@ pub struct RecoveryConfig {
     /// for packets in the Application Data packet number space.
     max_ack_delay: Duration,
 
+    /// The maximum number of ack-eliciting packets the endpoint receives before
+    /// sending an acknowledgment.
+    ack_eliciting_threshold: u64,
+
     /// The congestion control algorithm used for a path.
     pub congestion_control_algorithm: CongestionControlAlgorithm,
 
@@ -796,6 +822,15 @@ pub struct RecoveryConfig {
     /// The cwnd gain for ProbeBW state
     pub bbr_probe_bw_cwnd_gain: f64,
 
+    /// Delta in copa slow start state.
+    pub copa_slow_start_delta: f64,
+
+    /// Delta in coap steady state.
+    pub copa_steady_delta: f64,
+
+    /// Use rtt standing instead of latest rtt to calculate queueing delay
+    pub copa_use_standing_rtt: bool,
+
     /// The initial rtt, used before real rtt is estimated.
     pub initial_rtt: Duration,
 
@@ -818,6 +853,7 @@ impl Default for RecoveryConfig {
             enable_dplpmtud: true,
             max_datagram_size: DEFAULT_SEND_UDP_PAYLOAD_SIZE, // The upper limit is determined by DPLPMTUD
             max_ack_delay: time::Duration::from_millis(0),
+            ack_eliciting_threshold: 2,
             congestion_control_algorithm: CongestionControlAlgorithm::Bbr,
             min_congestion_window: 2_u64,
             initial_congestion_window: 10_u64,
@@ -827,6 +863,9 @@ impl Default for RecoveryConfig {
             bbr_probe_rtt_cwnd_gain: 0.75,
             bbr_rtprop_filter_len: Duration::from_secs(10),
             bbr_probe_bw_cwnd_gain: 2.0,
+            copa_slow_start_delta: congestion_control::COPA_DELTA,
+            copa_steady_delta: congestion_control::COPA_DELTA,
+            copa_use_standing_rtt: true,
             initial_rtt: INITIAL_RTT,
             enable_pacing: true,
             pacing_granularity: time::Duration::from_millis(1),

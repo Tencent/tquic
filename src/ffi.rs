@@ -342,6 +342,24 @@ pub extern "C" fn quic_config_set_bbr_probe_bw_cwnd_gain(config: &mut Config, v:
     config.set_bbr_probe_bw_cwnd_gain(v);
 }
 
+/// Set the delta in copa slow start state.
+#[no_mangle]
+pub extern "C" fn quic_config_set_copa_slow_start_delta(config: &mut Config, v: f64) {
+    config.set_copa_slow_start_delta(v);
+}
+
+/// Set the delta in coap steady state.
+#[no_mangle]
+pub extern "C" fn quic_config_set_copa_steady_delta(config: &mut Config, v: f64) {
+    config.set_copa_steady_delta(v);
+}
+
+/// Enable Using the rtt standing instead of the latest rtt to calculate queueing delay.
+#[no_mangle]
+pub extern "C" fn quic_config_enable_copa_use_standing_rtt(config: &mut Config, v: bool) {
+    config.enable_copa_use_standing_rtt(v);
+}
+
 /// Set the initial RTT in milliseconds. The default value is 333ms.
 /// The configuration should be changed with caution. Setting a value less than the default
 /// will cause retransmission of handshake packets to be more aggressive.
@@ -504,6 +522,15 @@ pub extern "C" fn quic_config_set_cid_len(config: &mut Config, v: u8) {
     config.set_cid_len(v as usize);
 }
 
+/// Set the anti-amplification factor.
+///
+/// The server limits the data sent to an unvalidated address to
+/// `anti_amplification_factor` times the received data.
+#[no_mangle]
+pub extern "C" fn quic_config_set_anti_amplification_factor(config: &mut Config, v: u8) {
+    config.set_anti_amplification_factor(v as usize);
+}
+
 /// Set the batch size for sending packets.
 /// Applicable to Endpoint only.
 #[no_mangle]
@@ -628,6 +655,12 @@ pub extern "C" fn quic_tls_config_free(tls_config: *mut TlsConfig) {
 #[no_mangle]
 pub extern "C" fn quic_tls_config_set_early_data_enabled(tls_config: &mut TlsConfig, enable: bool) {
     tls_config.set_early_data_enabled(enable)
+}
+
+/// Set the session lifetime in seconds
+#[no_mangle]
+pub extern "C" fn quic_tls_config_set_session_timeout(tls_config: &mut TlsConfig, timeout: u32) {
+    tls_config.set_session_timeout(timeout)
 }
 
 /// Set the list of supported application protocols.

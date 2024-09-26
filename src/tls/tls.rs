@@ -124,6 +124,9 @@ impl TlsConfig {
         tls_config.set_private_key_file(key_file)?;
         tls_config.set_application_protos(application_protos)?;
         tls_config.set_early_data_enabled(enable_early_data);
+        // TLS 1.3 sets a limit of seven days on the time between the original
+        // connection and any attempt to use 0-RTT.
+        tls_config.set_session_timeout(7 * 24 * 60 * 60);
 
         Ok(tls_config)
     }
@@ -131,6 +134,11 @@ impl TlsConfig {
     /// Set whether early data is allowed.
     pub fn set_early_data_enabled(&mut self, enable_early_data: bool) {
         self.tls_ctx.set_early_data_enabled(enable_early_data)
+    }
+
+    /// Set the session lifetime in seconds
+    pub fn set_session_timeout(&mut self, timeout: u32) {
+        self.tls_ctx.set_session_psk_dhe_timeout(timeout)
     }
 
     /// Set the list of supported application protocols.

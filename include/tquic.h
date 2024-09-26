@@ -598,6 +598,21 @@ void quic_config_set_bbr_rtprop_filter_len(struct quic_config_t *config, uint64_
 void quic_config_set_bbr_probe_bw_cwnd_gain(struct quic_config_t *config, double v);
 
 /**
+ * Set the delta in copa slow start state.
+ */
+void quic_config_set_copa_slow_start_delta(struct quic_config_t *config, double v);
+
+/**
+ * Set the delta in coap steady state.
+ */
+void quic_config_set_copa_steady_delta(struct quic_config_t *config, double v);
+
+/**
+ * Enable Using the rtt standing instead of the latest rtt to calculate queueing delay.
+ */
+void quic_config_enable_copa_use_standing_rtt(struct quic_config_t *config, bool v);
+
+/**
  * Set the initial RTT in milliseconds. The default value is 333ms.
  * The configuration should be changed with caution. Setting a value less than the default
  * will cause retransmission of handshake packets to be more aggressive.
@@ -712,6 +727,14 @@ void quic_config_enable_stateless_reset(struct quic_config_t *config, bool enabl
 void quic_config_set_cid_len(struct quic_config_t *config, uint8_t v);
 
 /**
+ * Set the anti-amplification factor.
+ *
+ * The server limits the data sent to an unvalidated address to
+ * `anti_amplification_factor` times the received data.
+ */
+void quic_config_set_anti_amplification_factor(struct quic_config_t *config, uint8_t v);
+
+/**
  * Set the batch size for sending packets.
  * Applicable to Endpoint only.
  */
@@ -775,6 +798,11 @@ void quic_tls_config_free(struct quic_tls_config_t *tls_config);
  * Set whether early data is allowed.
  */
 void quic_tls_config_set_early_data_enabled(struct quic_tls_config_t *tls_config, bool enable);
+
+/**
+ * Set the session lifetime in seconds
+ */
+void quic_tls_config_set_session_timeout(struct quic_tls_config_t *tls_config, uint32_t timeout);
 
 /**
  * Set the list of supported application protocols.
