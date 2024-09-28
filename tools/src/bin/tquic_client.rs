@@ -318,6 +318,10 @@ pub struct ClientOpt {
     #[clap(long, default_value = "1", value_name = "NUM", help_heading = "Misc")]
     pub send_batch_size: usize,
 
+    /// Disable encryption on 1-RTT packets.
+    #[clap(long, help_heading = "Misc")]
+    pub disable_encryption: bool,
+
     /// Number of max samples per thread used for request time statistics.
     #[clap(
         long,
@@ -542,6 +546,7 @@ impl Worker {
         config.enable_multipath(option.enable_multipath);
         config.set_multipath_algorithm(option.multipath_algor);
         config.set_active_connection_id_limit(option.active_cid_limit);
+        config.enable_encryption(!option.disable_encryption);
         let tls_config = TlsConfig::new_client_config(
             ApplicationProto::convert_to_vec(&option.alpn),
             option.enable_early_data,

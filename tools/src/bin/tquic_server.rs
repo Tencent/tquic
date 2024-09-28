@@ -244,6 +244,10 @@ pub struct ServerOpt {
         help_heading = "Misc"
     )]
     pub zerortt_buffer_size: usize,
+
+    /// Disable encryption on 1-RTT packets.
+    #[clap(long, help_heading = "Misc")]
+    pub disable_encryption: bool,
 }
 
 const MAX_BUF_SIZE: usize = 65536;
@@ -286,6 +290,7 @@ impl Server {
         config.enable_multipath(option.enable_multipath);
         config.set_multipath_algorithm(option.multipath_algor);
         config.set_active_connection_id_limit(option.active_cid_limit);
+        config.enable_encryption(!option.disable_encryption);
 
         if let Some(address_token_key) = &option.address_token_key {
             let address_token_key = convert_address_token_key(address_token_key);
