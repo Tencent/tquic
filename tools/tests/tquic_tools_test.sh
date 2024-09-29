@@ -27,6 +27,8 @@ TEST_PID="$$"
 TEST_FILE="10M"
 PATH_NUM=4
 LOG_LEVEL="debug"
+CLI_OPTIONS=""
+SRV_OPTIONS=""
 EXIT_CODE=0
 
 cleanup() {
@@ -48,10 +50,12 @@ show_help() {
     echo "  -f, File size for test cases, eg. 10M"
     echo "  -p, Path number for test cases, eg. 4"
     echo "  -g, Log level, eg. debug"
+    echo "  -c, Extra tquic_client options, eg. ~~cid-len 10"
+    echo "  -s, Extra tquic_server options, eg. ~~cid-len 10"
     echo "  -h, Display this help and exit."
 }
 
-while getopts ":b:w:t:f:p:g:lh" opt; do
+while getopts ":b:w:t:f:p:g:l:c:sh" opt; do
     case $opt in
         b)
             BIN_DIR="$OPTARG"
@@ -70,6 +74,12 @@ while getopts ":b:w:t:f:p:g:lh" opt; do
             ;;
         g)
             LOG_LEVEL="$OPTARG"
+            ;;
+        c)
+            CLI_OPTIONS="${OPTARG//\~/-}"
+            ;;
+        s)
+            SRV_OPTIONS="${OPTARG//\~/-}"
             ;;
         l)
             echo $TEST_CASES
@@ -130,7 +140,8 @@ test_multipath() {
     # start tquic server
     RUST_BACKTRACE=1 $BIN_DIR/tquic_server -l 127.0.8.8:8443 --enable-multipath --multipath-algor $algor \
         --cert $cert_dir/cert.crt --key $cert_dir/cert.key --root $data_dir \
-        --active-cid-limit $CID_LIMIT --log-file $test_dir/server.log --log-level $LOG_LEVEL &
+        --active-cid-limit $CID_LIMIT --log-file $test_dir/server.log --log-level $LOG_LEVEL \
+        $SRV_OPTIONS &
     server_pid=$!
 
     # start tquic client
@@ -139,7 +150,7 @@ test_multipath() {
     RUST_BACKTRACE=1 $BIN_DIR/tquic_client -c 127.0.8.8:8443 --enable-multipath --multipath-algor $algor \
         --local-addresses $local_addresses --active-cid-limit $CID_LIMIT \
         --qlog-dir $qlog_dir --log-file $test_dir/client.log --log-level $LOG_LEVEL \
-        --dump-dir $dump_dir \
+        --dump-dir $dump_dir $CLI_OPTIONS \
         https://example.org/$TEST_FILE
 
     # check files
