@@ -95,7 +95,7 @@ const RESET_TOKEN_LEN: usize = 16;
 
 /// For the Stateless Reset to appear as a valid QUIC packet, the Unpredictable
 /// Bits field needs to include at least 38 bits of data. The minimum length of
-/// a Statless Reset Packet is 21 bytes.
+/// a Stateless Reset Packet is 21 bytes.
 const MIN_RESET_PACKET_LEN: usize = 21;
 
 /// Assuming the maximum possible connection ID and packet number size, the 1RTT
@@ -733,6 +733,14 @@ impl Config {
         } else {
             self.max_undecryptable_packets = 10;
         }
+    }
+
+    /// Enable or disable encryption on 1-RTT packets. (Experimental)
+    /// The default value is true.
+    /// WARN: The The disable_1rtt_encryption extension is not meant to be used
+    /// for any practical application protocol on the open internet.
+    pub fn enable_encryption(&mut self, v: bool) {
+        self.local_transport_params.disable_encryption = !v;
     }
 
     /// Set TLS config.

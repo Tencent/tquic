@@ -553,6 +553,15 @@ pub extern "C" fn quic_config_set_max_undecryptable_packets(config: &mut Config,
     config.set_max_undecryptable_packets(v as usize);
 }
 
+/// Enable or disable encryption on 1-RTT packets. (Experimental)
+/// The default value is true.
+/// WARN: The The disable_1rtt_encryption extension is not meant to be used
+/// for any practical application protocol on the open internet.
+#[no_mangle]
+pub extern "C" fn quic_config_enable_encryption(config: &mut Config, v: bool) {
+    config.enable_encryption(v);
+}
+
 /// Create a new TlsConfig.
 /// The caller is responsible for the memory of the TlsConfig and should properly
 /// destroy it by calling `quic_tls_config_free`.

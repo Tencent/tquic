@@ -754,6 +754,14 @@ void quic_config_set_zerortt_buffer_size(struct quic_config_t *config, uint16_t 
 void quic_config_set_max_undecryptable_packets(struct quic_config_t *config, uint16_t v);
 
 /**
+ * Enable or disable encryption on 1-RTT packets. (Experimental)
+ * The default value is true.
+ * WARN: The The disable_1rtt_encryption extension is not meant to be used
+ * for any practical application protocol on the open internet.
+ */
+void quic_config_enable_encryption(struct quic_config_t *config, bool v);
+
+/**
  * Create a new TlsConfig.
  * The caller is responsible for the memory of the TlsConfig and should properly
  * destroy it by calling `quic_tls_config_free`.
