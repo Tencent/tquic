@@ -1,0 +1,3 @@
+[target.aarch64-unknown-linux-ohos]
+ar = "${OHOS_NDK_HOME}/native/llvm/bin/llvm-ar"
+linker = ".cargo/aarch64-unknown-linux-ohos-clang.sh"

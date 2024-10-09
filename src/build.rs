@@ -57,6 +57,10 @@ const CMAKE_PARAMS_IOS: &[(&str, &[(&str, &str)])] = &[
     ),
 ];
 
+/// Additional parameters for Ohos
+const CMAKE_PARAMS_OHOS_NDK: &[(&str, &[(&str, &str)])] =
+    &[("aarch64", &[("OHOS_ARCH", "arm64-v8a")])];
+
 /// Create a cmake::Config for building BoringSSL.
 fn new_boringssl_cmake_config() -> cmake::Config {
     let target = std::env::var("TARGET").unwrap();
@@ -98,6 +102,26 @@ fn new_boringssl_cmake_config() -> cmake::Config {
                     }
                     break;
                 }
+            }
+        }
+
+        "linux" => {
+            if target.ends_with("ohos") {
+                for (ohos_arch, params) in CMAKE_PARAMS_OHOS_NDK {
+                    if *ohos_arch == arch {
+                        for (name, value) in *params {
+                            boringssl_cmake.define(name, value);
+                        }
+                        break;
+                    }
+                }
+
+                let ohos_ndk_home = std::env::var("OHOS_NDK_HOME")
+                    .expect("Please set OHOS_NDK_HOME for Harmony build");
+                let ohos_ndk_home = std::path::Path::new(&ohos_ndk_home);
+                let toolchain_file = ohos_ndk_home.join("native/build/cmake/ohos.toolchain.cmake");
+                let toolchain_file = toolchain_file.to_str().unwrap();
+                boringssl_cmake.define("CMAKE_TOOLCHAIN_FILE", toolchain_file);
             }
         }
 
