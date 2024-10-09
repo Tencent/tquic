@@ -832,7 +832,7 @@ pub extern "C" fn quic_endpoint_new(
         context: sender_ctx,
     });
     let e = Endpoint::new(config.clone(), is_server, handler, sender);
-    Box::into_raw(config);
+    let _ = Box::into_raw(config);
     Box::into_raw(Box::new(e))
 }
 
