@@ -123,6 +123,30 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ github.workspace }}/android-ndk-r${{ env.NDK_LTS_VER  }}
 
+  build_harmony:
+    name: Build for Harmony
+    runs-on: ubuntu-latest
+    env:
+      TARGET: "aarch64-unknown-linux-ohos"
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: 'recursive'
+      - name: Install rust toolchain
+        run: rustup target add ${{ env.TARGET }}
+      - name: Download OHOS NDK
+        run: |
+          wget https://repo.huaweicloud.com/openharmony/os/4.0-Release/ohos-sdk-windows_linux-public.tar.gz
+          tar -xvzf ohos-sdk-windows_linux-public.tar.gz
+          cd ohos-sdk/linux/
+          unzip -q native-linux-x64-4.0.10.13-Release.zip
+      - name: Run cargo build
+        run: |
+          OHOS_NDK_HOME=${{ github.workspace }}/ohos-sdk/linux/ \
+          CC_aarch64_unknown_linux_ohos=${OHOS_NDK_HOME}/native/llvm/bin/clang \
+          AR_aarch64_unknown_linux_ohos=${OHOS_NDK_HOME}/native/llvm/bin/llvm-ar \
+          cargo build --target ${{ env.TARGET }} --verbose --features ffi --release
+
   static_analysis:
     name: Static analysis
     runs-on: ubuntu-latest
