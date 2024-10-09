@@ -113,6 +113,12 @@ pub struct TransportParams {
     /// This parameter has a zero-length value.
     /// See draft-ietf-quic-multipath-05.
     pub enable_multipath: bool,
+
+    /// The parameter is used to negotiate the disablement of encryption on 1-RTT
+    /// packets. It is only meant to be used in environments where both endpoints
+    /// completely trust the path between themselves.
+    /// See draft-banks-quic-disable-encryption-00.
+    pub disable_encryption: bool,
 }
 
 impl TransportParams {
@@ -254,6 +260,10 @@ impl TransportParams {
                     tp.enable_multipath = true;
                 }
 
+                0xbaad => {
+                    tp.disable_encryption = true;
+                }
+
                 // Ignore unknown parameters.
                 _ => (),
             }
@@ -387,6 +397,11 @@ impl TransportParams {
             buf.write_varint(0)?;
         }
 
+        if tp.disable_encryption {
+            buf.write_varint(0xbaad)?;
+            buf.write_varint(0)?;
+        }
+
         Ok(len - buf.len())
     }
 
@@ -464,6 +479,7 @@ impl Default for TransportParams {
             retry_source_connection_id: None,
 
             enable_multipath: false,
+            disable_encryption: false,
         }
     }
 }
@@ -563,6 +579,7 @@ mod tests {
             initial_source_connection_id: Some(ConnectionId::random()),
             retry_source_connection_id: None,
             enable_multipath: true,
+            disable_encryption: false,
         };
 
         // encode on the client side
@@ -606,6 +623,7 @@ mod tests {
             initial_source_connection_id: Some(ConnectionId::random()),
             retry_source_connection_id: Some(ConnectionId::random()),
             enable_multipath: false,
+            disable_encryption: true,
         };
 
         // encode on the server side

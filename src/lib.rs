@@ -735,6 +735,14 @@ impl Config {
         }
     }
 
+    /// Enable or disable encryption on 1-RTT packets. (Experimental)
+    /// The default value is true.
+    /// WARN: The The disable_1rtt_encryption extension is not meant to be used
+    /// for any practical application protocol on the open internet.
+    pub fn enable_encryption(&mut self, v: bool) {
+        self.local_transport_params.disable_encryption = !v;
+    }
+
     /// Set TLS config.
     pub fn set_tls_config(&mut self, tls_config: tls::TlsConfig) {
         self.set_tls_config_selector(Arc::new(tls::DefaultTlsConfigSelector {

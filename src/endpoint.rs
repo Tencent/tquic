@@ -2720,6 +2720,26 @@ mod tests {
     }
 
     #[test]
+    fn transfer_single_stream_disable_encryption() -> Result<()> {
+        let mut t = TestPair::new();
+
+        let mut cli_conf = TestPair::new_test_config(false)?;
+        cli_conf.enable_encryption(false);
+        let mut srv_conf = TestPair::new_test_config(true)?;
+        srv_conf.enable_encryption(false);
+
+        let mut case_conf = CaseConf::default();
+        case_conf.session = Some(TestPair::new_test_session_state());
+        case_conf.client_0rtt_expected = true;
+        case_conf.resumption_expected = true;
+        case_conf.request_num = 1;
+        case_conf.request_size = 1024 * 16;
+
+        t.run(cli_conf, srv_conf, case_conf)?;
+        Ok(())
+    }
+
+    #[test]
     fn transfer_multi_stream_normal() -> Result<()> {
         let mut t = TestPair::new();
 
