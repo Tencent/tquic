@@ -58,8 +58,11 @@ const CMAKE_PARAMS_IOS: &[(&str, &[(&str, &str)])] = &[
 ];
 
 /// Additional parameters for Ohos
-const CMAKE_PARAMS_OHOS_NDK: &[(&str, &[(&str, &str)])] =
-    &[("aarch64", &[("OHOS_ARCH", "arm64-v8a")])];
+const CMAKE_PARAMS_OHOS_NDK: &[(&str, &[(&str, &str)])] = &[
+    ("aarch64", &[("OHOS_ARCH", "arm64-v8a")]),
+    ("arm", &[("OHOS_ARCH", "armeabi-v7a")]),
+    ("x86_64", &[("OHOS_ARCH", "x86_64")]),
+];
 
 /// Create a cmake::Config for building BoringSSL.
 fn new_boringssl_cmake_config() -> cmake::Config {
@@ -112,7 +115,11 @@ fn new_boringssl_cmake_config() -> cmake::Config {
                         for (name, value) in *params {
                             boringssl_cmake.define(name, value);
                         }
-                        break;
+                        // common arguments for ohos help us to ignore some error
+                        boringssl_cmake
+                            .define("CMAKE_C_FLAGS", "-Wno-unused-command-line-argument");
+                        boringssl_cmake
+                            .define("CMAKE_CXX_FLAGS", "-Wno-unused-command-line-argument");
                     }
                 }
 
