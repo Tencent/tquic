@@ -18,3 +18,5 @@ Cargo.lock
 
 # Misc
 .DS_Store
+
+dist
