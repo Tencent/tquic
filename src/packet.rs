@@ -533,11 +533,13 @@ pub(crate) fn decrypt_payload(
 /// The `pkt_buf` is the raw data of a QUIC packet.
 /// The `pkt_num_offset` is the offset of Packet Number field in `pkt_buf`.
 /// The `hdr` is the partially parsed header return by PacketHeader::from().
+/// The `plaintext_mode` is used for the `disable_1rtt_encryption` extension.
 pub(crate) fn decrypt_header(
     pkt_buf: &mut [u8],
     pkt_num_offset: usize,
     hdr: &mut PacketHeader,
     aead: &Open,
+    plaintext_mode: bool,
 ) -> Result<()> {
     if pkt_buf.len() < pkt_num_offset + MAX_PKT_NUM_LEN + SAMPLE_LEN {
         return Err(Error::BufferTooShort);
@@ -546,20 +548,25 @@ pub(crate) fn decrypt_header(
     let mut first = pkt_buf[0];
     let sample_start = pkt_num_offset + MAX_PKT_NUM_LEN;
     let sample = &pkt_buf[sample_start..sample_start + SAMPLE_LEN];
+    let mask = aead.new_mask(sample)?;
 
     // Remove protection of bits in the first byte
-    let mask = aead.new_mask(sample)?;
-    if PacketHeader::long_header(first) {
-        first ^= mask[0] & 0x0f;
-    } else {
-        first ^= mask[0] & 0x1f;
+    if !plaintext_mode {
+        if PacketHeader::long_header(first) {
+            first ^= mask[0] & 0x0f;
+        } else {
+            first ^= mask[0] & 0x1f;
+        }
     }
 
-    // Remove protection of packet number field
     let pkt_num_len = usize::from((first & PKT_NUM_LEN_MASK) + 1);
     let pkt_num_buf = &mut pkt_buf[pkt_num_offset..pkt_num_offset + pkt_num_len];
-    for i in 0..pkt_num_len {
-        pkt_num_buf[i] ^= mask[i + 1];
+
+    // Remove protection of packet number field
+    if !plaintext_mode {
+        for i in 0..pkt_num_len {
+            pkt_num_buf[i] ^= mask[i + 1];
+        }
     }
 
     // Extract packet number corresponding to the length.
@@ -1339,7 +1346,7 @@ mod tests {
 
         // Decrypt QUIC packet header on the server
         let (open, _) = tls::derive_initial_secrets(&hdr.dcid, hdr.version, true)?;
-        decrypt_header(&mut pkt[..], pkt_num_off, &mut hdr, &open)?;
+        decrypt_header(&mut pkt[..], pkt_num_off, &mut hdr, &open, false)?;
         assert_eq!(hdr.pkt_num_len, 4);
 
         hdr.pkt_num = decode_packet_num(0, hdr.pkt_num, hdr.pkt_num_len);
@@ -1406,7 +1413,7 @@ mod tests {
 
         // Decrypt QUIC packet header on the client
         let (open, _) = tls::derive_initial_secrets(&odcid, hdr.version, false)?;
-        decrypt_header(&mut pkt[..], pkt_num_off, &mut hdr, &open)?;
+        decrypt_header(&mut pkt[..], pkt_num_off, &mut hdr, &open, false)?;
         assert_eq!(hdr.pkt_num_len, 2);
 
         hdr.pkt_num = decode_packet_num(0, hdr.pkt_num, hdr.pkt_num_len);
@@ -1516,7 +1523,7 @@ mod tests {
         assert_eq!(hdr.key_phase, pkt_hdr.key_phase);
 
         let open = Open::new_with_secret(tls::Algorithm::ChaCha20Poly1305, secret.to_vec())?;
-        decrypt_header(&mut out, read, &mut hdr, &open)?;
+        decrypt_header(&mut out, read, &mut hdr, &open, false)?;
         assert_eq!(hdr.pkt_num_len, pkt_hdr.pkt_num_len);
         assert_eq!(hdr.pkt_num, pkt_hdr.pkt_num);
 
@@ -1557,7 +1564,7 @@ mod tests {
             key_phase: false,
         };
         assert_eq!(
-            decrypt_header(bw, 10, &mut hdr, &open),
+            decrypt_header(bw, 10, &mut hdr, &open, false),
             Err(Error::BufferTooShort)
         );
         assert_eq!(
