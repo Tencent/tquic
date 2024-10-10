@@ -115,11 +115,7 @@ fn new_boringssl_cmake_config() -> cmake::Config {
                         for (name, value) in *params {
                             boringssl_cmake.define(name, value);
                         }
-                        // common arguments for ohos help us to ignore some error
-                        boringssl_cmake
-                            .define("CMAKE_C_FLAGS", "-Wno-unused-command-line-argument");
-                        boringssl_cmake
-                            .define("CMAKE_CXX_FLAGS", "-Wno-unused-command-line-argument");
+                        break;
                     }
                 }
 
@@ -129,6 +125,9 @@ fn new_boringssl_cmake_config() -> cmake::Config {
                 let toolchain_file = ohos_ndk_home.join("native/build/cmake/ohos.toolchain.cmake");
                 let toolchain_file = toolchain_file.to_str().unwrap();
                 boringssl_cmake.define("CMAKE_TOOLCHAIN_FILE", toolchain_file);
+                // common arguments for ohos help us to ignore some error
+                boringssl_cmake.define("CMAKE_C_FLAGS", "-Wno-unused-command-line-argument");
+                boringssl_cmake.define("CMAKE_CXX_FLAGS", "-Wno-unused-command-line-argument");
             }
         }
 
