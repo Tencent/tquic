@@ -11,10 +11,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [v1.3.1] - 2024-10-11
+
+### Added
+- Use ohrs to build tquic for HarmaryOS
+- Support building for HarmonyOS on arm/x86_64 architecture
+
+
 ## [v1.3.0] - 2024-10-10
 
 ### Added
-- Support building for HarmonyOS
+- Support building for HarmonyOS on aarch64 architecture
 - Support disable_1rtt_encryption transport parameter
 - Support sending 1-RTT packets on the server before handshake completion
 - Resolve new issues found by cargo clippy
@@ -319,6 +326,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Provide example clients and servers.
 
 
+[v1.3.1]: https://github.com/tencent/tquic/compare/v1.3.0...v1.3.1
 [v1.3.0]: https://github.com/tencent/tquic/compare/v1.2.0...v1.3.0
 [v1.2.0]: https://github.com/tencent/tquic/compare/v1.1.0...v1.2.0
 [v1.1.0]: https://github.com/tencent/tquic/compare/v1.0.0...v1.1.0
