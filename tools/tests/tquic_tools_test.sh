@@ -55,7 +55,7 @@ show_help() {
     echo "  -h, Display this help and exit."
 }
 
-while getopts ":b:w:t:f:p:g:l:c:sh" opt; do
+while getopts ":b:w:t:f:p:g:c:s:lh" opt; do
     case $opt in
         b)
             BIN_DIR="$OPTARG"
