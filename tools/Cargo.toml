@@ -20,6 +20,7 @@ clap = { version = "=4.2.5", features = ["derive"] }
 rustc-hash = "1.1"
 slab = "0.4"
 rand = "0.8.5"
+regex = "1.11.0"
 statrs = "0.16"
 signal-hook = "0.3.17"
 tquic = { path = "..", version = "1.3.1"}
