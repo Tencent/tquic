@@ -1680,7 +1680,11 @@ impl Connection {
             .tls_session
             .get_overhead(level)
             .ok_or(Error::InternalError)?;
-        let total_overhead = pkt_num_offset + pkt_num_len + crypto_overhead;
+        let total_overhead = if !self.is_encryption_disabled(hdr.pkt_type) {
+            pkt_num_offset + pkt_num_len + crypto_overhead
+        } else {
+            pkt_num_offset + pkt_num_len
+        };
 
         match left.checked_sub(total_overhead) {
             Some(val) => left = val,
@@ -1727,6 +1731,8 @@ impl Connection {
         // fields) in bytes
         let payload_len = write_status.written;
         if pkt_type != PacketType::OneRTT {
+            // Note: This type of packet is always encrypted, even if the disable_1rtt_encryption
+            // transport parameter is successfully negotiated.
             let len = pkt_num_len + payload_len + crypto_overhead;
             let mut out = &mut out[hdr_offset..];
             out.write_varint_with_len(len as u64, crate::LENGTH_FIELD_LEN)?;
