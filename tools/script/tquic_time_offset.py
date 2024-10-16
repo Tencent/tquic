@@ -65,15 +65,22 @@ if __name__ == "__main__":
         description="Analyze TQUIC logs to get the relationship between stream offset and time."
     )
     parser.add_argument(
-        "--log_file", type=str, help="Path to the TQUIC debug log file", required=True
+        "-l",
+        "--log_file",
+        type=str,
+        help="Path to the TQUIC debug log file",
+        required=True,
     )
     parser.add_argument(
+        "-c",
         "--connection_trace_id",
         type=str,
         help="Connection trace id, eg. SERVER-c6d45bc005585f42",
         required=True,
     )
-    parser.add_argument("--stream_id", type=int, help="Stream id, eg. 0", required=True)
+    parser.add_argument(
+        "-s", "--stream_id", type=int, help="Stream id, eg. 0", required=True
+    )
     args = parser.parse_args()
 
     # Calling with command-line arguments
