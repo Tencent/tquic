@@ -1775,6 +1775,7 @@ impl Connection {
             in_flight: write_status.in_flight,
             has_data: write_status.has_data,
             pmtu_probe: write_status.is_pmtu_probe,
+            pacing: write_status.pacing,
             frames: write_status.frames,
             rate_sample_state: Default::default(),
             buffer_flags: write_status.buffer_flags,
@@ -1918,6 +1919,7 @@ impl Connection {
         if !st.is_probe && !r.can_send() {
             return Err(Error::Done);
         }
+        st.pacing = true;
 
         // Write PMTU probe frames
         // Note: To probe the path MTU, the write size will exceed `left` but
@@ -4460,6 +4462,9 @@ struct FrameWriteStatus {
 
     /// Whether it is a PMTU probe packet
     is_pmtu_probe: bool,
+
+    /// Whether it consumes the pacer's tokens
+    pacing: bool,
 
     /// Packet overhead (i.e. packet header and crypto overhead) in bytes
     overhead: usize,
