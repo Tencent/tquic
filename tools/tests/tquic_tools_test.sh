@@ -38,9 +38,6 @@ cleanup() {
     exit $EXIT_CODE
 }
 
-# Ensure that all child processes have exited.
-trap 'cleanup' EXIT
-
 show_help() {
     echo "Usage: $0 [options]"
     echo "  -b, Set the directory of tquic_client/tquic_server."
@@ -55,7 +52,7 @@ show_help() {
     echo "  -h, Display this help and exit."
 }
 
-while getopts ":b:w:t:f:p:g:l:c:sh" opt; do
+while getopts ":b:w:t:f:p:g:c:s:lh" opt; do
     case $opt in
         b)
             BIN_DIR="$OPTARG"
@@ -100,6 +97,9 @@ while getopts ":b:w:t:f:p:g:l:c:sh" opt; do
             ;;
     esac
 done
+
+# Ensure that all child processes have exited.
+trap 'cleanup' EXIT
 
 if [[ ! -f "$BIN_DIR/tquic_client" || ! -f "$BIN_DIR/tquic_server" ]]; then
     echo "Not found tquic_client/tquic_server. Please specify the directory for them by '-b' option."
