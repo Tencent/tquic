@@ -43,6 +43,7 @@ use log::info;
 use log::warn;
 use mio::event::Event;
 use rand::Rng;
+use regex::Regex;
 use rustc_hash::FxHashMap;
 use statrs::statistics::Data;
 use statrs::statistics::Distribution;
@@ -1015,9 +1016,32 @@ impl RequestSender {
         }
     }
 
-    fn send_request(&mut self, conn: &mut Connection) -> Result<()> {
+    fn get_url(&self) -> Url {
         let url = &self.option.urls[self.current_url_idx];
-        let mut request = Request::new("GET", url, &None, &self.option.dump_dir);
+        let path = url.path();
+
+        // Define the regex pattern to match %random[min:max]} and check if the pattern matches
+        let re = Regex::new(r"\%random\[(\d+):(\d+)\]").unwrap();
+        if !re.is_match(path) {
+            return url.clone();
+        }
+        // Replace the random[min-max] with a random number in the specified range
+        let new_path = re.replace_all(path, |caps: &regex::Captures| {
+            let min: u32 = caps[1].parse().unwrap();
+            let max: u32 = caps[2].parse().unwrap();
+            let random_number = rand::thread_rng().gen_range(min..=max);
+            random_number.to_string()
+        });
+
+        // Construct the new URL
+        let mut new_url = url.clone();
+        new_url.set_path(&new_path);
+        new_url
+    }
+
+    fn send_request(&mut self, conn: &mut Connection) -> Result<()> {
+        let url = self.get_url();
+        let mut request = Request::new("GET", &url, &None, &self.option.dump_dir);
         debug!(
             "{} send request {} current index {}",
             conn.trace_id(),
