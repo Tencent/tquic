@@ -23,3 +23,7 @@ jobs:
       run: |
         cd tools/tests/
         bash ./tquic_tools_test.sh -b ../../target/release/ -t multipath_redundant,multipath_minrtt,multipath_roundrobin -f 1000M -p 5
+    - name: Run integration tests for disable_1rtt_encryption
+      run: |
+        cd tools/tests/
+        bash ./tquic_tools_test.sh -b ../../target/release/ -t multipath_minrtt -c '~~disable-encryption' -s '~~disable-encryption'

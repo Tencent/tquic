@@ -541,33 +541,43 @@ pub(crate) fn decrypt_header(
     aead: &Open,
     plaintext_mode: bool,
 ) -> Result<()> {
-    if pkt_buf.len() < pkt_num_offset + MAX_PKT_NUM_LEN + SAMPLE_LEN {
+    let pkt_buf_min = if !plaintext_mode {
+        pkt_num_offset + MAX_PKT_NUM_LEN + SAMPLE_LEN
+    } else {
+        // All aspects of encryption on 1-RTT packets are removed and it is no
+        // longer including an AEAD tag.
+        pkt_num_offset + MAX_PKT_NUM_LEN
+    };
+    if pkt_buf.len() < pkt_buf_min {
         return Err(Error::BufferTooShort);
     }
 
+    // Decrypt packet haader if needed
     let mut first = pkt_buf[0];
-    let sample_start = pkt_num_offset + MAX_PKT_NUM_LEN;
-    let sample = &pkt_buf[sample_start..sample_start + SAMPLE_LEN];
-    let mask = aead.new_mask(sample)?;
-
-    // Remove protection of bits in the first byte
-    if !plaintext_mode {
+    let (pkt_num_len, pkt_num_buf) = if !plaintext_mode {
+        // Remove protection of bits in the first byte
+        let sample_start = pkt_num_offset + MAX_PKT_NUM_LEN;
+        let sample = &pkt_buf[sample_start..sample_start + SAMPLE_LEN];
+        let mask = aead.new_mask(sample)?;
         if PacketHeader::long_header(first) {
             first ^= mask[0] & 0x0f;
         } else {
             first ^= mask[0] & 0x1f;
         }
-    }
 
-    let pkt_num_len = usize::from((first & PKT_NUM_LEN_MASK) + 1);
-    let pkt_num_buf = &mut pkt_buf[pkt_num_offset..pkt_num_offset + pkt_num_len];
+        let pkt_num_len = usize::from((first & PKT_NUM_LEN_MASK) + 1);
+        let pkt_num_buf = &mut pkt_buf[pkt_num_offset..pkt_num_offset + pkt_num_len];
 
-    // Remove protection of packet number field
-    if !plaintext_mode {
+        // Remove protection of packet number field
         for i in 0..pkt_num_len {
             pkt_num_buf[i] ^= mask[i + 1];
         }
-    }
+        (pkt_num_len, pkt_num_buf)
+    } else {
+        let pkt_num_len = usize::from((first & PKT_NUM_LEN_MASK) + 1);
+        let pkt_num_buf = &mut pkt_buf[pkt_num_offset..pkt_num_offset + pkt_num_len];
+        (pkt_num_len, pkt_num_buf)
+    };
 
     // Extract packet number corresponding to the length.
     let pkt_num = {
