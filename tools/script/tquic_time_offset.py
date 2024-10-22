@@ -9,8 +9,10 @@ from datetime import datetime
 import argparse
 import matplotlib.pyplot as plt
 
+STREAM_SEND_FORMAT=r"{} sent packet OneRTT.*?STREAM id={} off=(\d+) len=\d+ fin=(?:true|false)"
+STREAM_RECV_FORMAT=r"{} recv frame STREAM id={} off=(\d+) len=\d+ fin=(?:true|false)"
 
-def parse_log(log_file, cid, stream_id):
+def parse_log(log_file, cid, stream_id, recv):
     with open(log_file, "r") as file:
         log_data = file.readlines()
 
@@ -19,11 +21,8 @@ def parse_log(log_file, cid, stream_id):
 
     # Refine the regular expression to match timestamps and stream offsets
     timestamp_pattern = re.compile(r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3})Z")
-    connection_stream_pattern = re.compile(
-        r"{} sent packet OneRTT.*?STREAM id={} off=(\d+) len=\d+ fin=(?:true|false)".format(
-            cid, stream_id
-        )
-    )
+    stream_format = STREAM_RECV_FORMAT if recv else STREAM_SEND_FORMAT
+    connection_stream_pattern = re.compile(stream_format.format(cid, stream_id))
 
     for line in log_data:
         timestamp_match = timestamp_pattern.search(line)
@@ -57,6 +56,7 @@ def plot_offsets(timestamps, offsets, connection_trace_id, stream_id):
         plt.matplotlib.dates.DateFormatter("%H:%M:%S.%f")
     )
     plt.savefig(output_file_name)
+    print("Found %d items, figure %s" % (len(timestamps), output_file_name))
 
 
 if __name__ == "__main__":
@@ -81,10 +81,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "-s", "--stream_id", type=int, help="Stream id, eg. 0", required=True
     )
+    parser.add_argument(
+        "-r", "--recv", type=bool, help="Recv side instead of send side", default=False
+    )
     args = parser.parse_args()
 
     # Calling with command-line arguments
     timestamps, offsets = parse_log(
-        args.log_file, args.connection_trace_id, args.stream_id
+        args.log_file, args.connection_trace_id, args.stream_id, args.recv
     )
     plot_offsets(timestamps, offsets, args.connection_trace_id, args.stream_id)
