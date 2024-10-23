@@ -26,6 +26,7 @@ use self::PacketType::*;
 use crate::codec::Decoder;
 use crate::codec::Encoder;
 use crate::connection::space::SpaceId;
+#[cfg(feature = "qlog")]
 use crate::qlog;
 use crate::ranges;
 use crate::tls;
@@ -132,6 +133,7 @@ impl PacketType {
     }
 
     /// Get the packet type for Qlog.
+    #[cfg(feature = "qlog")]
     pub fn to_qlog(self) -> qlog::events::PacketType {
         match self {
             VersionNegotiation => qlog::events::PacketType::VersionNegotiation,
