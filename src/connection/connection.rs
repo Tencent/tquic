@@ -52,7 +52,9 @@ use crate::multipath_scheduler::*;
 use crate::packet;
 use crate::packet::PacketHeader;
 use crate::packet::PacketType;
+#[cfg(feature = "qlog")]
 use crate::qlog;
+#[cfg(feature = "qlog")]
 use crate::qlog::events;
 use crate::tls;
 use crate::tls::Keys;
@@ -160,6 +162,7 @@ pub struct Connection {
     context: Option<Box<dyn Any + Send + Sync>>,
 
     /// Qlog writer
+    #[cfg(feature = "qlog")]
     qlog: Option<qlog::QlogWriter>,
 
     /// Unique trace id for deubg logging
@@ -272,6 +275,7 @@ impl Connection {
             events: EventQueue::default(),
             queues: None,
             context: None,
+            #[cfg(feature = "qlog")]
             qlog: None,
             trace_id,
         };
@@ -357,6 +361,7 @@ impl Connection {
     /// Set qlog output to the given [`writer`]
     ///
     /// [`Writer`]: https://doc.rust-lang.org/std/io/trait.Write.html
+    #[cfg(feature = "qlog")]
     pub fn set_qlog(
         &mut self,
         writer: Box<dyn std::io::Write + Send + Sync>,
@@ -603,6 +608,7 @@ impl Connection {
         // Process each QUIC frame in the QUIC packet
         let mut ack_eliciting_pkt = false;
         let mut probing_pkt = true;
+        #[cfg(feature = "qlog")]
         let mut qframes = vec![];
 
         while !payload.is_empty() {
@@ -613,6 +619,7 @@ impl Connection {
             if !frame.probing() {
                 probing_pkt = false;
             }
+            #[cfg(feature = "qlog")]
             if self.qlog.is_some() {
                 qframes.push(frame.to_qlog());
             }
@@ -622,6 +629,7 @@ impl Connection {
         }
 
         // Write events to qlog.
+        #[cfg(feature = "qlog")]
         if let Some(qlog) = &mut self.qlog {
             // Write TransportPacketReceived event to qlog.
             Self::qlog_quic_packet_received(qlog, &hdr, pkt_num, read, payload_len, qframes);
@@ -750,6 +758,7 @@ impl Connection {
                     space_id,
                     &mut self.spaces,
                     handshake_status,
+                    #[cfg(feature = "qlog")]
                     self.qlog.as_mut(),
                     now,
                 )?;
@@ -1205,6 +1214,7 @@ impl Connection {
         self.flags.insert(AppliedPeerTransportParams);
 
         // Write TransportParametersSet event to qlog.
+        #[cfg(feature = "qlog")]
         if let Some(qlog) = &mut self.qlog {
             Self::qlog_quic_params_set(
                 qlog,
@@ -1427,6 +1437,7 @@ impl Connection {
                             .on_stream_frame_acked(stream_id, offset, length);
 
                         // Write QuicStreamDataMoved event to qlog
+                        #[cfg(feature = "qlog")]
                         if let Some(qlog) = &mut self.qlog {
                             Self::qlog_quic_data_acked(qlog, stream_id, offset, length);
                         }
@@ -1788,6 +1799,7 @@ impl Connection {
         );
 
         // Write events to qlog.
+        #[cfg(feature = "qlog")]
         if let Some(qlog) = &mut self.qlog {
             // Write TransportPacketSent event to qlog.
             let mut qframes = Vec::with_capacity(sent_pkt.frames.len());
@@ -3231,6 +3243,7 @@ impl Connection {
                                 path.space_id,
                                 &mut self.spaces,
                                 handshake_status,
+                                #[cfg(feature = "qlog")]
                                 self.qlog.as_mut(),
                                 now,
                             );
@@ -3238,6 +3251,7 @@ impl Connection {
                             self.stats.lost_bytes += lost_bytes;
 
                             // Write RecoveryMetricsUpdate event to qlog.
+                            #[cfg(feature = "qlog")]
                             if let Some(qlog) = &mut self.qlog {
                                 path.recovery.qlog_recovery_metrics_updated(qlog);
                             }
@@ -3832,6 +3846,7 @@ impl Connection {
         match self.streams.stream_read(stream_id, out) {
             Ok((read, fin)) => {
                 // Write QuicStreamDataMoved event to qlog
+                #[cfg(feature = "qlog")]
                 if let Some(qlog) = &mut self.qlog {
                     Self::qlog_transport_data_read(qlog, stream_id, read_off.unwrap_or(0), read);
                 }
@@ -3850,6 +3865,7 @@ impl Connection {
         match self.streams.stream_write(stream_id, buf, fin) {
             Ok(written) => {
                 // Write QuicStreamDataMoved event to qlog
+                #[cfg(feature = "qlog")]
                 if let Some(qlog) = &mut self.qlog {
                     Self::qlog_transport_data_write(
                         qlog,
@@ -4072,6 +4088,7 @@ impl Connection {
     }
 
     /// Write a QuicParametersSet event to the qlog.
+    #[cfg(feature = "qlog")]
     fn qlog_quic_params_set(
         qlog: &mut qlog::QlogWriter,
         params: &TransportParams,
@@ -4083,6 +4100,7 @@ impl Connection {
     }
 
     /// Write a QuicPacketReceived event to the qlog.
+    #[cfg(feature = "qlog")]
     fn qlog_quic_packet_received(
         qlog: &mut qlog::QlogWriter,
         hdr: &PacketHeader,
@@ -4118,6 +4136,7 @@ impl Connection {
     }
 
     /// Write a QuicPacketSent event to the qlog.
+    #[cfg(feature = "qlog")]
     fn qlog_quic_packet_sent(
         qlog: &mut qlog::QlogWriter,
         hdr: &PacketHeader,
@@ -4156,6 +4175,7 @@ impl Connection {
     }
 
     /// Write a QuicStreamDataMoved event to the qlog.
+    #[cfg(feature = "qlog")]
     fn qlog_quic_data_acked(
         qlog: &mut qlog::QlogWriter,
         stream_id: u64,
@@ -4174,6 +4194,7 @@ impl Connection {
     }
 
     /// Write a QuicStreamDataMoved event to the qlog.
+    #[cfg(feature = "qlog")]
     fn qlog_transport_data_read(
         qlog: &mut qlog::QlogWriter,
         stream_id: u64,
@@ -4192,6 +4213,7 @@ impl Connection {
     }
 
     /// Write a QuicStreamDataMoved event to the qlog.
+    #[cfg(feature = "qlog")]
     fn qlog_transport_data_write(
         qlog: &mut qlog::QlogWriter,
         stream_id: u64,
@@ -6277,6 +6299,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg(feature = "qlog")]
     fn ping() -> Result<()> {
         let mut client_config = TestPair::new_test_config(false)?;
         client_config.enable_dplpmtud(false);
@@ -7638,6 +7661,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg(feature = "qlog")]
     fn conn_write_qlog() -> Result<()> {
         let clog = NamedTempFile::new().unwrap();
         let mut cfile = clog.reopen().unwrap();

@@ -19,11 +19,14 @@ use crate::codec::Decoder;
 use crate::codec::Encoder;
 use crate::error::Error;
 use crate::packet::PacketType;
+#[cfg(feature = "qlog")]
 use crate::qlog;
+#[cfg(feature = "qlog")]
 use crate::qlog::events::ErrorSpace;
+#[cfg(feature = "qlog")]
 use crate::qlog::events::QuicFrame;
+#[cfg(feature = "qlog")]
 use crate::qlog::events::StreamType;
-use crate::qlog::events::TokenType;
 use crate::ranges::RangeSet;
 use crate::token::ResetToken;
 use crate::ConnectionId;
@@ -767,6 +770,7 @@ impl Frame {
         }
     }
 
+    #[cfg(feature = "qlog")]
     pub fn to_qlog(&self) -> QuicFrame {
         match self {
             Frame::Paddings { .. } => QuicFrame::Padding,

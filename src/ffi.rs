@@ -114,6 +114,7 @@ use crate::h3::Http3Config;
 use crate::h3::Http3Event;
 use crate::h3::Http3Headers;
 use crate::h3::NameValue;
+#[cfg(feature = "qlog")]
 use crate::qlog::events;
 use crate::tls::SslCtx;
 use crate::tls::TlsConfig;
@@ -1390,6 +1391,7 @@ pub extern "C" fn quic_conn_set_keylog_fd(conn: &mut Connection, fd: c_int) {
 /// `data` is a qlog message and `argp` is user-defined data that will be passed to the callback.
 /// `title` and `desc` respectively refer to the "title" and "description" sections of qlog.
 #[no_mangle]
+#[cfg(feature = "qlog")]
 pub extern "C" fn quic_conn_set_qlog(
     conn: &mut Connection,
     cb: extern "C" fn(data: *const u8, data_len: size_t, argp: *mut c_void),
@@ -1412,6 +1414,7 @@ pub extern "C" fn quic_conn_set_qlog(
 /// Set qlog file.
 /// Note: The API is not applicable for Windows.
 #[no_mangle]
+#[cfg(feature = "qlog")]
 #[cfg(unix)]
 pub extern "C" fn quic_conn_set_qlog_fd(
     conn: &mut Connection,
