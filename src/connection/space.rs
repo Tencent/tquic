@@ -369,6 +369,9 @@ pub struct SentPacket {
     /// Whether it is a PMUT probe packet
     pub pmtu_probe: bool,
 
+    /// Whether it consumes the pacer's tokens
+    pub pacing: bool,
+
     /// The number of bytes sent in the packet, not including UDP or IP overhead,
     /// but including QUIC framing overhead.
     pub sent_size: usize,
@@ -393,6 +396,7 @@ impl Default for SentPacket {
             in_flight: false,
             has_data: false,
             pmtu_probe: false,
+            pacing: false,
             sent_size: 0,
             rate_sample_state: RateSamplePacketState::default(),
             buffer_flags: BufferFlags::default(),
