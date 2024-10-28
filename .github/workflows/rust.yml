@@ -144,8 +144,11 @@ jobs:
           toolchain: stable
           target: 'aarch64-unknown-linux-ohos,armv7-unknown-linux-ohos,x86_64-unknown-linux-ohos'
 
-      - name: Run cargo build
-        run: cargo install ohrs && ohrs build -- --verbose --features ffi --release
+      - name: Install ohrs
+        run: cargo install ohrs
+
+      - name: Run ohrs build
+        run: ohrs build -- --verbose --features ffi --release
 
   static_analysis:
     name: Static analysis

@@ -1,0 +1,30 @@
+name: Features
+
+on:
+  push:
+    branches: [ "develop" ]
+  pull_request:
+    branches: [ "develop" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  features:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: 'recursive'
+    - name: Update rust
+      run: rustup update
+    - name: Build without default features
+      run: cargo build --all --no-default-features && cargo test --no-default-features
+    - name: Build with feature(s) ffi
+      run: cargo build --all --no-default-features -F ffi && cargo test --no-default-features -F ffi
+    - name: Build with feature(s) qlog
+      run: cargo build --all --no-default-features -F qlog && cargo test --no-default-features -F qlog
+    - name: Build with feature(s) ffi,qlog
+      run: cargo build --all --no-default-features -F ffi,qlog && cargo test --no-default-features -F ffi,qlog
+

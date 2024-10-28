@@ -11,6 +11,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [v1.4.0] - 2024-10-28
+
+### Added
+- Add `qlog` feature flag to reduce the size of complied library
+- Optimize pacing for acknowledgement packets
+- Minor tweaks for tquic_time_offset.py
+
+### Fixed
+- Fix checking packet header under disable_1rtt_encryption mode
+- Fix the length of trancated packet number
+- Some fixes for tquic_tools_test.sh
+
+
 ## [v1.3.1] - 2024-10-11
 
 ### Added
@@ -326,6 +339,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Provide example clients and servers.
 
 
+[v1.4.0]: https://github.com/tencent/tquic/compare/v1.3.1...v1.4.0
 [v1.3.1]: https://github.com/tencent/tquic/compare/v1.3.0...v1.3.1
 [v1.3.0]: https://github.com/tencent/tquic/compare/v1.2.0...v1.3.0
 [v1.2.0]: https://github.com/tencent/tquic/compare/v1.1.0...v1.2.0

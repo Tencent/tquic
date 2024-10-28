@@ -26,6 +26,7 @@ use self::PacketType::*;
 use crate::codec::Decoder;
 use crate::codec::Encoder;
 use crate::connection::space::SpaceId;
+#[cfg(feature = "qlog")]
 use crate::qlog;
 use crate::ranges;
 use crate::tls;
@@ -132,6 +133,7 @@ impl PacketType {
     }
 
     /// Get the packet type for Qlog.
+    #[cfg(feature = "qlog")]
     pub fn to_qlog(self) -> qlog::events::PacketType {
         match self {
             VersionNegotiation => qlog::events::PacketType::VersionNegotiation,
@@ -541,33 +543,43 @@ pub(crate) fn decrypt_header(
     aead: &Open,
     plaintext_mode: bool,
 ) -> Result<()> {
-    if pkt_buf.len() < pkt_num_offset + MAX_PKT_NUM_LEN + SAMPLE_LEN {
+    let pkt_buf_min = if !plaintext_mode {
+        pkt_num_offset + MAX_PKT_NUM_LEN + SAMPLE_LEN
+    } else {
+        // All aspects of encryption on 1-RTT packets are removed and it is no
+        // longer including an AEAD tag.
+        pkt_num_offset + MAX_PKT_NUM_LEN
+    };
+    if pkt_buf.len() < pkt_buf_min {
         return Err(Error::BufferTooShort);
     }
 
+    // Decrypt packet haader if needed
     let mut first = pkt_buf[0];
-    let sample_start = pkt_num_offset + MAX_PKT_NUM_LEN;
-    let sample = &pkt_buf[sample_start..sample_start + SAMPLE_LEN];
-    let mask = aead.new_mask(sample)?;
-
-    // Remove protection of bits in the first byte
-    if !plaintext_mode {
+    let (pkt_num_len, pkt_num_buf) = if !plaintext_mode {
+        // Remove protection of bits in the first byte
+        let sample_start = pkt_num_offset + MAX_PKT_NUM_LEN;
+        let sample = &pkt_buf[sample_start..sample_start + SAMPLE_LEN];
+        let mask = aead.new_mask(sample)?;
         if PacketHeader::long_header(first) {
             first ^= mask[0] & 0x0f;
         } else {
             first ^= mask[0] & 0x1f;
         }
-    }
 
-    let pkt_num_len = usize::from((first & PKT_NUM_LEN_MASK) + 1);
-    let pkt_num_buf = &mut pkt_buf[pkt_num_offset..pkt_num_offset + pkt_num_len];
+        let pkt_num_len = usize::from((first & PKT_NUM_LEN_MASK) + 1);
+        let pkt_num_buf = &mut pkt_buf[pkt_num_offset..pkt_num_offset + pkt_num_len];
 
-    // Remove protection of packet number field
-    if !plaintext_mode {
+        // Remove protection of packet number field
         for i in 0..pkt_num_len {
             pkt_num_buf[i] ^= mask[i + 1];
         }
-    }
+        (pkt_num_len, pkt_num_buf)
+    } else {
+        let pkt_num_len = usize::from((first & PKT_NUM_LEN_MASK) + 1);
+        let pkt_num_buf = &mut pkt_buf[pkt_num_offset..pkt_num_offset + pkt_num_len];
+        (pkt_num_len, pkt_num_buf)
+    };
 
     // Extract packet number corresponding to the length.
     let pkt_num = {
@@ -664,7 +676,7 @@ pub(crate) fn packet_num_len(pkt_num: u64, largest_acked: Option<u64>) -> usize 
         pkt_num.saturating_add(1)
     };
 
-    let min_bits = u64::BITS - num_unacked.leading_zeros(); // log(num_unacked, 2) + 1
+    let min_bits = u64::BITS - num_unacked.leading_zeros() + 1; // ceil(log(num_unacked, 2)) + 1
     ((min_bits + 7) / 8) as usize // ceil(min_bits / 8)
 }
 
@@ -1154,29 +1166,60 @@ mod tests {
     fn packet_num() -> Result<()> {
         let test_cases = [
             (0, None, 1),
-            (254, Some(0), 1),
-            (255, Some(0), 1),
-            (256, Some(0), 2),
-            (65534, Some(0), 2),
-            (65535, Some(0), 2),
-            (65536, Some(0), 3),
-            (16777214, Some(0), 3),
-            (16777215, Some(0), 3),
-            (16777216, Some(0), 4),
-            (4294967295, Some(0), 4),
-            (4294967296, Some(1), 4),
+            (127, Some(0), 1),
+            (128, Some(0), 2),
+            (129, Some(0), 2),
+            (1174, Some(996), 2),
+            (32767, Some(0), 2),
+            (32768, Some(0), 3),
+            (8388607, Some(0), 3),
+            (8388608, Some(0), 4),
+            (2147483647, Some(0), 4),
+            (2147483648, Some(1), 4),
             (4294967296, Some(4294967295), 1),
             (4611686018427387903, Some(4611686018427387902), 1),
         ];
+        const U8_MAX: u64 = (1 << 8) - 1;
+        const U16_MAX: u64 = (1 << 16) - 1;
+        const U24_MAX: u64 = (1 << 24) - 1;
+        const U32_MAX: u64 = (1 << 32) - 1;
+
         let mut buf = [0; 4];
         for case in test_cases {
             let pkt_num = case.0;
             let largest_acked = case.1;
             let pkt_num_len = packet_num_len(pkt_num, largest_acked);
             assert_eq!(pkt_num_len, case.2);
+            // The sender MUST use a packet number size able to represent more
+            // than twice as large a range as the difference between the largest
+            // acknowledged packet number and the packet number being sent.
+            let range = (pkt_num - largest_acked.unwrap_or(0)) * 2 as u64;
+            if range <= U8_MAX {
+                assert!(pkt_num_len == 1);
+            } else if range <= U16_MAX {
+                assert!(pkt_num_len == 2);
+            } else if range <= U24_MAX {
+                assert!(pkt_num_len == 3);
+            } else if range <= U32_MAX {
+                assert!(pkt_num_len == 4);
+            } else {
+                unreachable!();
+            }
 
             let len = encode_packet_num(pkt_num, pkt_num_len, &mut buf[..])?;
             assert_eq!(len, pkt_num_len);
+
+            let mut b = &buf[..];
+            let pkt_num_truncated = match len {
+                1 => u64::from(b.read_u8()?),
+                2 => u64::from(b.read_u16()?),
+                3 => u64::from(b.read_u24()?),
+                4 => u64::from(b.read_u32()?),
+                _ => unreachable!(),
+            };
+            let pkt_num_decoded =
+                decode_packet_num(largest_acked.unwrap_or(0), pkt_num_truncated, len);
+            assert_eq!(pkt_num, pkt_num_decoded);
         }
 
         // Test case in A.2. Sample Packet Number Encoding Algorithm

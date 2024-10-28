@@ -22,7 +22,9 @@ use crate::codec;
 use crate::codec::Decoder;
 use crate::codec::Encoder;
 use crate::error::Error;
+#[cfg(feature = "qlog")]
 use crate::qlog;
+#[cfg(feature = "qlog")]
 use crate::qlog::events::EventData;
 use crate::tls;
 use crate::token::ResetToken;
@@ -406,6 +408,7 @@ impl TransportParams {
     }
 
     /// Create TransportParametersSet event data for Qlog.
+    #[cfg(feature = "qlog")]
     pub fn to_qlog(&self, owner: qlog::events::Owner, cipher: Option<tls::Algorithm>) -> EventData {
         let original_destination_connection_id = Some(format!(
             "{:?}",

@@ -47,6 +47,7 @@
 //! and dependencies:
 //!
 //! * `ffi`: Build and expose the FFI API.
+//! * `qlog`: Enable support for the qlog.
 
 #![allow(unused_imports)]
 #![allow(dead_code)]
@@ -1238,6 +1239,7 @@ mod tls;
 #[path = "h3/h3.rs"]
 pub mod h3;
 
+#[cfg(feature = "qlog")]
 #[path = "qlog/qlog.rs"]
 mod qlog;
 
