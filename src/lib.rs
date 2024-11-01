@@ -46,8 +46,9 @@
 //! TQUIC defines several feature flags to reduce the amount of compiled code
 //! and dependencies:
 //!
-//! * `ffi`: Build and expose the FFI API.
-//! * `qlog`: Enable support for the qlog.
+//! * `ffi`: Build and expose the FFI API
+//! * `qlog`: Enable support for qlog
+//! * `h3`: Enable support for HTTP/3
 
 #![allow(unused_imports)]
 #![allow(dead_code)]
@@ -1236,6 +1237,7 @@ mod multipath_scheduler;
 #[path = "tls/tls.rs"]
 mod tls;
 
+#[cfg(feature = "h3")]
 #[path = "h3/h3.rs"]
 pub mod h3;
 

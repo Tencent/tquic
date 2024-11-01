@@ -108,11 +108,17 @@ pub struct iovec {
 use crate::codec::Decoder;
 use crate::connection::ConnectionStats;
 use crate::error::Error;
+#[cfg(feature = "h3")]
 use crate::h3::connection::Http3Connection;
+#[cfg(feature = "h3")]
 use crate::h3::connection::Http3Priority;
+#[cfg(feature = "h3")]
 use crate::h3::Http3Config;
+#[cfg(feature = "h3")]
 use crate::h3::Http3Event;
+#[cfg(feature = "h3")]
 use crate::h3::Http3Headers;
+#[cfg(feature = "h3")]
 use crate::h3::NameValue;
 #[cfg(feature = "qlog")]
 use crate::qlog::events;
@@ -2064,6 +2070,7 @@ pub extern "C" fn quic_packet_header_info(
 }
 
 /// Create default config for HTTP3.
+#[cfg(feature = "h3")]
 #[no_mangle]
 pub extern "C" fn http3_config_new() -> *mut Http3Config {
     match Http3Config::new() {
@@ -2073,6 +2080,7 @@ pub extern "C" fn http3_config_new() -> *mut Http3Config {
 }
 
 /// Destroy the HTTP3 config.
+#[cfg(feature = "h3")]
 #[no_mangle]
 pub extern "C" fn http3_config_free(config: *mut Http3Config) {
     unsafe {
@@ -2082,6 +2090,7 @@ pub extern "C" fn http3_config_free(config: *mut Http3Config) {
 
 /// Set the `SETTINGS_MAX_FIELD_SECTION_SIZE` setting.
 /// By default no limit is enforced.
+#[cfg(feature = "h3")]
 #[no_mangle]
 pub extern "C" fn http3_config_set_max_field_section_size(config: &mut Http3Config, v: u64) {
     config.set_max_field_section_size(v);
@@ -2089,6 +2098,7 @@ pub extern "C" fn http3_config_set_max_field_section_size(config: &mut Http3Conf
 
 /// Set the `SETTINGS_QPACK_MAX_TABLE_CAPACITY` setting.
 /// The default value is `0`.
+#[cfg(feature = "h3")]
 #[no_mangle]
 pub extern "C" fn http3_config_set_qpack_max_table_capacity(config: &mut Http3Config, v: u64) {
     config.set_qpack_max_table_capacity(v);
@@ -2096,6 +2106,7 @@ pub extern "C" fn http3_config_set_qpack_max_table_capacity(config: &mut Http3Co
 
 /// Set the `SETTINGS_QPACK_BLOCKED_STREAMS` setting.
 /// The default value is `0`.
+#[cfg(feature = "h3")]
 #[no_mangle]
 pub extern "C" fn http3_config_set_qpack_blocked_streams(config: &mut Http3Config, v: u64) {
     config.set_qpack_blocked_streams(v);
@@ -2104,6 +2115,7 @@ pub extern "C" fn http3_config_set_qpack_blocked_streams(config: &mut Http3Confi
 /// Create an HTTP/3 connection using the given QUIC connection. It also
 /// initiate the HTTP/3 handshake by opening all control streams and sending
 /// the local settings.
+#[cfg(feature = "h3")]
 #[no_mangle]
 pub extern "C" fn http3_conn_new(
     quic_conn: &mut Connection,
@@ -2116,6 +2128,7 @@ pub extern "C" fn http3_conn_new(
 }
 
 /// Destroy the HTTP/3 connection.
+#[cfg(feature = "h3")]
 #[no_mangle]
 pub extern "C" fn http3_conn_free(conn: *mut Http3Connection) {
     unsafe {
@@ -2124,6 +2137,7 @@ pub extern "C" fn http3_conn_free(conn: *mut Http3Connection) {
 }
 
 /// Send goaway with the given id.
+#[cfg(feature = "h3")]
 #[no_mangle]
 pub extern "C" fn http3_send_goaway(
     conn: &mut Http3Connection,
@@ -2137,6 +2151,7 @@ pub extern "C" fn http3_send_goaway(
 }
 
 /// Set HTTP/3 connection events handler.
+#[cfg(feature = "h3")]
 #[no_mangle]
 pub extern "C" fn http3_conn_set_events_handler(
     conn: &mut Http3Connection,
@@ -2148,6 +2163,7 @@ pub extern "C" fn http3_conn_set_events_handler(
 }
 
 /// Process HTTP/3 settings.
+#[cfg(feature = "h3")]
 #[no_mangle]
 pub extern "C" fn http3_for_each_setting(
     conn: &Http3Connection,
@@ -2171,6 +2187,7 @@ pub extern "C" fn http3_for_each_setting(
 }
 
 /// Process internal events of all streams of the specified HTTP/3 connection.
+#[cfg(feature = "h3")]
 #[no_mangle]
 pub extern "C" fn http3_conn_process_streams(
     conn: &mut Http3Connection,
@@ -2183,6 +2200,7 @@ pub extern "C" fn http3_conn_process_streams(
 }
 
 /// Process HTTP/3 headers.
+#[cfg(feature = "h3")]
 #[no_mangle]
 pub extern "C" fn http3_for_each_header(
     headers: &Http3Headers,
@@ -2212,6 +2230,7 @@ pub extern "C" fn http3_for_each_header(
 }
 
 /// Return true if all the data has been read from the stream.
+#[cfg(feature = "h3")]
 #[no_mangle]
 pub extern "C" fn http3_stream_read_finished(conn: &mut Connection, stream_id: u64) -> bool {
     conn.stream_finished(stream_id)
@@ -2219,6 +2238,7 @@ pub extern "C" fn http3_stream_read_finished(conn: &mut Connection, stream_id: u
 
 /// Create a new HTTP/3 request stream.
 /// On success the stream ID is returned.
+#[cfg(feature = "h3")]
 #[no_mangle]
 pub extern "C" fn http3_stream_new(conn: &mut Http3Connection, quic_conn: &mut Connection) -> i64 {
     match conn.stream_new_with_priority(quic_conn, &Http3Priority::default()) {
@@ -2229,6 +2249,7 @@ pub extern "C" fn http3_stream_new(conn: &mut Http3Connection, quic_conn: &mut C
 
 /// Create a new HTTP/3 request stream with the given priority.
 /// On success the stream ID is returned.
+#[cfg(feature = "h3")]
 #[no_mangle]
 pub extern "C" fn http3_stream_new_with_priority(
     conn: &mut Http3Connection,
@@ -2242,6 +2263,7 @@ pub extern "C" fn http3_stream_new_with_priority(
 }
 
 /// Close the given HTTP/3 stream.
+#[cfg(feature = "h3")]
 #[no_mangle]
 pub extern "C" fn http3_stream_close(
     conn: &mut Http3Connection,
@@ -2255,6 +2277,7 @@ pub extern "C" fn http3_stream_close(
 }
 
 /// Set priority for an HTTP/3 stream.
+#[cfg(feature = "h3")]
 #[no_mangle]
 pub extern "C" fn http3_stream_set_priority(
     conn: &mut Http3Connection,
@@ -2268,6 +2291,7 @@ pub extern "C" fn http3_stream_set_priority(
     }
 }
 
+#[cfg(feature = "h3")]
 #[repr(C)]
 pub struct Header {
     name: *mut u8,
@@ -2277,6 +2301,7 @@ pub struct Header {
 }
 
 /// Send HTTP/3 request or response headers on the given stream.
+#[cfg(feature = "h3")]
 #[no_mangle]
 pub extern "C" fn http3_send_headers(
     conn: &mut Http3Connection,
@@ -2295,6 +2320,7 @@ pub extern "C" fn http3_send_headers(
 }
 
 /// Send HTTP/3 request or response body on the given stream.
+#[cfg(feature = "h3")]
 #[no_mangle]
 pub extern "C" fn http3_send_body(
     conn: &mut Http3Connection,
@@ -2316,6 +2342,7 @@ pub extern "C" fn http3_send_body(
 }
 
 /// Read request/response body from the given stream.
+#[cfg(feature = "h3")]
 #[no_mangle]
 pub extern "C" fn http3_recv_body(
     conn: &mut Http3Connection,
@@ -2336,6 +2363,7 @@ pub extern "C" fn http3_recv_body(
 }
 
 /// Parse HTTP/3 priority data.
+#[cfg(feature = "h3")]
 #[no_mangle]
 pub extern "C" fn http3_parse_extensible_priority(
     priority: *const u8,
@@ -2356,6 +2384,7 @@ pub extern "C" fn http3_parse_extensible_priority(
 
 /// Send a PRIORITY_UPDATE frame on the control stream with specified
 /// request stream ID and priority.
+#[cfg(feature = "h3")]
 #[no_mangle]
 pub extern "C" fn http3_send_priority_update_for_request(
     conn: &mut Http3Connection,
@@ -2370,6 +2399,7 @@ pub extern "C" fn http3_send_priority_update_for_request(
 }
 
 /// Take the last PRIORITY_UPDATE for the given stream.
+#[cfg(feature = "h3")]
 #[no_mangle]
 pub extern "C" fn http3_take_priority_update(
     conn: &mut Http3Connection,
@@ -2395,6 +2425,7 @@ pub extern "C" fn http3_take_priority_update(
 }
 
 /// Convert HTTP/3 header.
+#[cfg(feature = "h3")]
 fn headers_from_ptr<'a>(ptr: *const Header, len: size_t) -> Vec<h3::HeaderRef<'a>> {
     let headers = unsafe { slice::from_raw_parts(ptr, len) };
 
@@ -2433,6 +2464,7 @@ pub extern "C" fn quic_set_logger(
     }
 }
 
+#[cfg(feature = "h3")]
 #[repr(C)]
 pub struct Http3Methods {
     /// Called when the stream got headers.
@@ -2455,18 +2487,24 @@ pub struct Http3Methods {
     pub on_conn_goaway: Option<fn(ctx: *mut c_void, stream_id: u64)>,
 }
 
+#[cfg(feature = "h3")]
 #[repr(transparent)]
 pub struct Http3Context(*mut c_void);
 
+#[cfg(feature = "h3")]
 #[repr(C)]
 pub struct Http3Handler {
     pub methods: *const Http3Methods,
     pub context: Http3Context,
 }
 
+#[cfg(feature = "h3")]
 unsafe impl Send for Http3Handler {}
+
+#[cfg(feature = "h3")]
 unsafe impl Sync for Http3Handler {}
 
+#[cfg(feature = "h3")]
 impl crate::h3::Http3Handler for Http3Handler {
     fn on_stream_headers(&self, stream_id: u64, ev: &mut Http3Event) {
         unsafe {

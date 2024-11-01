@@ -25,6 +25,14 @@ jobs:
       run: cargo build --all --no-default-features -F ffi && cargo test --no-default-features -F ffi
     - name: Build with feature(s) qlog
       run: cargo build --all --no-default-features -F qlog && cargo test --no-default-features -F qlog
+    - name: Build with feature(s) h3
+      run: cargo build --all --no-default-features -F h3 && cargo test --no-default-features -F h3
     - name: Build with feature(s) ffi,qlog
       run: cargo build --all --no-default-features -F ffi,qlog && cargo test --no-default-features -F ffi,qlog
+    - name: Build with feature(s) ffi,h3
+      run: cargo build --all --no-default-features -F ffi,h3 && cargo test --no-default-features -F ffi,h3
+    - name: Build with feature(s) qlog,h3
+      run: cargo build --all --no-default-features -F qlog,h3 && cargo test --no-default-features -F qlog,h3
+    - name: Build with feature(s) ffi,qlog,h3
+      run: cargo build --all --no-default-features -F ffi,qlog,h3 && cargo test --no-default-features -F ffi,qlog,h3
 
