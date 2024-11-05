@@ -1516,7 +1516,7 @@ pub extern "C" fn quic_stream_write(
 /// Create a new quic stream with the given id and priority.
 /// This is a low-level API for stream creation. It is recommended to use
 /// `quic_stream_bidi_new` for bidirectional streams or `quic_stream_uni_new`
-/// for unidrectional streams.
+/// for undirectional streams.
 #[no_mangle]
 pub extern "C" fn quic_stream_new(
     conn: &mut Connection,
