@@ -97,7 +97,7 @@ pub struct Endpoint {
     /// The endpoint is shutdown.
     closed: bool,
 
-    /// The unique trace id for the enpdoint
+    /// The unique trace id for the endpoint
     trace_id: String,
 }
 

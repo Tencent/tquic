@@ -165,7 +165,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix the issue where bbr3 cannot exit slow start due to high packet loss rate
 
 ### Security
-- Limit memory consuption for tracking closed stream ids
+- Limit memory consumption for tracking closed stream ids
 
 
 ## [v0.9.0] - 2024-04-10

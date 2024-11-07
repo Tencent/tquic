@@ -214,7 +214,7 @@ impl StreamMap {
         }
     }
 
-    /// Create a new unidrectional stream with given stream priority.
+    /// Create a new undirectional stream with given stream priority.
     /// Return id of the created stream upon success.
     pub fn stream_uni_new(&mut self, urgency: u8, incremental: bool) -> Result<u64> {
         let stream_id = self.next_stream_id_uni;
