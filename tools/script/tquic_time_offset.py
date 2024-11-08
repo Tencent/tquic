@@ -9,8 +9,11 @@ from datetime import datetime
 import argparse
 import matplotlib.pyplot as plt
 
-STREAM_SEND_FORMAT=r"{} sent packet OneRTT.*?STREAM id={} off=(\d+) len=\d+ fin=(?:true|false)"
-STREAM_RECV_FORMAT=r"{} recv frame STREAM id={} off=(\d+) len=\d+ fin=(?:true|false)"
+STREAM_SEND_FORMAT = (
+    r"{} sent packet OneRTT.*?STREAM id={} off=(\d+) len=\d+ fin=(?:true|false)"
+)
+STREAM_RECV_FORMAT = r"{} recv frame STREAM id={} off=(\d+) len=\d+ fin=(?:true|false)"
+
 
 def parse_log(log_file, cid, stream_id, recv):
     with open(log_file, "r") as file:
@@ -68,21 +71,29 @@ if __name__ == "__main__":
         "-l",
         "--log_file",
         type=str,
-        help="Path to the TQUIC debug log file",
+        help="path to the TQUIC debug log file",
         required=True,
     )
     parser.add_argument(
         "-c",
         "--connection_trace_id",
         type=str,
-        help="Connection trace id, eg. SERVER-c6d45bc005585f42",
+        help="connection trace id, eg. SERVER-c6d45bc005585f42",
         required=True,
     )
     parser.add_argument(
-        "-s", "--stream_id", type=int, help="Stream id, eg. 0", required=True
+        "-s",
+        "--stream_id",
+        type=int,
+        help="stream id (default 0), eg. 0",
+        default=0,
     )
     parser.add_argument(
-        "-r", "--recv", type=bool, help="Recv side instead of send side", default=False
+        "-r",
+        "--recv",
+        type=bool,
+        help="recv side instead of send side (default false)",
+        default=False,
     )
     args = parser.parse_args()
 

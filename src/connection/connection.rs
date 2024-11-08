@@ -2032,7 +2032,7 @@ impl Connection {
         Ok(())
     }
 
-    /// Write PATH_RESPONSE/PATH_CHALLENGE frams if needed.
+    /// Write PATH_RESPONSE/PATH_CHALLENGE frames if needed.
     fn try_write_path_validation_frames(
         &mut self,
         out: &mut [u8],
@@ -3885,7 +3885,7 @@ impl Connection {
     /// Create a new stream with given stream id and priority.
     /// This is a low-level API for stream creation. It is recommended to use
     /// `stream_bidi_new` for bidirectional streams or `stream_uni_new` for
-    /// unidrectional streams.
+    /// undirectional streams.
     pub fn stream_new(&mut self, stream_id: u64, urgency: u8, incremental: bool) -> Result<()> {
         self.stream_set_priority(stream_id, urgency, incremental)
     }
@@ -3897,7 +3897,7 @@ impl Connection {
         self.streams.stream_bidi_new(urgency, incremental)
     }
 
-    /// Create a new unidrectional stream with given stream priority.
+    /// Create a new undirectional stream with given stream priority.
     /// Return id of the created stream upon success.
     pub fn stream_uni_new(&mut self, urgency: u8, incremental: bool) -> Result<u64> {
         self.mark_tickable(true);

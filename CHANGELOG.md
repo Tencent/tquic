@@ -11,6 +11,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [v1.5.0] - 2024-10-28
+
+### Added
+- Add h3 feature flag to reduce the size of complied library
+- Add tquic_time_cwnd.py for analyzing TQUIC debug logs and produce a time-cwnd figure
+
+### Fixed
+- Fix the typos detected by the latest typo-cli
+
+
 ## [v1.4.0] - 2024-10-28
 
 ### Added
@@ -165,7 +175,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix the issue where bbr3 cannot exit slow start due to high packet loss rate
 
 ### Security
-- Limit memory consuption for tracking closed stream ids
+- Limit memory consumption for tracking closed stream ids
 
 
 ## [v0.9.0] - 2024-04-10
@@ -339,6 +349,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Provide example clients and servers.
 
 
+[v1.5.0]: https://github.com/tencent/tquic/compare/v1.4.0...v1.5.0
 [v1.4.0]: https://github.com/tencent/tquic/compare/v1.3.1...v1.4.0
 [v1.3.1]: https://github.com/tencent/tquic/compare/v1.3.0...v1.3.1
 [v1.3.0]: https://github.com/tencent/tquic/compare/v1.2.0...v1.3.0
