@@ -1708,7 +1708,11 @@ impl Connection {
         }
 
         // Encode packet number
-        let len = packet::encode_packet_num(pkt_num, pkt_num_len, &mut out[pkt_num_offset..])?;
+        let len = packet::encode_packet_num(
+            pkt_num,
+            pkt_num_len,
+            &mut out[pkt_num_offset..pkt_num_offset + pkt_num_len],
+        )?;
         let payload_offset = pkt_num_offset + len;
 
         // Write frames into the packet payload
