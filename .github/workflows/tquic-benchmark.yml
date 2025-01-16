@@ -11,7 +11,7 @@ env:
 jobs:
   config:
     name: Prepare config
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     outputs:
       benchmark_date: ${{ steps.set-benchmark-date.outputs.benchmark_date }}
       benchmark_impls: ${{ steps.set-implements.outputs.benchmark_impls }}
@@ -43,7 +43,7 @@ jobs:
 
   build_tquic:
     name: Build tquic
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     needs: config
     steps:
     - uses: actions/checkout@v4
@@ -75,7 +75,7 @@ jobs:
 
   build_lsquic:
     name: Build lsquic
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     needs: config
     steps:
     - uses: actions/checkout@v4
@@ -109,7 +109,7 @@ jobs:
 
   gen_cert:
     name: Generate cert
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     needs: config
     steps:
     - name: Generate cert
@@ -124,7 +124,7 @@ jobs:
 
   gen_files:
     name: Generate files
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     needs: config
     steps:
     - name: Generate files
@@ -142,7 +142,7 @@ jobs:
   run_long_conn:
     name: Run long connection scenario benchmark
     needs: [ config, build_tquic, build_lsquic, gen_cert, gen_files ]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     strategy:
       matrix:
         file: [ 15K, 50K, 2M ]
@@ -177,7 +177,7 @@ jobs:
   run_short_conn:
     name: Run short connection scenario benchmark
     needs: [ config, build_tquic, build_lsquic, gen_cert, gen_files ]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
     - name: Download all
       uses: actions/download-artifact@v4
@@ -191,7 +191,7 @@ jobs:
             sh ${impl}_server_bin/start_${impl}.sh
             pgrep ${impl}_server
             sleep 1
-            ./tquic_client_bin/tquic_client https://tquic_benchmark:4433/file_1K --connect-to 127.0.0.1:4433 --threads 10 --max-concurrent-conns 1 --max-concurrent-requests 1 --max-requests-per-conn 1 --total-requests-per-thread 0 -d ${{ needs.config.outputs.benchmark_duration }} --disable-stateless-reset --send-batch-size 1 --recv-udp-payload-size 1350 --send-udp-payload-size 1350 --log-level OFF > client.log 2>&1
+            ./tquic_client_bin/tquic_client https://tquic_benchmark:4433/file_1K --connect-to 127.0.0.1:4433 --threads 10 --max-concurrent-conns 10 --max-concurrent-requests 1 --max-requests-per-conn 1 --total-requests-per-thread 0 -d ${{ needs.config.outputs.benchmark_duration }} --disable-stateless-reset --send-batch-size 1 --recv-udp-payload-size 1350 --send-udp-payload-size 1350 --log-level OFF > client.log 2>&1
             cat client.log | grep "finished in" | awk '{print $4}' > benchmark_short_${impl}_1K_10_1.${round}.${{ needs.config.outputs.benchmark_date }}
             killall ${impl}_server
             sleep 1
@@ -205,7 +205,7 @@ jobs:
         retention-days: 90
 
   result:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     needs: [ run_long_conn, run_short_conn ]
     steps:
     - name: Download plot tools
