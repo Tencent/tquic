@@ -2996,7 +2996,7 @@ impl Connection {
         // frame in a packet with the highest level of packet protection to
         // avoid the packet being discarded.
         // See RFC 9000 Section 10.2.3
-        if self.local_error.as_ref().map_or(false, |e| !e.is_app) {
+        if self.local_error.as_ref().is_some_and(|e| !e.is_app) {
             let pkt_type = match self.tls_session.write_level() {
                 Level::Initial => PacketType::Initial,
                 Level::Handshake => PacketType::Handshake,
@@ -3073,7 +3073,7 @@ impl Connection {
             || self.tls_session.is_in_early_data())
             && (self.need_send_handshake_done_frame()
                 || self.need_send_new_token_frame()
-                || self.local_error.as_ref().map_or(false, |e| e.is_app)
+                || self.local_error.as_ref().is_some_and(|e| e.is_app)
                 || path.need_send_validation_frames(self.is_server)
                 || path.dplpmtud.should_probe()
                 || path.need_send_ping
@@ -3094,7 +3094,7 @@ impl Connection {
     fn need_send_path_unaware_frames(&self) -> bool {
         self.need_send_handshake_done_frame()
             || self.need_send_new_token_frame()
-            || self.local_error.as_ref().map_or(false, |e| e.is_app)
+            || self.local_error.as_ref().is_some_and(|e| e.is_app)
             || self.cids.need_send_cid_control_frames()
             || self.streams.need_send_stream_frames()
     }

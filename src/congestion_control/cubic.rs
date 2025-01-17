@@ -506,7 +506,7 @@ impl CongestionController for Cubic {
     }
 
     fn in_recovery(&self, sent_time: Instant) -> bool {
-        self.recovery_epoch_start.map_or(false, |t| sent_time <= t)
+        self.recovery_epoch_start.is_some_and(|t| sent_time <= t)
     }
 
     fn congestion_window(&self) -> u64 {

@@ -757,10 +757,7 @@ impl Endpoint {
                 &self.trace_id,
             );
 
-            let done = match self.sender.on_packets_send(batch) {
-                Ok(v) => v,
-                Err(e) => return Err(e),
-            };
+            let done = self.sender.on_packets_send(batch)?;
             if done == 0 {
                 break;
             }
