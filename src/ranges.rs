@@ -307,7 +307,7 @@ pub struct Iter<'a> {
     set: btree_map::Iter<'a, u64, u64>,
 }
 
-impl<'a> Iterator for Iter<'a> {
+impl Iterator for Iter<'_> {
     type Item = Range<u64>;
 
     fn next(&mut self) -> Option<Range<u64>> {
@@ -316,14 +316,14 @@ impl<'a> Iterator for Iter<'a> {
     }
 }
 
-impl<'a> DoubleEndedIterator for Iter<'a> {
+impl DoubleEndedIterator for Iter<'_> {
     fn next_back(&mut self) -> Option<Range<u64>> {
         let (&start, &end) = self.set.next_back()?;
         Some(start..end)
     }
 }
 
-impl<'a> ExactSizeIterator for Iter<'a> {
+impl ExactSizeIterator for Iter<'_> {
     fn len(&self) -> usize {
         self.set.len()
     }
@@ -335,7 +335,7 @@ pub struct Flatten<'a> {
     end: u64,
 }
 
-impl<'a> Iterator for Flatten<'a> {
+impl Iterator for Flatten<'_> {
     type Item = u64;
 
     fn next(&mut self) -> Option<u64> {
@@ -353,7 +353,7 @@ impl<'a> Iterator for Flatten<'a> {
     }
 }
 
-impl<'a> DoubleEndedIterator for Flatten<'a> {
+impl DoubleEndedIterator for Flatten<'_> {
     fn next_back(&mut self) -> Option<u64> {
         if self.next == self.end {
             let (&start, &end) = self.set.next_back()?;

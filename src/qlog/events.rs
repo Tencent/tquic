@@ -302,7 +302,7 @@ pub enum EventData {
     /// first time, as QUIC uses ACK ranges which can include repeated ACKs.
     /// Additionally, this event can be used by implementations that do not log
     /// frame contents.
-    #[serde(rename = "quic:version_information")]
+    #[serde(rename = "quic:packets_acked")]
     QuicPacketsAcked {
         packet_number_space: Option<PacketNumberSpace>,
         packet_numbers: Option<Vec<u64>>,

@@ -77,7 +77,7 @@ impl TimerTable {
 
     /// Check whether the given timer is expired
     pub fn is_expired(&self, timer: Timer, after: Instant) -> bool {
-        self.expires[timer as usize].map_or(false, |x| x <= after)
+        self.expires[timer as usize].is_some_and(|x| x <= after)
     }
 }
 

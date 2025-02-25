@@ -494,7 +494,7 @@ fn encrypt_header(
 /// Decrypt payload of a QUIC packet.
 ///
 /// The `pkt_buf` is the raw data of a QUIC packet.
-/// The `paylaod_offset` is the offset of packet payload in `pkt_buf`.
+/// The `payload_offset` is the offset of packet payload in `pkt_buf`.
 /// The `payload_len` is the length of pacekt payload (other than the value of Length field).
 /// The `pkt_num` is the decrypted and decoded packet number.
 #[allow(unexpected_cfgs)]

@@ -4731,7 +4731,7 @@ mod tests {
         // write empty data with fin flag, it should be ok.
         assert_eq!(stream.send.write(Bytes::new(), true), Ok(0));
 
-        // Shutdown the stream abrubtly, it should be ok.
+        // Shutdown the stream abruptly, it should be ok.
         assert_eq!(stream.send.shutdown(), Ok((0, 18)));
         // Here we call `write` to make sure the stream's fin_off is set.
         assert_eq!(stream.recv.write(0, Bytes::new(), true), Ok(()));
@@ -4939,7 +4939,7 @@ mod tests {
         assert_eq!(map.get(20).unwrap().recv.fin_off, Some(30));
 
         // 10. Receive a RESET_STREAM frame for a stream which has been closed.
-        // Shutdown the stream abrubtly, it should be ok.
+        // Shutdown the stream abruptly, it should be ok.
         let stream = map.get_or_create(24, false).unwrap();
         assert_eq!(stream.send.shutdown(), Ok((0, 0)));
         // Here we call `write` to make sure the stream's fin_off is set.
@@ -5064,7 +5064,7 @@ mod tests {
         assert_eq!(map.on_stop_sending_frame_received(4, 0), Ok(()));
 
         // 5. Receive a STOP_SENDING frame for a stream which has been closed.
-        // Shutdown the stream abrubtly, it should be ok.
+        // Shutdown the stream abruptly, it should be ok.
         let stream = map.get_or_create(24, false).unwrap();
         assert_eq!(stream.send.shutdown(), Ok((0, 0)));
         // Here we call `write` to make sure the stream's fin_off is set.
@@ -5134,7 +5134,7 @@ mod tests {
         assert_eq!(map.on_stop_sending_frame_received(5, 0), Ok(()));
 
         // 5. Receive a STOP_SENDING frame for a stream which has been closed.
-        // Shutdown the stream abrubtly, it should be ok.
+        // Shutdown the stream abruptly, it should be ok.
         let stream = map.get_or_create(25, false).unwrap();
         assert_eq!(stream.send.shutdown(), Ok((0, 0)));
         // Here we call `write` to make sure the stream's fin_off is set.

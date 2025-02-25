@@ -802,7 +802,7 @@ impl Recovery {
         space.lost.clear();
         space.acked.clear();
 
-        // Reset loss dection timer
+        // Reset loss detection timer
         space.time_of_last_sent_ack_eliciting_pkt = None;
         space.loss_time = None;
         space.loss_probes = 0;

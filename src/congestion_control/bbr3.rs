@@ -760,7 +760,7 @@ impl Bbr3 {
     }
 
     fn in_recovery(&self, sent_time: Instant) -> bool {
-        self.recovery_epoch_start.map_or(false, |t| sent_time <= t)
+        self.recovery_epoch_start.is_some_and(|t| sent_time <= t)
     }
 
     fn in_slow_start(&self) -> bool {

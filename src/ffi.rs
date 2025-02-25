@@ -1992,7 +1992,7 @@ pub struct PacketInfo<'a> {
     dst_len: socklen_t,
 }
 
-impl<'a> From<&PacketInfo<'a>> for crate::PacketInfo {
+impl From<&PacketInfo<'_>> for crate::PacketInfo {
     fn from(info: &PacketInfo) -> crate::PacketInfo {
         crate::PacketInfo {
             src: sock_addr_from_c(info.src, info.src_len),
