@@ -1,6 +1,6 @@
 [package]
 name = "tquic_tools"
-version = "1.5.0"
+version = "1.6.0"
 edition = "2021"
 rust-version = "1.70.0"
 license = "Apache-2.0"
