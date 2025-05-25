@@ -514,7 +514,22 @@ impl ConnectionHandler {
         }
     }
 
+    fn build_h3_response_header(status:i32, body_len:usize) ->Vec<Header> {
+        let headers = vec![
+            tquic::h3::Header::new(b":status", status.to_string().as_bytes()),
+            tquic::h3::Header::new(b"server", b"tquic"),
+            tquic::h3::Header::new(b"content-length", body_len.to_string().as_bytes()),
+        ];
+        headers
+    }
+
     fn build_h3_response(&self, headers: &[Header]) -> (Vec<Header>, Bytes) {
+        for header in headers {
+            if header.name() == b":method" && std::str::from_utf8(header.value()).unwrap() != "GET" {
+                // Method Not Allowed
+                return (Self::build_h3_response_header(405, 0usize), Bytes::new());
+            }
+        }
         let mut path = "";
         for header in headers {
             if header.name() == b":path" {
@@ -530,13 +545,7 @@ impl ConnectionHandler {
             }
         };
 
-        let headers = vec![
-            tquic::h3::Header::new(b":status", status.to_string().as_bytes()),
-            tquic::h3::Header::new(b"server", b"tquic"),
-            tquic::h3::Header::new(b"content-length", body.len().to_string().as_bytes()),
-        ];
-
-        (headers, Bytes::from(body))
+        (Self::build_h3_response_header(status, body.len()), Bytes::from(body))
     }
 
     fn process_h3_request(
