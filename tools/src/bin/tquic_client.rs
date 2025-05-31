@@ -335,6 +335,19 @@ pub struct ClientOpt {
         help_heading = "Misc"
     )]
     pub max_sample: usize,
+
+    /// TLS certificate in PEM format.
+    #[clap(
+        short,
+        long = "cert",
+        default_value = "./cert.crt",
+        value_name = "cert"
+    )]
+    pub cert_file: String,
+
+    /// TLS private key in PEM format.
+    #[clap(short, long = "key", default_value = "./cert.key", value_name = "cert")]
+    pub key_file: String,
 }
 
 const MAX_BUF_SIZE: usize = 65536;
@@ -552,10 +565,18 @@ impl Worker {
         config.set_multipath_algorithm(option.multipath_algor);
         config.set_active_connection_id_limit(option.active_cid_limit);
         config.enable_encryption(!option.disable_encryption);
-        let tls_config = TlsConfig::new_client_config(
-            ApplicationProto::convert_to_vec(&option.alpn),
-            option.enable_early_data,
-        )?;
+        let tls_config = match !option.cert_file.is_empty() && !option.key_file.is_empty() {
+            false => TlsConfig::new_client_config(
+                ApplicationProto::convert_to_vec(&option.alpn),
+                option.enable_early_data,
+            )?,
+            true => TlsConfig::new_mutual_authentication_client_config(
+                &option.cert_file,
+                &option.key_file,
+                ApplicationProto::convert_to_vec(&option.alpn),
+                option.enable_early_data,
+            )?,
+        };
         config.set_tls_config(tls_config);
 
         let poll = mio::Poll::new()?;

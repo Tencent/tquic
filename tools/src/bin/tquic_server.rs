@@ -62,13 +62,17 @@ pub struct ServerOpt {
         short,
         long = "cert",
         default_value = "./cert.crt",
-        value_name = "FILE"
+        value_name = "cert"
     )]
     pub cert_file: String,
 
     /// TLS private key in PEM format.
-    #[clap(short, long = "key", default_value = "./cert.key", value_name = "FILE")]
+    #[clap(short, long = "key", default_value = "./cert.key", value_name = "cert")]
     pub key_file: String,
+
+    /// TLS private key in PEM format.
+    #[clap(value_name = "cert")]
+    pub mutual_authentication: bool,
 
     /// Document root directory.
     #[clap(short, long, default_value = "./", value_name = "DIR")]
@@ -298,12 +302,20 @@ impl Server {
         }
 
         let application_protos = vec![b"h3".to_vec(), b"http/0.9".to_vec(), b"hq-interop".to_vec()];
-        let mut tls_config = TlsConfig::new_server_config(
-            &option.cert_file,
-            &option.key_file,
-            application_protos,
-            true,
-        )?;
+        let mut tls_config = match option.mutual_authentication {
+            false => TlsConfig::new_server_config(
+                &option.cert_file,
+                &option.key_file,
+                application_protos,
+                true,
+            )?,
+            true => TlsConfig::new_mutual_authentication_server_config(
+                &option.cert_file,
+                &option.key_file,
+                application_protos,
+                true,
+            )?,
+        };
         let mut ticket_key = option.ticket_key.clone().into_bytes();
         ticket_key.resize(48, 0);
         tls_config.set_ticket_key(&ticket_key)?;
@@ -514,7 +526,7 @@ impl ConnectionHandler {
         }
     }
 
-    fn build_h3_response_header(status:i32, body_len:usize) ->Vec<Header> {
+    fn build_h3_response_header(status: i32, body_len: usize) -> Vec<Header> {
         let headers = vec![
             tquic::h3::Header::new(b":status", status.to_string().as_bytes()),
             tquic::h3::Header::new(b"server", b"tquic"),
@@ -525,7 +537,8 @@ impl ConnectionHandler {
 
     fn build_h3_response(&self, headers: &[Header]) -> (Vec<Header>, Bytes) {
         for header in headers {
-            if header.name() == b":method" && std::str::from_utf8(header.value()).unwrap() != "GET" {
+            if header.name() == b":method" && std::str::from_utf8(header.value()).unwrap() != "GET"
+            {
                 // Method Not Allowed
                 return (Self::build_h3_response_header(405, 0usize), Bytes::new());
             }
@@ -545,7 +558,9 @@ impl ConnectionHandler {
             }
         };
 
-        (Self::build_h3_response_header(status, body.len()), Bytes::from(body))
+        (
+            Self::build_h3_response_header(status, body.len()), Bytes::from(body),
+        )
     }
 
     fn process_h3_request(
