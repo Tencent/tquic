@@ -178,7 +178,7 @@ impl Endpoint {
         }
 
         // Update the connection route.
-        if scid.len() > 0 {
+        if !scid.is_empty() {
             self.routes.insert_with_cid(scid, idx);
         } else {
             self.routes
@@ -890,7 +890,7 @@ impl ConnectionRoutes {
     /// Find the target connection for the incoming datagram.
     fn find(&self, dcid: &ConnectionId, buf: &mut [u8], info: &PacketInfo) -> (Option<&u64>, bool) {
         let mut reset = false;
-        let mut idx = if dcid.len() > 0 {
+        let mut idx = if !dcid.is_empty() {
             // The packet has a non-zero-length Destination Connection ID
             // corresponding to an existing connection.
             self.cid_table.get(dcid)

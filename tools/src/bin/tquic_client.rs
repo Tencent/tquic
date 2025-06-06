@@ -691,7 +691,7 @@ impl Worker {
                 self.end_time = Some(Instant::now());
             }
 
-            if senders.len() == 0 {
+            if senders.is_empty() {
                 // All connections are closed.
                 return Ok(true);
             }

@@ -135,7 +135,7 @@ impl Http3Error {
             Http3Error::QpackDecoderStreamError => 0x202,
             Http3Error::TransportError { .. } => 0x102,
             Http3Error::StreamBlocked => 0x102,
-            Http3Error::Done { .. } => 0x102,
+            Http3Error::Done => 0x102,
         }
     }
 
