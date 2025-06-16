@@ -113,6 +113,26 @@ impl TlsConfig {
         Ok(tls_config)
     }
 
+    pub fn new_mutual_authentication_client_config(
+        cert_file: &str,
+        key_file: &str,
+        application_protos: Vec<Vec<u8>>,
+        enable_early_data: bool,
+    ) -> Result<Self> {
+        if cert_file.is_empty() || key_file.is_empty() {
+            return Err(Error::TlsFail(format!(
+                "cert_file({:?}) key_file({:?})",
+                cert_file, key_file
+            )));
+        }
+        let mut tls_config: TlsConfig =
+            Self::new_client_config(application_protos, enable_early_data)?;
+        tls_config.set_certificate_file(cert_file)?;
+        tls_config.set_private_key_file(key_file)?;
+
+        Ok(tls_config)
+    }
+
     /// Create a new server side TlsConfig.
     pub fn new_server_config(
         cert_file: &str,
@@ -120,7 +140,7 @@ impl TlsConfig {
         application_protos: Vec<Vec<u8>>,
         enable_early_data: bool,
     ) -> Result<Self> {
-        let mut tls_config = Self::new()?;
+        let mut tls_config: TlsConfig = Self::new()?;
         tls_config.set_certificate_file(cert_file)?;
         tls_config.set_private_key_file(key_file)?;
         tls_config.set_application_protos(application_protos)?;
@@ -128,6 +148,20 @@ impl TlsConfig {
         // TLS 1.3 sets a limit of seven days on the time between the original
         // connection and any attempt to use 0-RTT.
         tls_config.set_session_timeout(7 * 24 * 60 * 60);
+
+        Ok(tls_config)
+    }
+
+    /// Create a new server side TlsConfig.
+    pub fn new_mutual_authentication_server_config(
+        cert_file: &str,
+        key_file: &str,
+        application_protos: Vec<Vec<u8>>,
+        enable_early_data: bool,
+    ) -> Result<Self> {
+        let mut tls_config =
+            Self::new_server_config(cert_file, key_file, application_protos, enable_early_data)?;
+        tls_config.set_verify(true);
 
         Ok(tls_config)
     }
@@ -172,8 +206,13 @@ impl TlsConfig {
         let path = Path::new(ca_path);
         if path.is_file() {
             self.tls_ctx.load_verify_locations_from_file(ca_path)?;
-        } else {
+        } else if path.is_dir() {
             self.tls_ctx.load_verify_locations_from_directory(ca_path)?;
+        } else {
+            return Err(Error::TlsFail(format!(
+                "format error ca_path({:?}) neither file nor directory",
+                ca_path
+            )));
         }
 
         Ok(())

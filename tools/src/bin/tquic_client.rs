@@ -88,6 +88,11 @@ pub struct ClientOpt {
     #[clap(value_delimiter = ' ')]
     pub urls: Vec<Url>,
 
+    /// local file to send as body
+    /// method is "POST" rather than "GET" when file_path is not empty
+    #[clap(value_delimiter = ' ')]
+    pub file_pathes: Vec<String>,
+
     /// Number of threads.
     #[clap(
         short,
@@ -330,6 +335,19 @@ pub struct ClientOpt {
         help_heading = "Misc"
     )]
     pub max_sample: usize,
+
+    /// TLS certificate in PEM format.
+    #[clap(
+        short,
+        long = "cert",
+        default_value = "./cert.crt",
+        value_name = "cert"
+    )]
+    pub cert_file: String,
+
+    /// TLS private key in PEM format.
+    #[clap(short, long = "key", default_value = "./cert.key", value_name = "cert")]
+    pub key_file: String,
 }
 
 const MAX_BUF_SIZE: usize = 65536;
@@ -547,10 +565,18 @@ impl Worker {
         config.set_multipath_algorithm(option.multipath_algor);
         config.set_active_connection_id_limit(option.active_cid_limit);
         config.enable_encryption(!option.disable_encryption);
-        let tls_config = TlsConfig::new_client_config(
-            ApplicationProto::convert_to_vec(&option.alpn),
-            option.enable_early_data,
-        )?;
+        let tls_config = match !option.cert_file.is_empty() && !option.key_file.is_empty() {
+            false => TlsConfig::new_client_config(
+                ApplicationProto::convert_to_vec(&option.alpn),
+                option.enable_early_data,
+            )?,
+            true => TlsConfig::new_mutual_authentication_client_config(
+                &option.cert_file,
+                &option.key_file,
+                ApplicationProto::convert_to_vec(&option.alpn),
+                option.enable_early_data,
+            )?,
+        };
         config.set_tls_config(tls_config);
 
         let poll = mio::Poll::new()?;
@@ -841,8 +867,9 @@ impl WorkerContext {
 
 struct Request {
     url: Url,
-    line: String,         // Used in http/0.9.
-    headers: Vec<Header>, // Used in h3.
+    line: String,          // Used in http/0.9.
+    headers: Vec<Header>,  // Used in h3.
+    body: Option<Vec<u8>>, // Used in h3.
     response_writer: Option<std::io::BufWriter<std::fs::File>>,
     start_time: Option<Instant>,
 }
@@ -881,7 +908,7 @@ impl Request {
     }
 
     // TODO: support custom headers.
-    fn new(method: &str, url: &Url, body: &Option<Vec<u8>>, dump_dir: &Option<String>) -> Self {
+    fn new(method: &str, url: &Url, body: Option<Vec<u8>>, dump_dir: &Option<String>) -> Self {
         let authority = match url.port() {
             Some(port) => format!("{}:{}", url.host_str().unwrap(), port),
             None => url.host_str().unwrap().to_string(),
@@ -904,6 +931,7 @@ impl Request {
             url: url.clone(),
             line: format!("GET {}\r\n", url.path()),
             headers,
+            body,
             response_writer: Self::make_response_writer(url, dump_dir),
             start_time: None,
         }
@@ -1016,8 +1044,22 @@ impl RequestSender {
     }
 
     fn send_request(&mut self, conn: &mut Connection) -> Result<()> {
+        let mut method: &str = "GET";
+        let path = &self.option.file_pathes[self.current_url_idx];
+        let body = match !path.is_empty() && self.app_proto == ApplicationProto::H3 {
+            false => None,
+            true => {
+                method = "POST";
+                match std::fs::read(path) {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        return Err(format!("read file fail {:?}, error: {:?}", path, e).into());
+                    }
+                }
+            }
+        };
         let url = &self.option.urls[self.current_url_idx];
-        let mut request = Request::new("GET", url, &None, &self.option.dump_dir);
+        let mut request = Request::new(method, url, body, &self.option.dump_dir);
         debug!(
             "{} send request {} current index {}",
             conn.trace_id(),
@@ -1068,7 +1110,8 @@ impl RequestSender {
     }
 
     fn send_h3_request(&mut self, conn: &mut Connection, request: &Request) -> Result<u64> {
-        let s = match self.h3_conn.as_mut().unwrap().stream_new(conn) {
+        let h3_conn: &mut Http3Connection = self.h3_conn.as_mut().unwrap();
+        let s = match h3_conn.stream_new(conn) {
             Ok(v) => v,
             Err(tquic::h3::Http3Error::TransportError(Error::StreamLimitError)) => {
                 return Err("stream limit reached".to_string().into());
@@ -1080,12 +1123,7 @@ impl RequestSender {
             }
         };
 
-        match self
-            .h3_conn
-            .as_mut()
-            .unwrap()
-            .send_headers(conn, s, &request.headers, true)
-        {
+        match h3_conn.send_headers(conn, s, &request.headers, true) {
             Ok(v) => v,
             Err(tquic::h3::Http3Error::StreamBlocked) => {
                 return Err("stream is blocked".to_string().into());
@@ -1097,6 +1135,21 @@ impl RequestSender {
             }
         };
 
+        let body: Bytes = match request.body.as_ref() {
+            Some(vec) => Bytes::copy_from_slice(vec.as_slice()),
+            None => Bytes::new(),
+        };
+        match h3_conn.send_body(conn, s, body, true) {
+            Ok(v) => v,
+            Err(tquic::h3::Http3Error::StreamBlocked) => {
+                return Err("stream is blocked".to_string().into());
+            }
+            Err(e) => {
+                return Err(
+                    format!("failed to send request {:?}, error: {:?}", request.url, e).into(),
+                );
+            }
+        };
         Ok(s)
     }
 
