@@ -165,7 +165,7 @@ pub struct Connection {
     #[cfg(feature = "qlog")]
     qlog: Option<qlog::QlogWriter>,
 
-    /// Unique trace id for deubg logging
+    /// Unique trace id for debug logging
     trace_id: String,
 }
 
