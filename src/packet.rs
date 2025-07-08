@@ -19,6 +19,7 @@ use std::time;
 
 use bytes::Bytes;
 use bytes::BytesMut;
+use rand::Rng;
 use rand::RngCore;
 use ring::aead;
 
@@ -415,6 +416,7 @@ impl std::fmt::Debug for PacketHeader {
 /// The `pkt_num_len` is the encoded length of packet sequence number.
 /// The `payload_len` is the length of packet payload in plaintext.
 /// The `payload_offset` is the offset of packet payload in `pkt_buf`.
+/// The `grease_quic_bit` determines whether to randomize the QUIC bit.
 ///
 /// See RFC 9001 Section 5.3
 #[allow(clippy::too_many_arguments)]
@@ -427,9 +429,22 @@ pub(crate) fn encrypt_packet(
     payload_offset: usize,
     extra_in: Option<&[u8]>,
     aead: &Seal,
+    grease_quic_bit: bool,
 ) -> Result<usize> {
     if pkt_buf.len() < payload_offset + payload_len {
         return Err(Error::BufferTooShort);
+    }
+
+    // Randomize QUIC bit if greasing is enabled (RFC 9287)
+    if grease_quic_bit && payload_offset > 0 {
+        // Only randomize the QUIC bit for packets that have it set (non-VN packets)
+        let first_byte = pkt_buf[0];
+        if (first_byte & HEADER_FIXED_BIT) != 0 {
+            // Randomly decide whether to clear the QUIC bit (50% chance)
+            if rand::thread_rng().gen_bool(0.5) {
+                pkt_buf[0] &= !HEADER_FIXED_BIT; // Clear the QUIC bit
+            }
+        }
     }
 
     // Packet header starts from the first byte of either the short or long
@@ -1516,6 +1531,7 @@ mod tests {
             pkt_hdr_data.len(),
             None,
             &aead,
+            false,
         )?;
         assert_eq!(written, pkt_expected.len());
         assert_eq!(&out[..written], &pkt_expected[..]);
@@ -1557,6 +1573,7 @@ mod tests {
             payload_off,
             None,
             &seal,
+            false,
         )?;
         out.truncate(written);
 
