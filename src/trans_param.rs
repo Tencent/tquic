@@ -728,8 +728,8 @@ mod tests {
         let mut buf = [0u8; 10];
         let mut slice = &mut buf[..];
         slice.write_varint(0x2ab2)?; // grease_quic_bit parameter ID
-        slice.write_varint(1)?;      // non-empty length (invalid)
-        slice.write_u8(42)?;         // some data
+        slice.write_varint(1)?; // non-empty length (invalid)
+        slice.write_u8(42)?; // some data
 
         let result = TransportParams::decode(&buf, false);
         assert_eq!(result, Err(Error::TransportParameterError));

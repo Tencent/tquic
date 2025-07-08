@@ -1226,14 +1226,14 @@ mod tests {
     #[test]
     fn grease_quic_bit_config() -> Result<()> {
         let mut config = Config::new()?;
-        
+
         // Test default value
         assert!(!config.local_transport_params.grease_quic_bit);
-        
+
         // Test enabling grease QUIC bit
         config.enable_grease_quic_bit(true);
         assert!(config.local_transport_params.grease_quic_bit);
-        
+
         // Test disabling grease QUIC bit
         config.enable_grease_quic_bit(false);
         assert!(!config.local_transport_params.grease_quic_bit);

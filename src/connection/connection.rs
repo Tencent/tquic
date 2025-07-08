@@ -7942,24 +7942,24 @@ pub(crate) mod tests {
         // Test grease QUIC bit negotiation between client and server
         let mut client_config = TestPair::new_test_config(false)?;
         let mut server_config = TestPair::new_test_config(true)?;
-        
+
         // Enable grease QUIC bit on both sides
         client_config.enable_grease_quic_bit(true);
         server_config.enable_grease_quic_bit(true);
-        
+
         let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
-        
+
         // Before handshake, greasing should not be active
         assert!(!test_pair.client.grease_quic_bit_enabled());
         assert!(!test_pair.server.grease_quic_bit_enabled());
-        
+
         // Complete handshake to exchange transport parameters
         test_pair.handshake()?;
-        
+
         // After handshake, greasing should be active on both sides
         assert!(test_pair.client.grease_quic_bit_enabled());
         assert!(test_pair.server.grease_quic_bit_enabled());
-        
+
         Ok(())
     }
 
@@ -7968,18 +7968,18 @@ pub(crate) mod tests {
         // Test when only one side supports grease QUIC bit
         let mut client_config = TestPair::new_test_config(false)?;
         let mut server_config = TestPair::new_test_config(true)?;
-        
+
         // Enable grease QUIC bit only on client
         client_config.enable_grease_quic_bit(true);
         server_config.enable_grease_quic_bit(false);
-        
+
         let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
         test_pair.handshake()?;
-        
+
         // Greasing should not be active when only one side supports it
         assert!(!test_pair.client.grease_quic_bit_enabled());
         assert!(!test_pair.server.grease_quic_bit_enabled());
-        
+
         Ok(())
     }
 }
