@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::cell::RefCell;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 
@@ -29,6 +30,9 @@ use slab::Slab;
 use tquic::PacketInfo;
 use tquic::PacketSendHandler;
 use tquic::CertCompressionAlgorithm;
+
+pub mod packet_loss;
+pub use packet_loss::{LossPacketType, PacketLossConfig, PacketLossSimulator};
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -120,10 +124,25 @@ pub struct QuicSocket {
 
     /// Local address of the initial socket.
     local_addr: SocketAddr,
+
+    /// Packet loss simulator for testing
+    packet_loss: RefCell<Option<PacketLossSimulator>>,
+
+    /// Connection ID length for packet parsing
+    dcid_len: usize,
 }
 
 impl QuicSocket {
     pub fn new(local: &SocketAddr, registry: &Registry) -> Result<Self> {
+        Self::with_packet_loss(local, registry, None, 8)
+    }
+
+    pub fn with_packet_loss(
+        local: &SocketAddr,
+        registry: &Registry,
+        packet_loss_config: Option<PacketLossConfig>,
+        dcid_len: usize,
+    ) -> Result<Self> {
         let mut socks = Slab::new();
         let mut addrs = FxHashMap::default();
 
@@ -135,10 +154,14 @@ impl QuicSocket {
         let socket = socks.get_mut(sid).unwrap();
         registry.register(socket, Token(sid), Interest::READABLE)?;
 
+        let packet_loss = RefCell::new(packet_loss_config.map(PacketLossSimulator::new));
+
         Ok(Self {
             socks,
             addrs,
             local_addr,
+            packet_loss,
+            dcid_len,
         })
     }
 
@@ -188,7 +211,21 @@ impl QuicSocket {
         };
 
         match socket.recv_from(buf) {
-            Ok((len, remote)) => Ok((len, socket.local_addr()?, remote)),
+            Ok((len, remote)) => {
+                // Check if packet should be dropped due to loss simulation
+                if let Ok(mut packet_loss) = self.packet_loss.try_borrow_mut() {
+                    if let Some(ref mut simulator) = *packet_loss {
+                        if simulator.should_drop_incoming(&buf[..len], self.dcid_len) {
+                            debug!("Simulating incoming packet loss - dropping packet");
+                            return Err(std::io::Error::new(
+                                ErrorKind::WouldBlock,
+                                "simulated packet loss",
+                            ));
+                        }
+                    }
+                }
+                Ok((len, socket.local_addr()?, remote))
+            }
             Err(e) => Err(e),
         }
     }
@@ -196,6 +233,16 @@ impl QuicSocket {
     /// Send data on the socket to the given address.
     /// Note: packets with unknown src address are dropped.
     pub fn send_to(&self, buf: &[u8], src: SocketAddr, dst: SocketAddr) -> std::io::Result<usize> {
+        // Check if packet should be dropped due to loss simulation
+        if let Ok(mut packet_loss) = self.packet_loss.try_borrow_mut() {
+            if let Some(ref mut simulator) = *packet_loss {
+                if simulator.should_drop_outgoing(buf, self.dcid_len) {
+                    debug!("Simulating outgoing packet loss - dropping packet");
+                    return Ok(buf.len()); // Pretend we sent it
+                }
+            }
+        }
+
         let sid = match self.addrs.get(&src) {
             Some(sid) => sid,
             None => {

@@ -1229,6 +1229,7 @@ pub use crate::error::Error;
 pub use crate::multipath_scheduler::MultipathAlgorithm;
 pub use crate::packet::PacketHeader;
 pub use crate::tls::CertCompressionAlgorithm;
+pub use crate::packet::PacketType;
 pub use crate::tls::TlsConfig;
 pub use crate::tls::TlsConfigSelector;
 
