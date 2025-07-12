@@ -398,6 +398,60 @@ struct ConnectionHandler {
 }
 
 impl ConnectionHandler {
+    // Parse a Range header.
+    //
+    // Returns Ok((start, end)) or an error string.
+    fn parse_range(
+        &self,
+        range_str: &str,
+        file_size: u64,
+    ) -> std::result::Result<(u64, u64), &'static str> {
+        // For simplicity, we follow Nginx's strategy and do not support multi-part ranges.
+        if range_str.contains(',') {
+            return Err("Multi-part ranges not supported");
+        }
+
+        if !range_str.starts_with("bytes=") {
+            return Err("Invalid range unit");
+        }
+        let range_val = &range_str["bytes=".len()..];
+
+        let (start_str, end_str) = match range_val.split_once('-') {
+            Some((s, e)) => (s, e),
+            None => return Err("Invalid range format"),
+        };
+
+        if start_str.is_empty() {
+            // Format: "bytes=-<suffix-length>"
+            let suffix_len = end_str
+                .parse::<u64>()
+                .map_err(|_| "Invalid suffix length")?;
+            if suffix_len == 0 || suffix_len > file_size {
+                return Err("Suffix length out of bounds");
+            }
+            let start = file_size - suffix_len;
+            Ok((start, file_size - 1))
+        } else {
+            // Format: "bytes=<start>-" or "bytes=<start>-<end>"
+            let start = start_str.parse::<u64>().map_err(|_| "Invalid start value")?;
+            if start >= file_size {
+                return Err("Start is out of bounds"); // This will lead to 416
+            }
+
+            let end = if end_str.is_empty() {
+                file_size - 1
+            } else {
+                end_str.parse::<u64>().map_err(|_| "Invalid end value")?
+            };
+
+            if start > end || end >= file_size {
+                return Err("End is out of bounds");
+            }
+            Ok((start, end))
+        }
+    }
+
+
     fn generate_file_path(uri: &str, root: &str) -> path::PathBuf {
         let uri = path::Path::new(uri);
         let mut path = path::PathBuf::from(root);
@@ -516,23 +570,83 @@ impl ConnectionHandler {
 
     fn build_h3_response(&self, headers: &[Header]) -> (Vec<Header>, Bytes) {
         let mut path = "";
+        let mut range_header = None;
         for header in headers {
             if header.name() == b":path" {
                 path = std::str::from_utf8(header.value()).unwrap();
             }
+            else if header.name() == b"range" {
+                range_header = Some(std::str::from_utf8(header.value()).unwrap());
+            }
         }
         let path = Self::generate_file_path(path, &self.root);
 
-        let (status, body) = {
-            match std::fs::read(path.as_path()) {
-                Ok(data) => (200, data),
-                Err(_) => (404, b"Not Found!".to_vec()),
+        let file = match std::fs::File::open(&path) {
+            Ok(f) => f,
+            Err(_) => {
+                let headers = vec![
+                    tquic::h3::Header::new(b":status", b"404"),
+                    tquic::h3::Header::new(b"server", b"tquic"),
+                ];
+                return (headers, Bytes::from_static(b"Not Found!"));
             }
         };
+        let file_size = file.metadata().unwrap().len();
 
+        // Process range request
+        if let Some(range_str) = range_header {
+            match self.parse_range(range_str, file_size) {
+                Ok((start, end)) => {
+                    use std::io::{Read, Seek, SeekFrom};
+                    let mut file = file;
+                    let len = end - start + 1;
+                    let mut buffer = vec![0; len as usize];
+
+                    // Read the specified range from the file
+                    if file.seek(SeekFrom::Start(start)).is_ok()
+                        && file.read_exact(&mut buffer).is_ok()
+                    {
+                        let headers = vec![
+                            tquic::h3::Header::new(b":status", b"206"),
+                            tquic::h3::Header::new(b"server", b"tquic"),
+                            tquic::h3::Header::new(b"accept-ranges", b"bytes"),
+                            tquic::h3::Header::new(
+                                b"content-range",
+                                format!("bytes {}-{}/{}", start, end, file_size).as_bytes(),
+                            ),
+                            tquic::h3::Header::new(
+                                b"content-length",
+                                len.to_string().as_bytes(),
+                            ),
+                        ];
+                        return (headers, Bytes::from(buffer));
+                    }
+                }
+                Err(e) => {
+                    // If range is invalid or multi-part, return 416 or 200.
+                    // Here we follow Nginx's strategy for multi-part ranges.
+                    if e != "Multi-part ranges not supported" {
+                        // Invalid range, return 416
+                        let headers = vec![
+                            tquic::h3::Header::new(b":status", b"416"),
+                            tquic::h3::Header::new(
+                                b"content-range",
+                                format!("bytes */{}", file_size).as_bytes(),
+                            ),
+                        ];
+                        return (headers, Bytes::new());
+                    }
+                    // Fall through to serve the whole file with 200 OK for multi-part
+                }
+            }
+        }
+
+        // Default case: serve the whole file with 200 OK
+        let body = std::fs::read(path).unwrap_or_else(|_| b"Not Found!".to_vec());
         let headers = vec![
-            tquic::h3::Header::new(b":status", status.to_string().as_bytes()),
+            tquic::h3::Header::new(b":status", b"200"),
             tquic::h3::Header::new(b"server", b"tquic"),
+            tquic::h3::Header::new(b"accept-ranges", b"bytes"),
             tquic::h3::Header::new(b"content-length", body.len().to_string().as_bytes()),
         ];
 

@@ -330,6 +330,10 @@ pub struct ClientOpt {
         help_heading = "Misc"
     )]
     pub max_sample: usize,
+
+    /// The range of the request, like "0-1023".
+    #[clap(long, value_name = "RANGE", help_heading = "Protocol")]
+    pub range: Option<String>,
 }
 
 const MAX_BUF_SIZE: usize = 65536;
@@ -881,7 +885,13 @@ impl Request {
     }
 
     // TODO: support custom headers.
-    fn new(method: &str, url: &Url, body: &Option<Vec<u8>>, dump_dir: &Option<String>) -> Self {
+    fn new(
+        method: &str,
+        url: &Url,
+        body: &Option<Vec<u8>>,
+        dump_dir: &Option<String>,
+        range: &Option<String>,
+    ) -> Self {
         let authority = match url.port() {
             Some(port) => format!("{}:{}", url.host_str().unwrap(), port),
             None => url.host_str().unwrap().to_string(),
@@ -894,6 +904,12 @@ impl Request {
             tquic::h3::Header::new(b":path", url[url::Position::BeforePath..].as_bytes()),
             tquic::h3::Header::new(b"user-agent", b"tquic"),
         ];
+        if let Some(range_val) = range {
+            headers.push(tquic::h3::Header::new(
+                b"range",
+                format!("bytes={}", range_val).as_bytes(),
+            ));
+        }
         if body.is_some() {
             headers.push(tquic::h3::Header::new(
                 b"content-length",
@@ -1017,7 +1033,13 @@ impl RequestSender {
 
     fn send_request(&mut self, conn: &mut Connection) -> Result<()> {
         let url = &self.option.urls[self.current_url_idx];
-        let mut request = Request::new("GET", url, &None, &self.option.dump_dir);
+        let mut request = Request::new(
+            "GET",
+            url,
+            &None,
+            &self.option.dump_dir,
+            &self.option.range,
+        );
         debug!(
             "{} send request {} current index {}",
             conn.trace_id(),
