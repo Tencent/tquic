@@ -17,11 +17,13 @@
 use std::collections::HashMap;
 use std::fs::create_dir_all;
 use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::net::SocketAddr;
 use std::path;
 use std::path::Path;
 use std::rc::Rc;
 use std::time::Instant;
+use std::vec;
 
 use bytes::Bytes;
 use clap::Parser;
@@ -395,6 +397,12 @@ struct ConnectionHandler {
 
     /// Mapping stream id to response.
     responses: HashMap<u64, Response>,
+
+    /// Mapping stream id to request headers.
+    request_headers: HashMap<u64, Vec<Header>>,
+
+    /// Mapping stream id to request body data.
+    request_bodies: HashMap<u64, Vec<u8>>,
 }
 
 impl ConnectionHandler {
@@ -433,7 +441,9 @@ impl ConnectionHandler {
             Ok((start, file_size - 1))
         } else {
             // Format: "bytes=<start>-" or "bytes=<start>-<end>"
-            let start = start_str.parse::<u64>().map_err(|_| "Invalid start value")?;
+            let start = start_str
+                .parse::<u64>()
+                .map_err(|_| "Invalid start value")?;
             if start >= file_size {
                 return Err("Start is out of bounds"); // This will lead to 416
             }
@@ -450,7 +460,6 @@ impl ConnectionHandler {
             Ok((start, end))
         }
     }
-
 
     fn generate_file_path(uri: &str, root: &str) -> path::PathBuf {
         let uri = path::Path::new(uri);
@@ -568,89 +577,124 @@ impl ConnectionHandler {
         }
     }
 
-    fn build_h3_response(&self, headers: &[Header]) -> (Vec<Header>, Bytes) {
+    fn build_h3_response(&self, headers: &[Header], data: &[u8]) -> (Vec<Header>, Bytes) {
         let mut path = "";
         let mut range_header = None;
+        let mut method = "";
         for header in headers {
             if header.name() == b":path" {
                 path = std::str::from_utf8(header.value()).unwrap();
-            }
-            else if header.name() == b"range" {
+            } else if header.name() == b":method" {
+                method = std::str::from_utf8(header.value()).unwrap();
+            } else if header.name() == b"range" {
                 range_header = Some(std::str::from_utf8(header.value()).unwrap());
             }
         }
-        let path = Self::generate_file_path(path, &self.root);
 
-        let file = match std::fs::File::open(&path) {
-            Ok(f) => f,
-            Err(_) => {
-                let headers = vec![
-                    tquic::h3::Header::new(b":status", b"404"),
-                    tquic::h3::Header::new(b"server", b"tquic"),
-                ];
-                return (headers, Bytes::from_static(b"Not Found!"));
+        match method {
+            "GET" => {
+                let path = Self::generate_file_path(path, &self.root);
+
+                if let Ok(file) = std::fs::File::open(&path) {
+                    let file_size = file.metadata().unwrap().len();
+
+                    // Process range request
+                    if let Some(range_str) = range_header {
+                        match self.parse_range(range_str, file_size) {
+                            Ok((start, end)) => {
+                                let mut file = file;
+                                let len = end - start + 1;
+                                let mut buffer = vec![0; len as usize];
+
+                                // Read the specified range from the file
+                                if file.seek(SeekFrom::Start(start)).is_ok()
+                                    && file.read_exact(&mut buffer).is_ok()
+                                {
+                                    let headers = vec![
+                                        tquic::h3::Header::new(b":status", b"206"),
+                                        tquic::h3::Header::new(b"server", b"tquic"),
+                                        tquic::h3::Header::new(b"accept-ranges", b"bytes"),
+                                        tquic::h3::Header::new(
+                                            b"content-range",
+                                            format!("bytes {}-{}/{}", start, end, file_size)
+                                                .as_bytes(),
+                                        ),
+                                        tquic::h3::Header::new(
+                                            b"content-length",
+                                            len.to_string().as_bytes(),
+                                        ),
+                                    ];
+                                    return (headers, Bytes::from(buffer));
+                                }
+                            }
+                            Err(e) => {
+                                // If range is invalid or multi-part, return 416 or 200.
+                                // Here we follow Nginx's strategy for multi-part ranges.
+                                if e != "Multi-part ranges not supported" {
+                                    // Invalid range, return 416
+                                    let headers = vec![
+                                        tquic::h3::Header::new(b":status", b"416"),
+                                        tquic::h3::Header::new(b"server", b"tquic"),
+                                        tquic::h3::Header::new(
+                                            b"content-range",
+                                            format!("bytes */{}", file_size).as_bytes(),
+                                        ),
+                                    ];
+                                    return (headers, Bytes::new());
+                                }
+                                // Fall through to serve the whole file with 200 OK for multi-part
+                            }
+                        }
+                    }
+
+                    // Default case: serve the whole file with 200 OK
+                    let body = std::fs::read(path).unwrap_or_else(|_| b"Not Found!".to_vec());
+                    let headers = vec![
+                        tquic::h3::Header::new(b":status", b"200"),
+                        tquic::h3::Header::new(b"server", b"tquic"),
+                        tquic::h3::Header::new(b"accept-ranges", b"bytes"),
+                        tquic::h3::Header::new(
+                            b"content-length",
+                            body.len().to_string().as_bytes(),
+                        ),
+                    ];
+                    (headers, Bytes::from(body))
+                } else {
+                    // File not found
+                    let body = b"Not Found!".to_vec();
+                    let headers = vec![
+                        tquic::h3::Header::new(b":status", b"404"),
+                        tquic::h3::Header::new(b"server", b"tquic"),
+                        tquic::h3::Header::new(
+                            b"content-length",
+                            body.len().to_string().as_bytes(),
+                        ),
+                    ];
+                    (headers, Bytes::from(body))
+                }
             }
-        };
-        let file_size = file.metadata().unwrap().len();
-
-        // Process range request
-        if let Some(range_str) = range_header {
-            match self.parse_range(range_str, file_size) {
-                Ok((start, end)) => {
-                    use std::io::{Read, Seek, SeekFrom};
-                    let mut file = file;
-                    let len = end - start + 1;
-                    let mut buffer = vec![0; len as usize];
-
-                    // Read the specified range from the file
-                    if file.seek(SeekFrom::Start(start)).is_ok()
-                        && file.read_exact(&mut buffer).is_ok()
-                    {
-                        let headers = vec![
-                            tquic::h3::Header::new(b":status", b"206"),
-                            tquic::h3::Header::new(b"server", b"tquic"),
-                            tquic::h3::Header::new(b"accept-ranges", b"bytes"),
-                            tquic::h3::Header::new(
-                                b"content-range",
-                                format!("bytes {}-{}/{}", start, end, file_size).as_bytes(),
-                            ),
-                            tquic::h3::Header::new(
-                                b"content-length",
-                                len.to_string().as_bytes(),
-                            ),
-                        ];
-                        return (headers, Bytes::from(buffer));
-                    }
-                }
-                Err(e) => {
-                    // If range is invalid or multi-part, return 416 or 200.
-                    // Here we follow Nginx's strategy for multi-part ranges.
-                    if e != "Multi-part ranges not supported" {
-                        // Invalid range, return 416
-                        let headers = vec![
-                            tquic::h3::Header::new(b":status", b"416"),
-                            tquic::h3::Header::new(
-                                b"content-range",
-                                format!("bytes */{}", file_size).as_bytes(),
-                            ),
-                        ];
-                        return (headers, Bytes::new());
-                    }
-                    // Fall through to serve the whole file with 200 OK for multi-part
-                }
+            "POST" => {
+                let md5_hash = md5::compute(data);
+                let md5_hex = format!("{:x}", md5_hash);
+                debug!("POST data MD5: {}", md5_hex);
+                let body = md5_hex.into_bytes();
+                let headers = vec![
+                    tquic::h3::Header::new(b":status", b"200"),
+                    tquic::h3::Header::new(b"server", b"tquic"),
+                    tquic::h3::Header::new(b"content-length", body.len().to_string().as_bytes()),
+                ];
+                (headers, Bytes::from(body))
+            }
+            _ => {
+                // Method not allowed
+                let headers = vec![
+                    tquic::h3::Header::new(b":status", b"405"),
+                    tquic::h3::Header::new(b"server", b"tquic"),
+                    tquic::h3::Header::new(b"content-length", b"18"),
+                ];
+                (headers, Bytes::from_static(b"Method Not Allowed"))
             }
         }
-
-        // Default case: serve the whole file with 200 OK
-        let body = std::fs::read(path).unwrap_or_else(|_| b"Not Found!".to_vec());
-        let headers = vec![
-            tquic::h3::Header::new(b":status", b"200"),
-            tquic::h3::Header::new(b"server", b"tquic"),
-            tquic::h3::Header::new(b"accept-ranges", b"bytes"),
-            tquic::h3::Header::new(b"content-length", body.len().to_string().as_bytes()),
-        ];
-
-        (headers, Bytes::from(body))
     }
 
     fn process_h3_request(
@@ -658,11 +702,12 @@ impl ConnectionHandler {
         headers: &[Header],
         conn: &mut Connection,
         stream_id: u64,
+        data: &[u8],
     ) -> Result<()> {
         conn.stream_shutdown(stream_id, tquic::Shutdown::Read, 0)?;
         self.processed_requests = std::cmp::max(self.processed_requests, stream_id);
 
-        let (headers, body) = self.build_h3_response(headers);
+        let (headers, body) = self.build_h3_response(headers, data);
         let h3_conn = self.h3_conn.as_mut().unwrap();
         match h3_conn.send_headers(conn, stream_id, &headers, false) {
             Ok(v) => v,
@@ -709,7 +754,7 @@ impl ConnectionHandler {
         _ = h3_conn.send_goaway(conn, self.processed_requests);
     }
 
-    fn recv_h3_request(&mut self, conn: &mut Connection) {
+    fn recv_h3_request(&mut self, conn: &mut Connection, buf: &mut [u8]) {
         loop {
             match self.h3_conn.as_mut().unwrap().poll(conn) {
                 Ok((stream_id, tquic::h3::Http3Event::Headers { headers, .. })) => {
@@ -719,15 +764,55 @@ impl ConnectionHandler {
                         headers,
                         stream_id
                     );
-                    if let Err(e) = self.process_h3_request(&headers, conn, stream_id) {
-                        error!("{:?}", e);
-                        break;
-                    }
+                    self.request_headers.insert(stream_id, headers);
+                    self.request_bodies.insert(stream_id, Vec::new());
                 }
                 Ok((stream_id, tquic::h3::Http3Event::Data)) => {
                     debug!("{} got data on stream id {}", conn.trace_id(), stream_id);
+
+                    if !self.request_headers.contains_key(&stream_id) {
+                        debug!(
+                            "{} received data for stream {} before headers",
+                            conn.trace_id(),
+                            stream_id
+                        );
+                        continue;
+                    }
+
+                    let h3_conn = self.h3_conn.as_mut().unwrap();
+                    while let Ok(read) = h3_conn.recv_body(conn, stream_id, buf) {
+                        debug!(
+                            "{} got {} bytes of request data on stream {}",
+                            conn.trace_id(),
+                            read,
+                            stream_id
+                        );
+
+                        if let Some(body_data) = self.request_bodies.get_mut(&stream_id) {
+                            body_data.extend_from_slice(&buf[..read]);
+                        }
+                    }
                 }
-                Ok((_, tquic::h3::Http3Event::Finished)) => (),
+                Ok((stream_id, tquic::h3::Http3Event::Finished)) => {
+                    debug!("{} stream {} finished", conn.trace_id(), stream_id);
+
+                    if let (Some(headers), Some(body)) = (
+                        self.request_headers.remove(&stream_id),
+                        self.request_bodies.remove(&stream_id),
+                    ) {
+                        debug!(
+                            "{} processing complete request on stream {}, headers: {}, body size: {}",
+                            conn.trace_id(),
+                            stream_id,
+                            headers.len(),
+                            body.len()
+                        );
+
+                        if let Err(e) = self.process_h3_request(&headers, conn, stream_id, &body) {
+                            error!("{:?}", e);
+                        }
+                    }
+                }
                 Ok((_, tquic::h3::Http3Event::Reset { .. })) => (),
                 Ok((_, tquic::h3::Http3Event::PriorityUpdate)) => (),
                 Ok((goaway_id, tquic::h3::Http3Event::GoAway)) => {
@@ -749,7 +834,7 @@ impl ConnectionHandler {
             ApplicationProto::Interop | ApplicationProto::Http09 => {
                 self.recv_http09_request(buf, conn, stream_id)
             }
-            ApplicationProto::H3 => self.recv_h3_request(conn),
+            ApplicationProto::H3 => self.recv_h3_request(conn, buf),
         }
     }
 
