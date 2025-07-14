@@ -287,10 +287,12 @@ impl Path {
     }
 
 
+    ///
     pub fn set_peer_context<T: Any + Send + Sync>(&mut self, ctx: T) {
         self.peer_context = Some(Box::new(ctx));
     }
 
+    ///
     pub fn peer_context(&mut self) -> Option<&mut dyn Any> {
         match self.peer_context {
             Some(ref mut data) => Some(data.as_mut()),

@@ -1268,6 +1268,7 @@ impl Connection {
         Ok(())
     }
 
+    /// Get peer context for the path identified by local address.
     pub fn path_peer_context(&mut self, local_addr: SocketAddr, remote_addr: SocketAddr)
         -> Result<Option<&mut dyn Any>> {
         let path_id = self.paths.get_path_id(&(local_addr, remote_addr))
