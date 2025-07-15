@@ -248,6 +248,16 @@ pub struct ServerOpt {
     /// Disable encryption on 1-RTT packets.
     #[clap(long, help_heading = "Misc")]
     pub disable_encryption: bool,
+
+    // Delay responding to client until handshake completes.
+    #[clap(
+        long,
+        default_value = "0",
+        value_name = "TIME",
+        help_heading = "Misc",
+        help = "Delay response after handshake completion"
+    )]
+    pub response_delay: u64,
 }
 
 const MAX_BUF_SIZE: usize = 65536;
@@ -374,6 +384,7 @@ struct Response {
     headers: Option<Vec<tquic::h3::Header>>,
     body: Bytes,
     body_written: usize,
+    ready_at: Instant,
 }
 
 #[derive(Default)]
@@ -395,6 +406,9 @@ struct ConnectionHandler {
 
     /// Mapping stream id to response.
     responses: HashMap<u64, Response>,
+
+    // Delay responding to client until handshake completes.
+    response_delay: u64,
 }
 
 impl ConnectionHandler {
@@ -457,6 +471,7 @@ impl ConnectionHandler {
                 headers: None,
                 body,
                 body_written: written,
+                ready_at: Instant::now() + std::time::Duration::from_millis(self.response_delay),
             };
 
             self.responses.insert(stream_id, response);
@@ -557,6 +572,8 @@ impl ConnectionHandler {
                     headers: Some(headers),
                     body,
                     body_written: 0,
+                    ready_at: Instant::now()
+                        + std::time::Duration::from_millis(self.response_delay),
                 };
 
                 self.responses.insert(stream_id, response);
@@ -581,6 +598,7 @@ impl ConnectionHandler {
                 headers: None,
                 body,
                 body_written: written,
+                ready_at: Instant::now() + std::time::Duration::from_millis(self.response_delay),
             };
 
             self.responses.insert(stream_id, response);
@@ -703,6 +721,13 @@ impl ConnectionHandler {
             return;
         }
 
+        if let Some(response) = self.responses.get(&stream_id) {
+            if Instant::now() < response.ready_at {
+                _ = conn.stream_want_write(stream_id, true);
+                return;
+            }
+        }
+
         _ = conn.stream_want_write(stream_id, true);
 
         match self.app_proto {
@@ -729,6 +754,9 @@ struct ServerHandler {
 
     /// Qlog directory
     qlog_dir: Option<String>,
+
+    /// Response delay
+    response_delay: u64,
 }
 
 impl ServerHandler {
@@ -749,6 +777,7 @@ impl ServerHandler {
             conns: FxHashMap::default(),
             keylog,
             qlog_dir: option.qlog_dir.clone(),
+            response_delay: option.response_delay,
         })
     }
 
@@ -762,6 +791,7 @@ impl ServerHandler {
         let mut conn_handler = ConnectionHandler {
             app_proto: ApplicationProto::from_slice(conn.application_proto()),
             root: self.root.clone(),
+            response_delay: self.response_delay,
             ..Default::default()
         };
 
