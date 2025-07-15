@@ -14,6 +14,7 @@
 
 //! An QUIC server based on the high level endpoint API.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::create_dir_all;
 use std::fs::File;
@@ -21,7 +22,7 @@ use std::net::SocketAddr;
 use std::path;
 use std::path::Path;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use clap::Parser;
@@ -248,6 +249,16 @@ pub struct ServerOpt {
     /// Disable encryption on 1-RTT packets.
     #[clap(long, help_heading = "Misc")]
     pub disable_encryption: bool,
+
+    /// Delay responding to client until handshake completes, in milliseconds.
+    #[clap(
+        long,
+        default_value = "0",
+        value_name = "TIME",
+        help_heading = "Misc",
+        help = "Delay response after handshake completion, in milliseconds"
+    )]
+    pub response_delay: u64,
 }
 
 const MAX_BUF_SIZE: usize = 65536;
@@ -265,10 +276,13 @@ struct Server {
 
     /// Packet read buffer
     recv_buf: Vec<u8>,
+
+    /// Shared reference to the handler
+    handler: Rc<RefCell<ServerHandler>>,
 }
 
 impl Server {
-    fn new(option: &ServerOpt) -> Result<Self> {
+    fn new(option: &ServerOpt, handler: Rc<RefCell<ServerHandler>>) -> Result<Self> {
         let mut config = Config::new()?;
         config.set_recv_udp_payload_size(option.recv_udp_payload_size);
         config.set_send_udp_payload_size(option.send_udp_payload_size);
@@ -312,14 +326,15 @@ impl Server {
         let poll = mio::Poll::new()?;
         let registry = poll.registry();
 
-        let handlers = ServerHandler::new(option)?;
+        let endpoint_handler = Box::new(SharedHandler(handler.clone()));
         let sock = Rc::new(QuicSocket::new(&option.listen, registry)?);
 
         Ok(Server {
-            endpoint: Endpoint::new(Box::new(config), true, Box::new(handlers), sock.clone()),
+            endpoint: Endpoint::new(Box::new(config), true, endpoint_handler, sock.clone()),
             poll,
             sock,
             recv_buf: vec![0u8; MAX_BUF_SIZE],
+            handler,
         })
     }
 
@@ -359,6 +374,32 @@ impl Server {
 
         Ok(())
     }
+
+    fn process_expired_responses(&mut self, now: Instant) {
+        let handler = self.handler.borrow();
+        let mut ready_streams = Vec::new();
+
+        for (conn_index, conn_handler) in handler.conns.iter() {
+            for (stream_id, response) in conn_handler.responses.iter() {
+                if now >= response.ready_at && response.body_written == 0 {
+                    ready_streams.push((*conn_index, *stream_id));
+                }
+            }
+        }
+
+        drop(handler);
+
+        for (conn_index, stream_id) in ready_streams {
+            if let Some(conn) = self.endpoint.conn_get_mut(conn_index) {
+                debug!(
+                    "Timer expired for conn {} stream {}, waking up.",
+                    conn_index, stream_id
+                );
+
+                _ = conn.stream_want_write(stream_id, true);
+            }
+        }
+    }
 }
 
 fn convert_address_token_key(key: &str) -> [u8; 16] {
@@ -374,6 +415,7 @@ struct Response {
     headers: Option<Vec<tquic::h3::Header>>,
     body: Bytes,
     body_written: usize,
+    ready_at: Instant,
 }
 
 #[derive(Default)]
@@ -395,6 +437,9 @@ struct ConnectionHandler {
 
     /// Mapping stream id to response.
     responses: HashMap<u64, Response>,
+
+    /// Delay responding to client until handshake completes.
+    response_delay: Duration,
 }
 
 impl ConnectionHandler {
@@ -442,21 +487,39 @@ impl ConnectionHandler {
         );
         let body = Bytes::from(body);
 
-        let written = match conn.stream_write(stream_id, body.clone(), true) {
-            Ok(v) => v,
-            Err(tquic::error::Error::Done) => 0,
-            Err(e) => {
-                error!("{} stream write failed {:?}", conn.trace_id(), e);
-                return Ok(());
-            }
-        };
-        if written < body.len() {
-            _ = conn.stream_want_write(stream_id, true);
+        if self.response_delay.is_zero() {
+            let written = match conn.stream_write(stream_id, body.clone(), true) {
+                Ok(v) => v,
+                Err(tquic::error::Error::Done) => 0,
+                Err(e) => {
+                    error!("{} stream write failed {:?}", conn.trace_id(), e);
+                    return Ok(());
+                }
+            };
+            if written < body.len() {
+                _ = conn.stream_want_write(stream_id, true);
 
+                let response = Response {
+                    headers: None,
+                    body,
+                    body_written: written,
+                    ready_at: Instant::now(),
+                };
+
+                self.responses.insert(stream_id, response);
+            }
+        } else {
+            debug!(
+                "{} scheduling response for stream {} with delay {:?}",
+                conn.trace_id(),
+                stream_id,
+                self.response_delay
+            );
             let response = Response {
                 headers: None,
                 body,
-                body_written: written,
+                body_written: 0,
+                ready_at: Instant::now() + self.response_delay,
             };
 
             self.responses.insert(stream_id, response);
@@ -550,37 +613,56 @@ impl ConnectionHandler {
 
         let (headers, body) = self.build_h3_response(headers);
         let h3_conn = self.h3_conn.as_mut().unwrap();
-        match h3_conn.send_headers(conn, stream_id, &headers, false) {
-            Ok(v) => v,
-            Err(tquic::h3::Http3Error::StreamBlocked) => {
+
+        if self.response_delay.is_zero() {
+            match h3_conn.send_headers(conn, stream_id, &headers, false) {
+                Ok(v) => v,
+                Err(tquic::h3::Http3Error::StreamBlocked) => {
+                    let response = Response {
+                        headers: Some(headers),
+                        body,
+                        body_written: 0,
+                        ready_at: Instant::now() + self.response_delay,
+                    };
+
+                    self.responses.insert(stream_id, response);
+                    return Ok(());
+                }
+                Err(e) => {
+                    return Err(format!("{} stream send failed {:?}", conn.trace_id(), e).into());
+                }
+            }
+
+            let written = match h3_conn.send_body(conn, stream_id, body.clone(), true) {
+                Ok(v) => v,
+                Err(tquic::h3::Http3Error::Done) => 0,
+                Err(e) => {
+                    return Err(format!("{} stream send failed {:?}", conn.trace_id(), e).into());
+                }
+            };
+            if written < body.len() {
+                _ = conn.stream_want_write(stream_id, true);
+
                 let response = Response {
-                    headers: Some(headers),
+                    headers: None,
                     body,
-                    body_written: 0,
+                    body_written: written,
+                    ready_at: Instant::now(),
                 };
-
                 self.responses.insert(stream_id, response);
-                return Ok(());
             }
-            Err(e) => {
-                return Err(format!("{} stream send failed {:?}", conn.trace_id(), e).into());
-            }
-        }
-
-        let written = match h3_conn.send_body(conn, stream_id, body.clone(), true) {
-            Ok(v) => v,
-            Err(tquic::h3::Http3Error::Done) => 0,
-            Err(e) => {
-                return Err(format!("{} stream send failed {:?}", conn.trace_id(), e).into());
-            }
-        };
-        if written < body.len() {
-            _ = conn.stream_want_write(stream_id, true);
-
+        } else {
+            debug!(
+                "{} scheduling h3 response for stream {} with delay {:?}",
+                conn.trace_id(),
+                stream_id,
+                self.response_delay
+            );
             let response = Response {
-                headers: None,
+                headers: Some(headers),
                 body,
-                body_written: written,
+                body_written: 0,
+                ready_at: Instant::now() + self.response_delay,
             };
 
             self.responses.insert(stream_id, response);
@@ -699,7 +781,12 @@ impl ConnectionHandler {
     }
 
     fn send_responses(&mut self, conn: &mut Connection, stream_id: u64) {
-        if !self.responses.contains_key(&stream_id) {
+        let response = match self.responses.get_mut(&stream_id) {
+            Some(r) => r,
+            None => return,
+        };
+
+        if Instant::now() < response.ready_at {
             return;
         }
 
@@ -711,6 +798,42 @@ impl ConnectionHandler {
             }
             ApplicationProto::H3 => self.send_h3_response(conn, stream_id),
         }
+    }
+}
+
+struct SharedHandler(Rc<RefCell<ServerHandler>>);
+
+impl TransportHandler for SharedHandler {
+    fn on_conn_created(&mut self, conn: &mut Connection) {
+        self.0.borrow_mut().on_conn_created(conn);
+    }
+
+    fn on_conn_established(&mut self, conn: &mut Connection) {
+        self.0.borrow_mut().on_conn_established(conn);
+    }
+
+    fn on_conn_closed(&mut self, conn: &mut Connection) {
+        self.0.borrow_mut().on_conn_closed(conn);
+    }
+
+    fn on_stream_created(&mut self, conn: &mut Connection, stream_id: u64) {
+        self.0.borrow_mut().on_stream_created(conn, stream_id);
+    }
+
+    fn on_stream_readable(&mut self, conn: &mut Connection, stream_id: u64) {
+        self.0.borrow_mut().on_stream_readable(conn, stream_id);
+    }
+
+    fn on_stream_writable(&mut self, conn: &mut Connection, stream_id: u64) {
+        self.0.borrow_mut().on_stream_writable(conn, stream_id);
+    }
+
+    fn on_stream_closed(&mut self, conn: &mut Connection, stream_id: u64) {
+        self.0.borrow_mut().on_stream_closed(conn, stream_id);
+    }
+
+    fn on_new_token(&mut self, conn: &mut Connection, token: Vec<u8>) {
+        self.0.borrow_mut().on_new_token(conn, token);
     }
 }
 
@@ -729,6 +852,9 @@ struct ServerHandler {
 
     /// Qlog directory
     qlog_dir: Option<String>,
+
+    /// Response delay
+    response_delay: Duration,
 }
 
 impl ServerHandler {
@@ -749,6 +875,7 @@ impl ServerHandler {
             conns: FxHashMap::default(),
             keylog,
             qlog_dir: option.qlog_dir.clone(),
+            response_delay: Duration::from_millis(option.response_delay),
         })
     }
 
@@ -762,6 +889,7 @@ impl ServerHandler {
         let mut conn_handler = ConnectionHandler {
             app_proto: ApplicationProto::from_slice(conn.application_proto()),
             root: self.root.clone(),
+            response_delay: self.response_delay,
             ..Default::default()
         };
 
@@ -772,6 +900,15 @@ impl ServerHandler {
         }
 
         self.conns.insert(index, conn_handler);
+    }
+
+    fn next_timeout(&self) -> Option<Instant> {
+        self.conns
+            .values()
+            .flat_map(|conn_handler| conn_handler.responses.values())
+            .filter(|response| response.body_written == 0)
+            .map(|response| response.ready_at)
+            .min()
     }
 }
 
@@ -890,8 +1027,10 @@ fn main() -> Result<()> {
     let mut option = ServerOpt::parse();
     process_option(&mut option)?;
 
+    let handler = Rc::new(RefCell::new(ServerHandler::new(&option)?));
+
     // Initialize HTTP file server.
-    let mut server = Server::new(&option)?;
+    let mut server = Server::new(&option, handler)?;
 
     // Run event loop.
     info!(
@@ -905,7 +1044,22 @@ fn main() -> Result<()> {
             error!("process connections error: {:?}", e);
         }
 
-        let timeout = server.endpoint.timeout();
+        let quic_timeout = server.endpoint.timeout();
+
+        let app_timeout = server
+            .handler
+            .borrow()
+            .next_timeout()
+            .map(|t| t.saturating_duration_since(Instant::now()));
+
+        let mut timeout = quic_timeout;
+        if let Some(app_timeout) = app_timeout {
+            match timeout {
+                Some(t) if t < app_timeout => {}
+                _ => timeout = Some(app_timeout),
+            }
+        }
+
         debug!(
             "{} wait for io events, timeout: {:?}",
             server.endpoint.trace_id(),
@@ -923,6 +1077,9 @@ fn main() -> Result<()> {
         // Process timeout events.
         // Note: Since `poll()` doesn't clearly tell if there was a timeout when it returns,
         // it is up to the endpoint to check for a timeout and deal with it.
-        server.endpoint.on_timeout(Instant::now());
+        let now = Instant::now();
+        server.endpoint.on_timeout(now);
+
+        server.process_expired_responses(now);
     }
 }
