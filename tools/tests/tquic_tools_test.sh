@@ -22,7 +22,7 @@ set -e
 
 BIN_DIR="./"
 TEST_DIR="./test-`date +%Y%m%d%H%M%S`"
-TEST_CASES="multipath_minrtt,multipath_roundrobin,multipath_redundant"
+TEST_CASES="multipath_minrtt,multipath_roundrobin,multipath_redundant,delayed_response"
 TEST_PID="$$"
 TEST_FILE="10M"
 PATH_NUM=4
@@ -173,6 +173,48 @@ test_multipath() {
     echo -e "Test $algor OK\n"
 }
 
+test_delayed_response() {
+    local test_dir=$1
+    local delay_ms=2000
+    echo "[-] Running delayed response test for ${delay_ms}ms"
+
+    local cert_dir="$test_dir/cert"
+    local data_dir="$test_dir/data"
+    local dump_dir="$test_dir/dump"
+
+    generate_cert $test_dir
+    generate_files $test_dir
+
+    RUST_BACKTRACE=1 $BIN_DIR/tquic_server -l 127.0.8.8:8443 \
+        --cert $cert_dir/cert.crt --key $cert_dir/cert.key --root $data_dir \
+        --response-delay $delay_ms --log-level $LOG_LEVEL \
+        $SRV_OPTIONS &
+    server_pid=$!
+
+    (time RUST_BACKTRACE=1 $BIN_DIR/tquic_client -c 127.0.8.8:8443 \
+        --log-file $test_dir/client.log --log-level $LOG_LEVEL \
+        --dump-dir $dump_dir $CLI_OPTIONS \
+        https://example.org/$TEST_FILE) 2> $test_dir/time.log
+    
+    if ! cmp -s $dump_dir/$TEST_FILE $data_dir/$TEST_FILE; then
+        echo "Files not same $dump_dir/$TEST_FILE:$data_dir/$TEST_FILE"
+        EXIT_CODE=102
+        exit $EXIT_CODE
+    fi
+
+    elapsed_s=$(grep real $test_dir/time.log | awk '{print $2}' | sed 's/m/ /g' | sed 's/s//g' | awk '{print $1 * 60 + $2}')
+    delay_s=$(echo "$delay_ms / 1000" | bc -l)
+    
+    if (( $(echo "$elapsed_s < $delay_s" | bc -l) )); then
+        echo "Elapsed time ($elapsed_s s) is less than delay ($delay_s s)"
+        EXIT_CODE=103
+        exit $EXIT_CODE
+    fi
+    
+    kill $server_pid
+    echo -e "Test delayed_response OK\n"
+}
+
 echo "$TEST_CASES" | sed 's/,/\n/g' | while read -r TEST_CASE; do
     case $TEST_CASE in
         multipath_minrtt)
@@ -184,9 +226,11 @@ echo "$TEST_CASES" | sed 's/,/\n/g' | while read -r TEST_CASE; do
         multipath_roundrobin)
             test_multipath "$TEST_DIR/roundrobin" roundrobin
             ;;
+        delayed_response)
+            test_delayed_response "$TEST_DIR/delayed"
+            ;;
         *)
             echo "[x] Unknown test case $TEST_CASE"
             ;;
     esac
 done
-
