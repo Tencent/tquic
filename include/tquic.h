@@ -365,6 +365,10 @@ typedef struct quic_path_stats_t {
    * Pacing rate estimated by congestion control algorithm.
    */
   uint64_t pacing_rate;
+  /**
+   * Min pacing rate estimated by congestion control algorithm.
+   */
+  uint64_t min_pacing_rate;
 } quic_path_stats_t;
 
 /**

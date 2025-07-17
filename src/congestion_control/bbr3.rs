@@ -365,6 +365,9 @@ pub struct Bbr3 {
     /// controls inter-packet spacing.
     pacing_rate: u64,
 
+    /// BBR.min_pacing_rate: The min pacing rate for a BBR flow.
+    min_pacing_rate: Option<u64>,
+
     /// BBR.send_quantum: The maximum size of a data aggregate scheduled and
     /// transmitted together.
     send_quantum: u64,
@@ -556,6 +559,8 @@ impl Bbr3 {
             stats: Default::default(),
 
             pacing_rate: 0,
+
+            min_pacing_rate: None,
 
             send_quantum: 0,
 
@@ -787,6 +792,7 @@ impl Bbr3 {
 
     fn update_control_parameters(&mut self) {
         self.set_pacing_rate();
+        self.set_min_pacing_rate();
         self.set_send_quantum();
         self.set_cwnd();
     }
@@ -1643,6 +1649,12 @@ impl Bbr3 {
         self.set_pacing_rate_with_gain(self.pacing_gain);
     }
 
+    fn set_min_pacing_rate(&mut self) {
+        self.min_pacing_rate = match self.min_pacing_rate {
+            None => Some(self.pacing_rate),
+            Some(min) => Some(min.min(self.pacing_rate)),
+        }
+    }
     /// See <https://www.ietf.org/archive/id/draft-cardwell-iccrg-bbr-congestion-control-02.html#name-send-quantum-bbrsend_quantu>.
     fn set_send_quantum(&mut self) {
         // A BBR implementation MAY use alternate approaches to select a
@@ -1956,7 +1968,76 @@ impl CongestionController for Bbr3 {
     fn pacing_rate(&self) -> Option<u64> {
         Some(self.pacing_rate)
     }
+
+    fn min_pacing_rate(&self) -> Option<u64> {
+        match self.min_pacing_rate {
+            Some(min_pacing_rate) => Some(min_pacing_rate),
+            None => Some(self.pacing_rate),
+        }
+    }
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bbr3_ack() {
+        let bbr_cfg = Bbr3Config::default();
+        let mut bbr3 = Bbr3::new(bbr_cfg);
+        assert!(bbr3.min_pacing_rate.is_none());
+        assert_eq!(bbr3.min_pacing_rate(), bbr3.pacing_rate());
+
+        let now = Instant::now();
+        let mut pkts: Vec<SentPacket> = Vec::new();
+        let rtt = RttEstimator::new(Duration::from_millis(20));
+        let bytes_lost = 0;
+        let pkt_size: u64 = 1200;
+        let n_pkts = 10;
+        bbr3.full_pipe.is_filled_pipe = true;
+        for n in 0..n_pkts {
+            let mut packet = SentPacket {
+                pkt_num: n,
+                frames: Vec::new(),
+                // Sent timestamp differs.
+                time_sent: now + Duration::from_millis(n),
+                time_acked: Some(now + Duration::from_millis(20)),
+                time_lost: None,
+                ack_eliciting: true,
+                in_flight: true,
+                has_data: false,
+                sent_size: pkt_size as usize,
+                rate_sample_state: Default::default(),
+                ..SentPacket::default()
+            };
+            bbr3.on_sent(now + Duration::from_millis(n), &mut packet, n * pkt_size);
+            pkts.push(packet);
+        }
+
+        let time_acked = now + Duration::from_millis(20);
+        bbr3.begin_ack(time_acked, pkt_size);
+        for i in 0..(n_pkts - 3) {
+            bbr3.on_ack(&mut pkts[i as usize], time_acked, false, &rtt, 0);
+        }
+        let before_end_ack_pacing_rate = bbr3.pacing_rate;
+        bbr3.end_ack();
+        assert!(bbr3.pacing_rate < before_end_ack_pacing_rate);
+        assert_eq!(bbr3.min_pacing_rate(), Some(bbr3.pacing_rate));
+
+        let fast_rtt = RttEstimator::new(Duration::from_millis(10));
+        bbr3.begin_ack(now + Duration::from_millis(20), pkt_size);
+        for i in 0..n_pkts {
+            bbr3.on_ack(
+                &mut pkts[i as usize],
+                now + Duration::from_millis(20),
+                false,
+                &fast_rtt,
+                0,
+            );
+        }
+        let pacing_rate_before = bbr3.pacing_rate;
+        bbr3.end_ack();
+        assert!(bbr3.pacing_rate > pacing_rate_before);
+        assert!(bbr3.min_pacing_rate() < Some(bbr3.pacing_rate));
+    }
+}

@@ -280,6 +280,9 @@ pub struct Copa {
 
     /// Round trip counter.
     round: RoundTripCounter,
+
+    /// Min pacing rate
+    min_pacing_rate: Option<u64>,
 }
 
 impl Copa {
@@ -303,6 +306,7 @@ impl Copa {
             target_rate: 0,
             last_sent_pkt_num: 0,
             round: Default::default(),
+            min_pacing_rate: None,
         }
     }
 
@@ -585,6 +589,15 @@ impl Copa {
         );
     }
 
+    fn update_min_pacing_rate(&mut self) {
+        if let Some(pacing_rate) = self.pacing_rate() {
+            self.min_pacing_rate = match self.min_pacing_rate {
+                Some(min_pacing_rate) => Some(min_pacing_rate.min(pacing_rate)),
+                None => self.pacing_rate(),
+            }
+        }
+    }
+
     /// Get standing rtt.
     fn get_standing_rtt(&self) -> Duration {
         let standing_rtt = Duration::from_micros(self.standing_rtt_filter.get());
@@ -604,6 +617,13 @@ impl CongestionController for Copa {
         let current_rate = (self.cwnd as f64 / standing_rtt.as_secs_f64()) as u64;
 
         Some(PACING_GAIN * current_rate)
+    }
+
+    fn min_pacing_rate(&self) -> Option<u64> {
+        match self.min_pacing_rate {
+            Some(min_pacing_rate) => Some(min_pacing_rate),
+            None => self.pacing_rate(),
+        }
     }
 
     fn name(&self) -> &str {
@@ -716,6 +736,7 @@ impl CongestionController for Copa {
         );
 
         self.update_model();
+        self.update_min_pacing_rate();
     }
 
     fn on_congestion_event(
@@ -736,5 +757,69 @@ impl CongestionController for Copa {
                 .bytes_lost_in_slow_start
                 .saturating_add(lost_bytes);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copa_ack() {
+        let copa_cfg = CopaConfig::default();
+        let mut copa = Copa::new(copa_cfg);
+        assert!(copa.min_pacing_rate.is_none());
+        assert_eq!(copa.min_pacing_rate(), copa.pacing_rate());
+
+        let now = Instant::now();
+        let mut pkts: Vec<SentPacket> = Vec::new();
+        let rtt = RttEstimator::new(Duration::from_millis(20));
+        let bytes_lost = 0;
+        let pkt_size: u64 = 1200;
+        let n_pkts = 10;
+        for n in 0..n_pkts {
+            let mut packet = SentPacket {
+                pkt_num: n,
+                frames: Vec::new(),
+                // Sent timestamp differs.
+                time_sent: now + Duration::from_millis(n),
+                time_acked: Some(now + Duration::from_millis(20)),
+                time_lost: None,
+                ack_eliciting: true,
+                in_flight: true,
+                has_data: false,
+                sent_size: pkt_size as usize,
+                rate_sample_state: Default::default(),
+                ..SentPacket::default()
+            };
+            copa.on_sent(now + Duration::from_millis(n), &mut packet, n * pkt_size);
+            pkts.push(packet);
+        }
+
+        let time_acked = now + Duration::from_millis(20);
+        copa.begin_ack(time_acked, pkt_size);
+        for i in 0..(n_pkts - 3) {
+            copa.on_ack(&mut pkts[i as usize], time_acked, false, &rtt, 0);
+        }
+        let before_end_ack_pacing_rate = copa.pacing_rate();
+        copa.end_ack();
+        assert!(copa.pacing_rate() > before_end_ack_pacing_rate);
+        assert_eq!(copa.min_pacing_rate(), copa.pacing_rate());
+
+        let fast_rtt = RttEstimator::new(Duration::from_millis(10));
+        copa.begin_ack(now + Duration::from_millis(20), pkt_size);
+        for i in 0..n_pkts {
+            copa.on_ack(
+                &mut pkts[i as usize],
+                now + Duration::from_millis(20),
+                false,
+                &fast_rtt,
+                0,
+            );
+        }
+        let before_end_ack_pacing_rate = copa.pacing_rate();
+        copa.end_ack();
+        assert!(copa.pacing_rate() > before_end_ack_pacing_rate);
+        assert!(copa.min_pacing_rate() < copa.pacing_rate());
     }
 }

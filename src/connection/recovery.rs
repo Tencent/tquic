@@ -968,6 +968,7 @@ impl Recovery {
         self.stats.rttvar = self.rtt.rttvar().as_micros() as u64;
         self.stats.in_slow_start = self.congestion.in_slow_start();
         self.stats.pacing_rate = self.congestion.pacing_rate().unwrap_or_default();
+        self.stats.min_pacing_rate = self.congestion.min_pacing_rate().unwrap_or_default();
     }
 
     /// Write a qlog RecoveryMetricsUpdated event if any recovery metric is updated.

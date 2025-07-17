@@ -209,6 +209,9 @@ pub struct Cubic {
     /// Pacing rate
     pacing_rate: u64,
 
+    /// Min pacing rate
+    min_pacing_rate: Option<u64>,
+
     /// Initial rtt.
     initial_rtt: Duration,
 }
@@ -238,6 +241,7 @@ impl Cubic {
             last_sent_time: None,
             stats: Default::default(),
             pacing_rate,
+            min_pacing_rate: None,
             initial_rtt,
         }
     }
@@ -418,6 +422,10 @@ impl CongestionController for Cubic {
         } else {
             (self.cwnd as u128 * 1_000_000 / rtt.smoothed_rtt().as_micros()) as u64
         };
+        self.min_pacing_rate = match self.min_pacing_rate {
+            None => Some(self.pacing_rate),
+            Some(min_pacing_rate) => Some(min_pacing_rate.min(self.pacing_rate)),
+        }
     }
 
     fn end_ack(&mut self) {
@@ -528,6 +536,13 @@ impl CongestionController for Cubic {
     fn pacing_rate(&self) -> Option<u64> {
         Some(self.pacing_rate)
     }
+
+    fn min_pacing_rate(&self) -> Option<u64> {
+        match self.min_pacing_rate {
+            Some(min_pacing_rate) => Some(min_pacing_rate),
+            None => Some(self.pacing_rate),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -637,6 +652,7 @@ mod tests {
         let bytes_lost = 0;
         let pkt_size: u64 = 240;
         let n_pkts = 6;
+        assert_eq!(cubic.min_pacing_rate, None);
 
         // Packets for sample 1.
         for n in 0..n_pkts {
@@ -660,6 +676,7 @@ mod tests {
         let mut time_acked = now + Duration::from_millis(20);
         let mut cwnd = cubic.congestion_window();
         cubic.begin_ack(time_acked, pkt_size);
+        let before_on_ack_pacing_rate = cubic.pacing_rate;
         for i in 0..(n_pkts - 3) {
             cubic.on_ack(&mut pkts[i as usize], time_acked, false, &rtt, 0);
         }
@@ -667,6 +684,8 @@ mod tests {
         assert_eq!(cubic.hystart.has_exited(), false);
         assert_eq!(cubic.in_slow_start(), true);
         assert_eq!(cubic.congestion_window(), cwnd + (n_pkts - 3) * pkt_size);
+        assert!(before_on_ack_pacing_rate < cubic.pacing_rate);
+        assert!(cubic.min_pacing_rate() < Some(cubic.pacing_rate));
 
         // Congestion event.
         cwnd = cubic.congestion_window();
@@ -694,9 +713,12 @@ mod tests {
         pkts[(n_pkts - 1) as usize].time_sent = time_acked + Duration::from_millis(25);
         time_acked += Duration::from_millis(30);
         cubic.begin_ack(time_acked, 0);
+        let before_on_ack_pacing_rate = cubic.pacing_rate;
         cubic.on_ack(&mut pkts[(n_pkts - 1) as usize], time_acked, false, &rtt, 0);
         cubic.end_ack();
         assert!(cubic.cwnd >= cubic.ssthresh);
+        assert!(cubic.pacing_rate < before_on_ack_pacing_rate);
+        assert_eq!(cubic.min_pacing_rate, Some(cubic.pacing_rate));
     }
 
     #[test]

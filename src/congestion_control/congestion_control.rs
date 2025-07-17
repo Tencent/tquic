@@ -177,6 +177,10 @@ pub trait CongestionController {
 
     /// Congestion stats.
     fn stats(&self) -> &CongestionStats;
+
+    fn min_pacing_rate(&self) -> Option<u64> {
+        None
+    }
 }
 
 impl fmt::Debug for dyn CongestionController {
@@ -252,6 +256,7 @@ mod tests {
             cc.minimal_window().max(cc.initial_window())
         );
         assert!(cc.pacing_rate().is_some());
+        assert!(cc.min_pacing_rate().is_some());
         assert_eq!(format!("{:?}", cc), "congestion controller.");
 
         config.set_congestion_control_algorithm(CongestionControlAlgorithm::Bbr);

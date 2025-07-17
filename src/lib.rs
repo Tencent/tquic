@@ -1133,6 +1133,9 @@ pub struct PathStats {
 
     /// Pacing rate estimated by congestion control algorithm.
     pub pacing_rate: u64,
+
+    /// Min pacing rate estimated by congestion control algorithm.
+    pub min_pacing_rate: u64,
 }
 
 #[cfg(test)]

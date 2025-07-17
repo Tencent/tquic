@@ -127,6 +127,10 @@ impl CongestionController for Dummy {
         self.cwnd
     }
 
+    fn pacing_rate(&self) -> Option<u64> {
+        None
+    }
+
     fn initial_window(&self) -> u64 {
         self.cwnd
     }
@@ -139,7 +143,7 @@ impl CongestionController for Dummy {
         &self.stats
     }
 
-    fn pacing_rate(&self) -> Option<u64> {
+    fn min_pacing_rate(&self) -> Option<u64> {
         None
     }
 }
@@ -167,6 +171,7 @@ mod tests {
         assert_eq!(d.in_recovery(Instant::now()), false);
         assert_eq!(d.stats().bytes_in_flight, 0);
         assert_eq!(d.pacing_rate(), None);
+        assert_eq!(d.min_pacing_rate(), None);
     }
 
     #[test]
