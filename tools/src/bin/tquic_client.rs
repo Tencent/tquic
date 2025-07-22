@@ -65,6 +65,7 @@ use tquic::MultipathAlgorithm;
 use tquic::PacketInfo;
 use tquic::TlsConfig;
 use tquic::TransportHandler;
+use tquic::CertCompressionAlgorithm;
 use tquic_tools::ApplicationProto;
 use tquic_tools::QuicSocket;
 use tquic_tools::Result;
@@ -164,6 +165,10 @@ pub struct ClientOpt {
     /// Enable early data.
     #[clap(short, long, help_heading = "Protocol")]
     pub enable_early_data: bool,
+
+    /// Enable certificate compression (comma-separated list: zlib,brotli).
+    #[clap(long, value_name = "ALGORITHMS", help_heading = "Protocol")]
+    pub certificate_compression: Option<String>,
 
     /// Disable stateless reset.
     #[clap(long, help_heading = "Protocol")]
@@ -551,10 +556,31 @@ impl Worker {
         config.set_multipath_algorithm(option.multipath_algor);
         config.set_active_connection_id_limit(option.active_cid_limit);
         config.enable_encryption(!option.disable_encryption);
-        let tls_config = TlsConfig::new_client_config(
+        let mut tls_config = TlsConfig::new_client_config(
             ApplicationProto::convert_to_vec(&option.alpn),
             option.enable_early_data,
         )?;
+        
+        // Configure certificate compression if specified
+        if let Some(ref algorithms) = option.certificate_compression {
+            let mut compression_algorithms = Vec::new();
+            for algorithm in algorithms.split(',') {
+                match algorithm.trim().to_lowercase().as_str() {
+                    "zlib" => compression_algorithms.push(CertCompressionAlgorithm::Zlib),
+                    "brotli" => compression_algorithms.push(CertCompressionAlgorithm::Brotli),
+                    alg => {
+                        error!("Unknown certificate compression algorithm: {}", alg);
+                        continue;
+                    }
+                }
+            }
+            
+            if !compression_algorithms.is_empty() {
+                tls_config.enable_certificate_compression(compression_algorithms)?;
+                info!("Enabled certificate compression: {}", algorithms);
+            }
+        }
+        
         config.set_tls_config(tls_config);
 
         let poll = mio::Poll::new()?;

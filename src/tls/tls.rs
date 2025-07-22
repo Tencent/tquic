@@ -40,6 +40,7 @@ pub use boringssl::crypto::derive_initial_secrets;
 pub use boringssl::crypto::Algorithm;
 pub use boringssl::crypto::Open;
 pub use boringssl::crypto::Seal;
+pub use boringssl::tls::CertCompressionAlgorithm;
 pub use boringssl::tls::SslCtx;
 pub use boringssl::tls::SslEarlyDataReason;
 
@@ -176,6 +177,19 @@ impl TlsConfig {
             self.tls_ctx.load_verify_locations_from_directory(ca_path)?;
         }
 
+        Ok(())
+    }
+
+    /// Enable certificate compression for one or more algorithms.
+    /// Supported algorithms: Zlib, Brotli
+    /// Returns Ok(()) on success, Err on failure.
+    pub fn enable_certificate_compression(
+        &mut self,
+        algorithms: Vec<boringssl::tls::CertCompressionAlgorithm>,
+    ) -> Result<()> {
+        for algorithm in algorithms {
+            self.tls_ctx.add_cert_compression_alg(algorithm)?;
+        }
         Ok(())
     }
 
@@ -1302,6 +1316,102 @@ pub(crate) mod tests {
         assert!(tls_session_pair.client.is_completed());
         assert!(tls_session_pair.server.is_completed());
         assert!(tls_session_pair.client.server_name() == None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn certificate_compression_zlib() -> Result<()> {
+        let mut server_config = TlsConfig::new_server_config(
+            "./src/tls/testdata/cert.crt",
+            "./src/tls/testdata/cert.key",
+            vec![b"h3".to_vec()],
+            false,
+        )?;
+
+        // Enable zlib compression on server
+        server_config.enable_certificate_compression(vec![CertCompressionAlgorithm::Zlib])?;
+
+        let mut client_config = TlsConfig::new_client_config(vec![b"h3".to_vec()], false)?;
+
+        // Enable zlib compression on client
+        client_config.enable_certificate_compression(vec![CertCompressionAlgorithm::Zlib])?;
+
+        let mut tls_session_pair =
+            TlsSessionPair::new_with_tls_config(&client_config, &server_config)?;
+
+        // Perform handshake
+        tls_session_pair.do_handshake(false)?;
+
+        assert!(tls_session_pair.client.is_completed());
+        assert!(tls_session_pair.server.is_completed());
+        assert!(tls_session_pair.client.peer_cert().is_some());
+
+        Ok(())
+    }
+
+    #[test]
+    fn certificate_compression_brotli() -> Result<()> {
+        let mut server_config = TlsConfig::new_server_config(
+            "./src/tls/testdata/cert.crt",
+            "./src/tls/testdata/cert.key",
+            vec![b"h3".to_vec()],
+            false,
+        )?;
+
+        // Enable brotli compression on server
+        server_config.enable_certificate_compression(vec![CertCompressionAlgorithm::Brotli])?;
+
+        let mut client_config = TlsConfig::new_client_config(vec![b"h3".to_vec()], false)?;
+
+        // Enable brotli compression on client
+        client_config.enable_certificate_compression(vec![CertCompressionAlgorithm::Brotli])?;
+
+        let mut tls_session_pair =
+            TlsSessionPair::new_with_tls_config(&client_config, &server_config)?;
+
+        // Perform handshake
+        tls_session_pair.do_handshake(false)?;
+
+        assert!(tls_session_pair.client.is_completed());
+        assert!(tls_session_pair.server.is_completed());
+        assert!(tls_session_pair.client.peer_cert().is_some());
+
+        Ok(())
+    }
+
+    #[test]
+    fn certificate_compression_multiple_algorithms() -> Result<()> {
+        let mut server_config = TlsConfig::new_server_config(
+            "./src/tls/testdata/cert.crt",
+            "./src/tls/testdata/cert.key",
+            vec![b"h3".to_vec()],
+            false,
+        )?;
+
+        // Enable both compression algorithms on server
+        server_config.enable_certificate_compression(vec![
+            CertCompressionAlgorithm::Zlib,
+            CertCompressionAlgorithm::Brotli,
+        ])?;
+
+        let mut client_config = TlsConfig::new_client_config(vec![b"h3".to_vec()], false)?;
+
+        // Enable both compression algorithms on client
+        client_config.enable_certificate_compression(vec![
+            CertCompressionAlgorithm::Zlib,
+            CertCompressionAlgorithm::Brotli,
+        ])?;
+
+        let mut tls_session_pair =
+            TlsSessionPair::new_with_tls_config(&client_config, &server_config)?;
+
+        // Perform handshake
+        tls_session_pair.do_handshake(false)?;
+
+        assert!(tls_session_pair.client.is_completed());
+        assert!(tls_session_pair.server.is_completed());
+        assert!(tls_session_pair.client.peer_cert().is_some());
 
         Ok(())
     }

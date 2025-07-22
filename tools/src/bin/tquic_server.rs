@@ -44,6 +44,7 @@ use tquic::MultipathAlgorithm;
 use tquic::PacketInfo;
 use tquic::TlsConfig;
 use tquic::TransportHandler;
+use tquic::CertCompressionAlgorithm;
 use tquic_tools::ApplicationProto;
 use tquic_tools::QuicSocket;
 use tquic_tools::Result;
@@ -89,6 +90,10 @@ pub struct ServerOpt {
     /// Key for generating address token.
     #[clap(long, value_name = "STR", help_heading = "Protocol")]
     pub address_token_key: Option<String>,
+
+    /// Enable certificate compression (comma-separated list: zlib,brotli).
+    #[clap(long, value_name = "ALGORITHMS", help_heading = "Protocol")]
+    pub certificate_compression: Option<String>,
 
     /// Enable stateless retry.
     #[clap(long, help_heading = "Protocol")]
@@ -309,6 +314,27 @@ impl Server {
         let mut ticket_key = option.ticket_key.clone().into_bytes();
         ticket_key.resize(48, 0);
         tls_config.set_ticket_key(&ticket_key)?;
+        
+        // Configure certificate compression if specified
+        if let Some(ref algorithms) = option.certificate_compression {
+            let mut compression_algorithms = Vec::new();
+            for algorithm in algorithms.split(',') {
+                match algorithm.trim().to_lowercase().as_str() {
+                    "zlib" => compression_algorithms.push(CertCompressionAlgorithm::Zlib),
+                    "brotli" => compression_algorithms.push(CertCompressionAlgorithm::Brotli),
+                    alg => {
+                        error!("Unknown certificate compression algorithm: {}", alg);
+                        continue;
+                    }
+                }
+            }
+            
+            if !compression_algorithms.is_empty() {
+                tls_config.enable_certificate_compression(compression_algorithms)?;
+                info!("Enabled certificate compression: {}", algorithms);
+            }
+        }
+        
         config.set_tls_config(tls_config);
 
         let poll = mio::Poll::new()?;
