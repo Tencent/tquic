@@ -433,7 +433,9 @@ impl ConnectionHandler {
             Ok((start, file_size - 1))
         } else {
             // Format: "bytes=<start>-" or "bytes=<start>-<end>"
-            let start = start_str.parse::<u64>().map_err(|_| "Invalid start value")?;
+            let start = start_str
+                .parse::<u64>()
+                .map_err(|_| "Invalid start value")?;
             if start >= file_size {
                 return Err("Start is out of bounds"); // This will lead to 416
             }
@@ -450,7 +452,6 @@ impl ConnectionHandler {
             Ok((start, end))
         }
     }
-
 
     fn generate_file_path(uri: &str, root: &str) -> path::PathBuf {
         let uri = path::Path::new(uri);
@@ -574,8 +575,7 @@ impl ConnectionHandler {
         for header in headers {
             if header.name() == b":path" {
                 path = std::str::from_utf8(header.value()).unwrap();
-            }
-            else if header.name() == b"range" {
+            } else if header.name() == b"range" {
                 range_header = Some(std::str::from_utf8(header.value()).unwrap());
             }
         }
@@ -614,10 +614,7 @@ impl ConnectionHandler {
                                 b"content-range",
                                 format!("bytes {}-{}/{}", start, end, file_size).as_bytes(),
                             ),
-                            tquic::h3::Header::new(
-                                b"content-length",
-                                len.to_string().as_bytes(),
-                            ),
+                            tquic::h3::Header::new(b"content-length", len.to_string().as_bytes()),
                         ];
                         return (headers, Bytes::from(buffer));
                     }

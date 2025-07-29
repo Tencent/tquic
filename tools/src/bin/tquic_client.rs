@@ -1033,13 +1033,8 @@ impl RequestSender {
 
     fn send_request(&mut self, conn: &mut Connection) -> Result<()> {
         let url = &self.option.urls[self.current_url_idx];
-        let mut request = Request::new(
-            "GET",
-            url,
-            &None,
-            &self.option.dump_dir,
-            &self.option.range,
-        );
+        let mut request =
+            Request::new("GET", url, &None, &self.option.dump_dir, &self.option.range);
         debug!(
             "{} send request {} current index {}",
             conn.trace_id(),
