@@ -1272,7 +1272,7 @@ int quic_stream_set_priority(struct quic_conn_t *conn,
                              bool incremental);
 
 /**
- * Return the stream’s send capacity in bytes.
+ * Return the stream's send capacity in bytes.
  */
 ssize_t quic_stream_capacity(struct quic_conn_t *conn, uint64_t stream_id);
 
@@ -1287,7 +1287,7 @@ bool quic_stream_finished(struct quic_conn_t *conn, uint64_t stream_id);
 int quic_stream_set_context(struct quic_conn_t *conn, uint64_t stream_id, void *data);
 
 /**
- * Return the stream’s user context.
+ * Return the stream's user context.
  */
 void *quic_stream_context(struct quic_conn_t *conn, uint64_t stream_id);
 
@@ -1477,8 +1477,27 @@ void quic_set_logger(void (*cb)(const uint8_t *data, size_t data_len, void *argp
                      void *argp,
                      const char *level);
 
-#ifdef __cplusplus
-} // extern "C"
-#endif // __cplusplus
+/**
+ * Set peer context for the specified path.
+ */
+int quic_path_set_peer_context(struct quic_conn_t *conn,
+                               const struct sockaddr *local,
+                               socklen_t local_len,
+                               const struct sockaddr *remote,
+                               socklen_t remote_len,
+                               void *data);
 
-#endif /* _TQUIC_H_ */
+/**
+ * Get peer context for the specified path.
+ */
+void *quic_path_peer_context(struct quic_conn_t *conn,
+                             const struct sockaddr *local,
+                             socklen_t local_len,
+                             const struct sockaddr *remote,
+                             socklen_t remote_len);
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif  // __cplusplus
+
+#endif  /* _TQUIC_H_ */

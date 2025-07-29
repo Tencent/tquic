@@ -1600,7 +1600,7 @@ pub extern "C" fn quic_stream_set_priority(
     }
 }
 
-/// Return the stream’s send capacity in bytes.
+/// Return the stream's send capacity in bytes.
 #[no_mangle]
 pub extern "C" fn quic_stream_capacity(conn: &mut Connection, stream_id: u64) -> ssize_t {
     match conn.stream_capacity(stream_id) {
@@ -1634,7 +1634,7 @@ pub extern "C" fn quic_stream_set_context(
     }
 }
 
-/// Return the stream’s user context.
+/// Return the stream's user context.
 #[no_mangle]
 pub extern "C" fn quic_stream_context(conn: &mut Connection, stream_id: u64) -> *mut c_void {
     match conn.stream_context(stream_id) {
@@ -2563,5 +2563,40 @@ impl crate::h3::Http3Handler for Http3Handler {
                 f(self.context.0, stream_id);
             }
         }
+    }
+}
+
+/// Set peer context for the specified path.
+#[no_mangle]
+pub extern "C" fn quic_path_set_peer_context(
+    conn: &mut Connection,
+    local: &sockaddr,
+    local_len: socklen_t,
+    remote: &sockaddr,
+    remote_len: socklen_t,
+    data: *mut c_void,
+) -> c_int {
+    let local_addr = sock_addr_from_c(local, local_len);
+    let remote_addr = sock_addr_from_c(remote, remote_len);
+    match conn.set_path_peer_context(local_addr, remote_addr, Context(data)) {
+        Ok(_) => 0,
+        Err(e) => e.to_errno() as c_int,
+    }
+}
+
+/// Get peer context for the specified path.
+#[no_mangle]
+pub extern "C" fn quic_path_peer_context(
+    conn: &mut Connection,
+    local: &sockaddr,
+    local_len: socklen_t,
+    remote: &sockaddr,
+    remote_len: socklen_t,
+) -> *mut c_void {
+    let local_addr = sock_addr_from_c(local, local_len);
+    let remote_addr = sock_addr_from_c(remote, remote_len);
+    match conn.path_peer_context(local_addr, remote_addr) {
+        Ok(Some(v)) => v.downcast_mut::<Context>().unwrap().0,
+        _ => ptr::null_mut(),
     }
 }
