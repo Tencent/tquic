@@ -67,6 +67,7 @@ use tquic::TlsConfig;
 use tquic::TransportHandler;
 use tquic::CertCompressionAlgorithm;
 use tquic_tools::ApplicationProto;
+use tquic_tools::CertCompressionAlgorithmArg;
 use tquic_tools::QuicSocket;
 use tquic_tools::Result;
 
@@ -166,9 +167,9 @@ pub struct ClientOpt {
     #[clap(short, long, help_heading = "Protocol")]
     pub enable_early_data: bool,
 
-    /// Enable certificate compression (comma-separated list: zlib,brotli).
+    /// Enable certificate compression.
     #[clap(long, value_name = "STR", help_heading = "Protocol")]
-    pub certificate_compression: Option<String>,
+    pub certificate_compression: Vec<CertCompressionAlgorithmArg>,
 
     /// Disable stateless reset.
     #[clap(long, help_heading = "Protocol")]
@@ -562,23 +563,20 @@ impl Worker {
         )?;
         
         // Configure certificate compression if specified
-        if let Some(ref algorithms) = option.certificate_compression {
-            let mut compression_algorithms = Vec::new();
-            for algorithm in algorithms.split(',') {
-                match algorithm.trim().to_lowercase().as_str() {
-                    "zlib" => compression_algorithms.push(CertCompressionAlgorithm::Zlib),
-                    "brotli" => compression_algorithms.push(CertCompressionAlgorithm::Brotli),
-                    alg => {
-                        error!("Unknown certificate compression algorithm: {}", alg);
-                        continue;
-                    }
-                }
-            }
+        if !option.certificate_compression.is_empty() {
+            let compression_algorithms: Vec<CertCompressionAlgorithm> = option
+                .certificate_compression
+                .iter()
+                .map(|&arg| arg.into())
+                .collect();
             
-            if !compression_algorithms.is_empty() {
-                tls_config.enable_certificate_compression(compression_algorithms)?;
-                info!("Enabled certificate compression: {}", algorithms);
-            }
+            tls_config.enable_certificate_compression(compression_algorithms)?;
+            let algorithm_names: Vec<String> = option
+                .certificate_compression
+                .iter()
+                .map(|arg| format!("{:?}", arg).to_lowercase())
+                .collect();
+            info!("Enabled certificate compression: {}", algorithm_names.join(", "));
         }
         
         config.set_tls_config(tls_config);

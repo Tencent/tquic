@@ -28,8 +28,30 @@ use slab::Slab;
 
 use tquic::PacketInfo;
 use tquic::PacketSendHandler;
+use tquic::CertCompressionAlgorithm;
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+/// Certificate compression algorithm for clap parsing
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
+pub enum CertCompressionAlgorithmArg {
+    /// zlib compression (RFC 1950)
+    Zlib,
+    /// Brotli compression (RFC 7932)  
+    Brotli,
+    /// Zstandard compression (RFC 8478)
+    Zstd,
+}
+
+impl From<CertCompressionAlgorithmArg> for CertCompressionAlgorithm {
+    fn from(arg: CertCompressionAlgorithmArg) -> Self {
+        match arg {
+            CertCompressionAlgorithmArg::Zlib => CertCompressionAlgorithm::Zlib,
+            CertCompressionAlgorithmArg::Brotli => CertCompressionAlgorithm::Brotli,
+            CertCompressionAlgorithmArg::Zstd => CertCompressionAlgorithm::Zstd,
+        }
+    }
+}
 
 /// Supported application protocols.
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
