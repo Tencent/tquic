@@ -131,6 +131,18 @@ use crate::Result;
 use crate::Shutdown;
 use crate::*;
 
+/// Certificate compression algorithm types for C API compatibility.
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum CertCompressionAlgorithm {
+    /// zlib compression (RFC 1950)
+    Zlib = 1,
+    /// Brotli compression (RFC 7932)
+    Brotli = 2,
+    /// Zstandard compression (RFC 8478)
+    Zstd = 3,
+}
+
 /// Check whether the protocol version is supported.
 #[no_mangle]
 pub extern "C" fn quic_version_is_supported(version: u32) -> bool {
@@ -781,6 +793,37 @@ pub extern "C" fn quic_tls_config_set_ca_certs(
         }
     };
     match tls_config.set_ca_certs(ca_path) {
+        Ok(_) => 0,
+        Err(e) => e.to_errno() as c_int,
+    }
+}
+
+/// Enable certificate compression for one or more algorithms.
+/// Supported algorithms: Zlib(1), Brotli(2), Zstd(3).
+/// The algorithms parameter is an array of algorithm values, and algorithms_len is the array length.
+#[no_mangle]
+pub extern "C" fn quic_tls_config_enable_certificate_compression(
+    tls_config: &mut TlsConfig,
+    algorithms: *const CertCompressionAlgorithm,
+    algorithms_len: size_t,
+) -> c_int {
+    if algorithms.is_null() || algorithms_len == 0 {
+        return -1;
+    }
+
+    let algorithms_slice = unsafe { slice::from_raw_parts(algorithms, algorithms_len) };
+    let mut compression_algorithms = Vec::new();
+
+    for &alg in algorithms_slice {
+        let internal_alg = match alg {
+            CertCompressionAlgorithm::Zlib => crate::tls::CertCompressionAlgorithm::Zlib,
+            CertCompressionAlgorithm::Brotli => crate::tls::CertCompressionAlgorithm::Brotli,
+            CertCompressionAlgorithm::Zstd => crate::tls::CertCompressionAlgorithm::Zstd,
+        };
+        compression_algorithms.push(internal_alg);
+    }
+
+    match tls_config.enable_certificate_compression(compression_algorithms) {
         Ok(_) => 0,
         Err(e) => e.to_errno() as c_int,
     }
