@@ -1253,25 +1253,32 @@ impl Connection {
         Ok(())
     }
 
-    /// Set peer context for the path identified by local address.
+    /// Set peer context for the specific path
     pub fn set_path_peer_context<T: Any + Send + Sync>(
         &mut self,
         local_addr: SocketAddr,
         remote_addr: SocketAddr,
         ctx: T,
     ) -> Result<()> {
-        let path_id = self.paths.get_path_id(&(local_addr, remote_addr)).ok_or
-        (Error::InternalError)?;
+        let path_id = self
+            .paths
+            .get_path_id(&(local_addr, remote_addr))
+            .ok_or(Error::InternalError)?;
 
         let path = self.paths.get_mut(path_id)?;
         path.set_peer_context(ctx);
         Ok(())
     }
 
-    /// Get peer context for the path identified by local address.
-    pub fn path_peer_context(&mut self, local_addr: SocketAddr, remote_addr: SocketAddr)
-        -> Result<Option<&mut dyn Any>> {
-        let path_id = self.paths.get_path_id(&(local_addr, remote_addr))
+    /// Get peer context for the specific path
+    pub fn path_peer_context(
+        &mut self,
+        local_addr: SocketAddr,
+        remote_addr: SocketAddr,
+    ) -> Result<Option<&mut dyn Any>> {
+        let path_id = self
+            .paths
+            .get_path_id(&(local_addr, remote_addr))
             .ok_or(Error::InternalError)?;
 
         let path = self.paths.get_mut(path_id)?;
