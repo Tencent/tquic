@@ -369,6 +369,10 @@ typedef struct quic_path_stats_t {
    * Min pacing rate estimated by congestion control algorithm.
    */
   uint64_t min_pacing_rate;
+  /**
+   * Record the total number of times the PTO is triggered on this path
+   */
+  uint64_t pto_count;
 } quic_path_stats_t;
 
 /**

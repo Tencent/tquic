@@ -1136,6 +1136,9 @@ pub struct PathStats {
 
     /// Min pacing rate estimated by congestion control algorithm.
     pub min_pacing_rate: u64,
+
+    /// Record the total number of times the PTO is triggered on this path
+    pub pto_count: u64,
 }
 
 #[cfg(test)]
