@@ -167,7 +167,7 @@ pub struct ClientOpt {
     pub enable_early_data: bool,
 
     /// Enable certificate compression (comma-separated list: zlib,brotli).
-    #[clap(long, value_name = "ALGORITHMS", help_heading = "Protocol")]
+    #[clap(long, value_name = "STR", help_heading = "Protocol")]
     pub certificate_compression: Option<String>,
 
     /// Disable stateless reset.
