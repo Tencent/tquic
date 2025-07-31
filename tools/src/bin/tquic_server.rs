@@ -36,6 +36,7 @@ use tquic::h3::connection::Http3Connection;
 use tquic::h3::Header;
 use tquic::h3::Http3Config;
 use tquic::h3::NameValue;
+use tquic::CertCompressionAlgorithm;
 use tquic::Config;
 use tquic::CongestionControlAlgorithm;
 use tquic::Connection;
@@ -45,7 +46,6 @@ use tquic::MultipathAlgorithm;
 use tquic::PacketInfo;
 use tquic::TlsConfig;
 use tquic::TransportHandler;
-use tquic::CertCompressionAlgorithm;
 use tquic_tools::ApplicationProto;
 use tquic_tools::CertCompressionAlgorithmArg;
 use tquic_tools::QuicSocket;
@@ -316,7 +316,7 @@ impl Server {
         let mut ticket_key = option.ticket_key.clone().into_bytes();
         ticket_key.resize(48, 0);
         tls_config.set_ticket_key(&ticket_key)?;
-        
+
         // Configure certificate compression if specified
         if !option.certificate_compression.is_empty() {
             let compression_algorithms: Vec<CertCompressionAlgorithm> = option
@@ -324,16 +324,19 @@ impl Server {
                 .iter()
                 .map(|&arg| arg.into())
                 .collect();
-            
+
             tls_config.enable_certificate_compression(compression_algorithms)?;
             let algorithm_names: Vec<String> = option
                 .certificate_compression
                 .iter()
                 .map(|arg| format!("{:?}", arg).to_lowercase())
                 .collect();
-            info!("Enabled certificate compression: {}", algorithm_names.join(", "));
+            info!(
+                "Enabled certificate compression: {}",
+                algorithm_names.join(", ")
+            );
         }
-        
+
         config.set_tls_config(tls_config);
 
         let poll = mio::Poll::new()?;

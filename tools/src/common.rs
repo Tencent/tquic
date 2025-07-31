@@ -26,9 +26,9 @@ use mio::Token;
 use rustc_hash::FxHashMap;
 use slab::Slab;
 
+use tquic::CertCompressionAlgorithm;
 use tquic::PacketInfo;
 use tquic::PacketSendHandler;
-use tquic::CertCompressionAlgorithm;
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
