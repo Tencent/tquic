@@ -969,6 +969,7 @@ impl Recovery {
         self.stats.in_slow_start = self.congestion.in_slow_start();
         self.stats.pacing_rate = self.congestion.pacing_rate().unwrap_or_default();
         self.stats.min_pacing_rate = self.congestion.min_pacing_rate().unwrap_or_default();
+        self.stats.pto_count = self.pto_count as u64;
     }
 
     /// Write a qlog RecoveryMetricsUpdated event if any recovery metric is updated.
@@ -1280,6 +1281,7 @@ mod tests {
         )?;
         assert_eq!(lost_pkts, 0);
         assert_eq!(lost_bytes, 0);
+        assert_eq!(recovery.pto_count, 0);
 
         recovery.drain_sent_packets(
             spaces.get_mut(space_id).unwrap(),
