@@ -27,24 +27,6 @@
 #define MAX_CID_LEN 20
 
 /**
- * Certificate compression algorithm types for C API compatibility.
- */
-typedef enum quic_cert_compression_algorithm {
-  /**
-   * zlib compression (RFC 1950)
-   */
-  QUIC_CERT_COMPRESSION_ALGORITHM_ZLIB = 1,
-  /**
-   * Brotli compression (RFC 7932)
-   */
-  QUIC_CERT_COMPRESSION_ALGORITHM_BROTLI = 2,
-  /**
-   * Zstandard compression (RFC 8478)
-   */
-  QUIC_CERT_COMPRESSION_ALGORITHM_ZSTD = 3,
-} quic_cert_compression_algorithm;
-
-/**
  * Available congestion control algorithms.
  */
 typedef enum quic_congestion_control_algorithm {
@@ -876,15 +858,6 @@ int quic_tls_config_set_private_key_file(struct quic_tls_config_t *tls_config,
  * Set CA certificates.
  */
 int quic_tls_config_set_ca_certs(struct quic_tls_config_t *tls_config, const char *ca_path);
-
-/**
- * Enable certificate compression for one or more algorithms.
- * Supported algorithms: Zlib(1), Brotli(2), Zstd(3).
- * The algorithms parameter is an array of algorithm values, and algorithms_len is the array length.
- */
-int quic_tls_config_enable_certificate_compression(struct quic_tls_config_t *tls_config,
-                                                   const enum quic_cert_compression_algorithm *algorithms,
-                                                   size_t algorithms_len);
 
 /**
  * Set TLS config selector.

@@ -65,9 +65,7 @@ use tquic::MultipathAlgorithm;
 use tquic::PacketInfo;
 use tquic::TlsConfig;
 use tquic::TransportHandler;
-use tquic::CertCompressionAlgorithm;
 use tquic_tools::ApplicationProto;
-use tquic_tools::CertCompressionAlgorithmArg;
 use tquic_tools::QuicSocket;
 use tquic_tools::Result;
 
@@ -166,10 +164,6 @@ pub struct ClientOpt {
     /// Enable early data.
     #[clap(short, long, help_heading = "Protocol")]
     pub enable_early_data: bool,
-
-    /// Enable certificate compression.
-    #[clap(long, value_name = "STR", help_heading = "Protocol")]
-    pub certificate_compression: Vec<CertCompressionAlgorithmArg>,
 
     /// Disable stateless reset.
     #[clap(long, help_heading = "Protocol")]
@@ -557,28 +551,10 @@ impl Worker {
         config.set_multipath_algorithm(option.multipath_algor);
         config.set_active_connection_id_limit(option.active_cid_limit);
         config.enable_encryption(!option.disable_encryption);
-        let mut tls_config = TlsConfig::new_client_config(
+        let tls_config = TlsConfig::new_client_config(
             ApplicationProto::convert_to_vec(&option.alpn),
             option.enable_early_data,
         )?;
-        
-        // Configure certificate compression if specified
-        if !option.certificate_compression.is_empty() {
-            let compression_algorithms: Vec<CertCompressionAlgorithm> = option
-                .certificate_compression
-                .iter()
-                .map(|&arg| arg.into())
-                .collect();
-            
-            tls_config.enable_certificate_compression(compression_algorithms)?;
-            let algorithm_names: Vec<String> = option
-                .certificate_compression
-                .iter()
-                .map(|arg| format!("{:?}", arg).to_lowercase())
-                .collect();
-            info!("Enabled certificate compression: {}", algorithm_names.join(", "));
-        }
-        
         config.set_tls_config(tls_config);
 
         let poll = mio::Poll::new()?;

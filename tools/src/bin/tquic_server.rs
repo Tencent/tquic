@@ -27,7 +27,6 @@ use std::vec;
 
 use bytes::Bytes;
 use clap::Parser;
-
 use log::*;
 use mio::event::Event;
 use rustc_hash::FxHashMap;
@@ -45,9 +44,7 @@ use tquic::MultipathAlgorithm;
 use tquic::PacketInfo;
 use tquic::TlsConfig;
 use tquic::TransportHandler;
-use tquic::CertCompressionAlgorithm;
 use tquic_tools::ApplicationProto;
-use tquic_tools::CertCompressionAlgorithmArg;
 use tquic_tools::QuicSocket;
 use tquic_tools::Result;
 
@@ -92,10 +89,6 @@ pub struct ServerOpt {
     /// Key for generating address token.
     #[clap(long, value_name = "STR", help_heading = "Protocol")]
     pub address_token_key: Option<String>,
-
-    /// Enable certificate compression.
-    #[clap(long, value_name = "STR", help_heading = "Protocol")]
-    pub certificate_compression: Vec<CertCompressionAlgorithmArg>,
 
     /// Enable stateless retry.
     #[clap(long, help_heading = "Protocol")]
@@ -316,24 +309,6 @@ impl Server {
         let mut ticket_key = option.ticket_key.clone().into_bytes();
         ticket_key.resize(48, 0);
         tls_config.set_ticket_key(&ticket_key)?;
-        
-        // Configure certificate compression if specified
-        if !option.certificate_compression.is_empty() {
-            let compression_algorithms: Vec<CertCompressionAlgorithm> = option
-                .certificate_compression
-                .iter()
-                .map(|&arg| arg.into())
-                .collect();
-            
-            tls_config.enable_certificate_compression(compression_algorithms)?;
-            let algorithm_names: Vec<String> = option
-                .certificate_compression
-                .iter()
-                .map(|arg| format!("{:?}", arg).to_lowercase())
-                .collect();
-            info!("Enabled certificate compression: {}", algorithm_names.join(", "));
-        }
-        
         config.set_tls_config(tls_config);
 
         let poll = mio::Poll::new()?;
