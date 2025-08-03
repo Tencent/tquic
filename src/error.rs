@@ -149,6 +149,9 @@ pub enum Error {
     /// associated data.
     StreamReset(u64),
 
+    /// Datagram operation error.
+    DatagramError(String),
+
     /// I/O error.
     IoError(String),
 }
@@ -215,7 +218,8 @@ impl Error {
             Error::TlsFail(_) => -109,
             Error::StreamStopped(_) => -110,
             Error::StreamReset(_) => -111,
-            Error::IoError(_) => -112,
+            Error::DatagramError(_) => -112,
+            Error::IoError(_) => -113,
         }
     }
 }

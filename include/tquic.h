@@ -780,9 +780,28 @@ void quic_config_set_zerortt_buffer_size(struct quic_config_t *config, uint16_t 
 void quic_config_set_max_undecryptable_packets(struct quic_config_t *config, uint16_t v);
 
 /**
+ * Enable datagram support with the specified maximum frame size.
+ * Set to 0 to disable datagram support.
+ * The default value is 0 (disabled).
+ */
+void quic_config_set_datagram_enabled(struct quic_config_t *config, uintptr_t max_frame_size);
+
+/**
+ * Set the maximum size of the datagram send buffer in bytes.
+ * The default value is 1MB.
+ */
+void quic_config_set_datagram_send_buffer_size(struct quic_config_t *config, uintptr_t size);
+
+/**
+ * Set the maximum size of the datagram send buffer in bytes.
+ * The default value is 1MB.
+ */
+void quic_config_set_datagram_recv_buffer_size(struct quic_config_t *config, uintptr_t size);
+
+/**
  * Enable or disable encryption on 1-RTT packets. (Experimental)
  * The default value is true.
- * WARN: The The disable_1rtt_encryption extension is not meant to be used
+ * WARN: The disable_1rtt_encryption extension is not meant to be used
  * for any practical application protocol on the open internet.
  */
 void quic_config_enable_encryption(struct quic_config_t *config, bool v);
@@ -1232,6 +1251,39 @@ int quic_conn_close(struct quic_conn_t *conn,
                     uint64_t err,
                     const uint8_t *reason,
                     size_t reason_len);
+
+/**
+ * Send a datagram with the given data.
+ */
+int quic_conn_datagram_send(struct quic_conn_t *conn,
+                            const uint8_t *data,
+                            size_t data_len,
+                            bool drop_if_full);
+
+/**
+ * Receive a datagram.
+ */
+ssize_t quic_conn_datagram_recv(struct quic_conn_t *conn, uint8_t *out, size_t out_len);
+
+/**
+ * Get the maximum datagram payload size that can be sent.
+ */
+size_t quic_conn_datagram_max_size(struct quic_conn_t *conn);
+
+/**
+ * Get the available space in the datagram send buffer.
+ */
+size_t quic_conn_datagram_send_buffer_space(struct quic_conn_t *conn);
+
+/**
+ * Get the available space in the datagram receive buffer.
+ */
+size_t quic_conn_datagram_recv_buffer_space(struct quic_conn_t *conn);
+
+/**
+ * Check if there are datagrams available to receive.
+ */
+bool quic_conn_datagram_readable(struct quic_conn_t *conn);
 
 /**
  * Set want write flag for a stream.

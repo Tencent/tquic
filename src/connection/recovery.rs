@@ -308,7 +308,7 @@ impl Recovery {
 
     /// Detect acknowledged packets.
     ///
-    /// It return the latest RTT sample, if any.
+    /// It returns the latest RTT sample, if any.
     fn detect_acked_packets(
         &mut self,
         ranges: &RangeSet,
@@ -447,7 +447,7 @@ impl Recovery {
             .take_while(|p| p.pkt_num <= space.largest_acked_pkt)
             .filter(|p| p.time_acked.is_none() && p.time_lost.is_none());
         for unacked in unacked_iter {
-            // A packet is declared lost if it meets all of the following
+            // A packet is declared lost if it meets any of the following
             // conditions:
             // * The packet is unacknowledged, in flight, and was sent prior to
             //   an acknowledged packet.

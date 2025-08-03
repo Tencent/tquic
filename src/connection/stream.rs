@@ -1601,7 +1601,7 @@ impl StreamMap {
     }
 
     /// STREAM frame was lost, mark data block should be retransmitted and
-    /// try add stream to priority queue.
+    /// try to add stream to priority queue.
     pub fn on_stream_frame_lost(&mut self, stream_id: u64, offset: u64, length: usize, fin: bool) {
         let stream = match self.streams.get_mut(&stream_id) {
             Some(v) => v,

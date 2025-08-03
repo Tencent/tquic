@@ -178,6 +178,10 @@ pub enum Frame {
         seq_num: u64,
         status: u64,
     },
+
+    /// DATAGRAM frame (types 0x30 and 0x31) is used to transmit application
+    /// data in an unreliable manner. See RFC 9221.
+    Datagram { data: Bytes },
 }
 
 impl Frame {
@@ -358,6 +362,22 @@ impl Frame {
                 seq_num: b.read_varint()?,
                 status: b.read_varint()?,
             },
+
+            0x30..=0x31 => {
+                let length_present = (frame_type & 0x01) != 0;
+                let length = if length_present {
+                    b.read_varint()? as usize
+                } else {
+                    b.len()
+                };
+                if length > b.len() {
+                    return Err(Error::BufferTooShort);
+                }
+                let start = buf.len() - b.len();
+                let data = buf.slice(start..(start + length));
+                b.skip(length)?;
+                Frame::Datagram { data }
+            }
 
             _ => return Err(Error::FrameEncodingError),
         };
@@ -609,6 +629,13 @@ impl Frame {
                 b.write_varint(*seq_num)?;
                 b.write_varint(*status)?;
             }
+
+            Frame::Datagram { data } => {
+                // Use frame type 0x31 (with length) for better compatibility
+                b.write_varint(0x31)?;
+                b.write_varint(data.len() as u64)?;
+                b.write(data.as_ref())?;
+            }
         }
 
         Ok(len - b.len())
@@ -766,6 +793,10 @@ impl Frame {
                 4 + codec::encode_varint_len(*dcid_seq_num)
                     + codec::encode_varint_len(*seq_num)
                     + codec::encode_varint_len(*status)
+            }
+
+            Frame::Datagram { data } => {
+                1 + codec::encode_varint_len(data.len() as u64) + data.len()
             }
         }
     }
@@ -931,6 +962,11 @@ impl Frame {
             Frame::PathStatus { .. } => QuicFrame::Unknown {
                 raw_frame_type: 0x15228c06,
                 frame_type_value: None,
+                raw: None,
+            },
+
+            Frame::Datagram { data } => QuicFrame::Datagram {
+                length: data.len() as u64,
                 raw: None,
             },
         }
@@ -1111,6 +1147,10 @@ impl std::fmt::Debug for Frame {
                     f,
                     "PATH_STATUS dcid_seq_num={dcid_seq_num:x} seq_num={seq_num:x} status={status:x}",
                 )?;
+            }
+
+            Frame::Datagram { data } => {
+                write!(f, "DATAGRAM len={}", data.len())?;
             }
         }
 
@@ -1886,6 +1926,25 @@ mod tests {
         assert_eq!(Frame::PathChallenge { data: [1; 8] }.probing(), true);
         assert_eq!(Frame::PathResponse { data: [1; 8] }.probing(), true);
 
+        Ok(())
+    }
+
+    #[test]
+    fn datagram() -> Result<()> {
+        let data = Bytes::copy_from_slice(&[1, 2, 3, 4, 5]);
+        let frame = Frame::Datagram { data: data.clone() };
+        assert_eq!(format!("{:?}", &frame), "DATAGRAM len=5");
+
+        let mut buf = [0; 128];
+        let len = frame.to_bytes(&mut buf[..])?;
+        assert_eq!(len, frame.wire_len());
+        assert_eq!(len, 7); // 1 byte frame type + 1 byte length + 5 bytes data
+
+        let mut buf = Bytes::copy_from_slice(&buf);
+        assert_eq!((frame, 7), Frame::from_bytes(&mut buf, PacketType::OneRTT)?);
+        assert!(Frame::from_bytes(&mut buf, PacketType::ZeroRTT).is_ok());
+        assert!(Frame::from_bytes(&mut buf, PacketType::Initial).is_err());
+        assert!(Frame::from_bytes(&mut buf, PacketType::Handshake).is_err());
         Ok(())
     }
 

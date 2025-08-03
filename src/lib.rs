@@ -74,7 +74,7 @@ use ring::hmac;
 use rustc_hash::FxHashSet;
 
 use crate::codec::VINT_MAX;
-use crate::connection::stream;
+use crate::connection::{datagram, stream};
 use crate::tls::TlsSession;
 use crate::token::ResetToken;
 use crate::trans_param::TransportParams;
@@ -354,6 +354,9 @@ pub struct Config {
     /// Multipath transport configurations.
     multipath: MultipathConfig,
 
+    /// Datagram configurations.
+    datagram: datagram::DatagramConfig,
+
     /// Find TLS config according to server name.
     tls_config_selector: Option<Arc<dyn tls::TlsConfigSelector>>,
 }
@@ -404,6 +407,7 @@ impl Config {
             max_undecryptable_packets: 10,
             recovery: RecoveryConfig::default(),
             multipath: MultipathConfig::default(),
+            datagram: datagram::DatagramConfig::default(),
             tls_config_selector: None,
         })
     }
@@ -631,6 +635,27 @@ impl Config {
     /// The default value is MultipathAlgorithm::MinRtt
     pub fn set_multipath_algorithm(&mut self, v: MultipathAlgorithm) {
         self.multipath.multipath_algorithm = v;
+    }
+
+    /// Enable datagram support with the specified maximum frame size.
+    /// Set to None to disable datagram support.
+    /// The default value is None (disabled).
+    pub fn set_datagram_enabled(&mut self, max_frame_size: Option<usize>) {
+        self.datagram.max_datagram_frame_size = max_frame_size;
+        self.local_transport_params.max_datagram_frame_size =
+            max_frame_size.map(|size| size as u64);
+    }
+
+    /// Set the maximum size of the datagram send buffer in bytes.
+    /// The default value is 1MB.
+    pub fn set_datagram_send_buffer_size(&mut self, size: usize) {
+        self.datagram.send_buffer_size = size;
+    }
+
+    /// Set the maximum size of the datagram receive buffer in bytes.
+    /// The default value is 1MB.
+    pub fn set_datagram_recv_buffer_size(&mut self, size: usize) {
+        self.datagram.recv_buffer_size = size;
     }
 
     /// Set the maximum size of the connection flow control window.

@@ -572,9 +572,36 @@ pub extern "C" fn quic_config_set_max_undecryptable_packets(config: &mut Config,
     config.set_max_undecryptable_packets(v as usize);
 }
 
+/// Enable datagram support with the specified maximum frame size.
+/// Set to 0 to disable datagram support.
+/// The default value is 0 (disabled).
+#[no_mangle]
+pub extern "C" fn quic_config_set_datagram_enabled(config: &mut Config, max_frame_size: usize) {
+    let max_frame_size = if max_frame_size == 0 {
+        None
+    } else {
+        Some(max_frame_size)
+    };
+    config.set_datagram_enabled(max_frame_size);
+}
+
+/// Set the maximum size of the datagram send buffer in bytes.
+/// The default value is 1MB.
+#[no_mangle]
+pub extern "C" fn quic_config_set_datagram_send_buffer_size(config: &mut Config, size: usize) {
+    config.set_datagram_send_buffer_size(size);
+}
+
+/// Set the maximum size of the datagram send buffer in bytes.
+/// The default value is 1MB.
+#[no_mangle]
+pub extern "C" fn quic_config_set_datagram_recv_buffer_size(config: &mut Config, size: usize) {
+    config.set_datagram_recv_buffer_size(size);
+}
+
 /// Enable or disable encryption on 1-RTT packets. (Experimental)
 /// The default value is true.
-/// WARN: The The disable_1rtt_encryption extension is not meant to be used
+/// WARN: The disable_1rtt_encryption extension is not meant to be used
 /// for any practical application protocol on the open internet.
 #[no_mangle]
 pub extern "C" fn quic_config_enable_encryption(config: &mut Config, v: bool) {
@@ -1503,6 +1530,66 @@ pub extern "C" fn quic_conn_close(
         Ok(_) => 0,
         Err(e) => e.to_errno() as c_int,
     }
+}
+
+/// Send a datagram with the given data.
+#[no_mangle]
+pub extern "C" fn quic_conn_datagram_send(
+    conn: &mut Connection,
+    data: *const u8,
+    data_len: size_t,
+    drop_if_full: bool,
+) -> c_int {
+    let out = unsafe { slice::from_raw_parts_mut(out, out_len) };
+    match conn.datagram_send() {
+        Ok(_) => 0,
+        Err(e) => e.to_errno() as c_int,
+    }
+}
+
+/// Receive a datagram.
+#[no_mangle]
+pub extern "C" fn quic_conn_datagram_recv(
+    conn: &mut Connection,
+    out: *mut u8,
+    out_len: size_t,
+) -> ssize_t {
+    let out = unsafe { slice::from_raw_parts(out, out_len) };
+    match conn.datagram_recv() {
+        Some(data) => {
+            let copy_len = data.len().min(out_len);
+            out[..copy_len].copy_from_slice(&data[..copy_len]);
+            copy_len as ssize_t
+        }
+        None => 0,
+    }
+}
+
+/// Get the maximum datagram payload size that can be sent.
+#[no_mangle]
+pub extern "C" fn quic_conn_datagram_max_size(conn: &mut Connection) -> size_t {
+    match conn.datagram_max_size() {
+        Some(size) => size,
+        None => 0,
+    }
+}
+
+/// Get the available space in the datagram send buffer.
+#[no_mangle]
+pub extern "C" fn quic_conn_datagram_send_buffer_space(conn: &mut Connection) -> size_t {
+    conn.datagram_send_buffer_space()
+}
+
+/// Get the available space in the datagram receive buffer.
+#[no_mangle]
+pub extern "C" fn quic_conn_datagram_recv_buffer_space(conn: &mut Connection) -> size_t {
+    conn.datagram_recv_buffer_space()
+}
+
+/// Check if there are datagrams available to receive.
+#[no_mangle]
+pub extern "C" fn quic_conn_datagram_readable(conn: &mut Connection) -> bool {
+    conn.datagram_readable()
 }
 
 /// Set want write flag for a stream.
