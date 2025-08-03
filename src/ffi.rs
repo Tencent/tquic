@@ -1540,8 +1540,9 @@ pub extern "C" fn quic_conn_datagram_send(
     data_len: size_t,
     drop_if_full: bool,
 ) -> c_int {
-    let out = unsafe { slice::from_raw_parts_mut(out, out_len) };
-    match conn.datagram_send() {
+    let data = unsafe { slice::from_raw_parts(data, data_len) };
+    let data = Bytes::copy_from_slice(data);
+    match conn.datagram_send(data, drop_if_full) {
         Ok(_) => 0,
         Err(e) => e.to_errno() as c_int,
     }
@@ -1554,8 +1555,8 @@ pub extern "C" fn quic_conn_datagram_recv(
     out: *mut u8,
     out_len: size_t,
 ) -> ssize_t {
-    let out = unsafe { slice::from_raw_parts(out, out_len) };
-    match conn.datagram_recv() {
+    let out = unsafe { slice::from_raw_parts_mut(out, out_len) };
+    match conn.datagram_recv(out) {
         Some(data) => {
             let copy_len = data.len().min(out_len);
             out[..copy_len].copy_from_slice(&data[..copy_len]);
