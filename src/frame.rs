@@ -351,18 +351,6 @@ impl Frame {
 
             0x1e => Frame::HandshakeDone,
 
-            0x15228c05 => Frame::PathAbandon {
-                dcid_seq_num: b.read_varint()?,
-                error_code: b.read_varint()?,
-                reason: b.read_with_varint_length()?.to_vec(),
-            },
-
-            0x15228c06 => Frame::PathStatus {
-                dcid_seq_num: b.read_varint()?,
-                seq_num: b.read_varint()?,
-                status: b.read_varint()?,
-            },
-
             0x30..=0x31 => {
                 let length_present = (frame_type & 0x01) != 0;
                 let length = if length_present {
@@ -378,6 +366,18 @@ impl Frame {
                 b.skip(length)?;
                 Frame::Datagram { data }
             }
+
+            0x15228c05 => Frame::PathAbandon {
+                dcid_seq_num: b.read_varint()?,
+                error_code: b.read_varint()?,
+                reason: b.read_with_varint_length()?.to_vec(),
+            },
+
+            0x15228c06 => Frame::PathStatus {
+                dcid_seq_num: b.read_varint()?,
+                seq_num: b.read_varint()?,
+                status: b.read_varint()?,
+            },
 
             _ => return Err(Error::FrameEncodingError),
         };
@@ -607,6 +607,13 @@ impl Frame {
                 b.write_varint(0x1e)?;
             }
 
+            Frame::Datagram { data } => {
+                // Use frame type 0x31 (with length) for better compatibility
+                b.write_varint(0x31)?;
+                b.write_varint(data.len() as u64)?;
+                b.write(data.as_ref())?;
+            }
+
             Frame::PathAbandon {
                 dcid_seq_num,
                 error_code,
@@ -630,12 +637,6 @@ impl Frame {
                 b.write_varint(*status)?;
             }
 
-            Frame::Datagram { data } => {
-                // Use frame type 0x31 (with length) for better compatibility
-                b.write_varint(0x31)?;
-                b.write_varint(data.len() as u64)?;
-                b.write(data.as_ref())?;
-            }
         }
 
         Ok(len - b.len())
@@ -770,6 +771,10 @@ impl Frame {
 
             Frame::HandshakeDone => 1,
 
+            Frame::Datagram { data } => {
+                1 + codec::encode_varint_len(data.len() as u64) + data.len()
+            }
+
             Frame::PathAbandon {
                 dcid_seq_num,
                 error_code,
@@ -795,9 +800,6 @@ impl Frame {
                     + codec::encode_varint_len(*status)
             }
 
-            Frame::Datagram { data } => {
-                1 + codec::encode_varint_len(data.len() as u64) + data.len()
-            }
         }
     }
 
@@ -953,6 +955,11 @@ impl Frame {
 
             Frame::HandshakeDone => QuicFrame::HandshakeDone,
 
+            Frame::Datagram { data } => QuicFrame::Datagram {
+                length: data.len() as u64,
+                raw: None,
+            },
+
             Frame::PathAbandon { .. } => QuicFrame::Unknown {
                 raw_frame_type: 0x15228c05,
                 frame_type_value: None,
@@ -965,10 +972,6 @@ impl Frame {
                 raw: None,
             },
 
-            Frame::Datagram { data } => QuicFrame::Datagram {
-                length: data.len() as u64,
-                raw: None,
-            },
         }
     }
 
@@ -1127,6 +1130,10 @@ impl std::fmt::Debug for Frame {
                 write!(f, "HANDSHAKE_DONE")?;
             }
 
+            Frame::Datagram { data } => {
+                write!(f, "DATAGRAM len={}", data.len())?;
+            }
+
             Frame::PathAbandon {
                 dcid_seq_num,
                 error_code,
@@ -1149,9 +1156,6 @@ impl std::fmt::Debug for Frame {
                 )?;
             }
 
-            Frame::Datagram { data } => {
-                write!(f, "DATAGRAM len={}", data.len())?;
-            }
         }
 
         Ok(())
