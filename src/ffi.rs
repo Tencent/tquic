@@ -1556,7 +1556,7 @@ pub extern "C" fn quic_conn_datagram_recv(
     out_len: size_t,
 ) -> ssize_t {
     let out = unsafe { slice::from_raw_parts_mut(out, out_len) };
-    match conn.datagram_recv(out) {
+    match conn.datagram_recv() {
         Some(data) => {
             let copy_len = data.len().min(out_len);
             out[..copy_len].copy_from_slice(&data[..copy_len]);
