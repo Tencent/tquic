@@ -636,7 +636,6 @@ impl Frame {
                 b.write_varint(*seq_num)?;
                 b.write_varint(*status)?;
             }
-
         }
 
         Ok(len - b.len())
@@ -799,7 +798,6 @@ impl Frame {
                     + codec::encode_varint_len(*seq_num)
                     + codec::encode_varint_len(*status)
             }
-
         }
     }
 
@@ -971,7 +969,6 @@ impl Frame {
                 frame_type_value: None,
                 raw: None,
             },
-
         }
     }
 
@@ -1155,7 +1152,6 @@ impl std::fmt::Debug for Frame {
                     "PATH_STATUS dcid_seq_num={dcid_seq_num:x} seq_num={seq_num:x} status={status:x}",
                 )?;
             }
-
         }
 
         Ok(())
