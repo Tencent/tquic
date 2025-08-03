@@ -161,6 +161,10 @@ pub enum Frame {
     /// confirmation of the handshake to the client.
     HandshakeDone,
 
+    /// DATAGRAM frame (types 0x30 and 0x31) is used to transmit application
+    /// data in an unreliable manner. See RFC 9221.
+    Datagram { data: Bytes },
+
     /// PATH_ABANDON frame informs the peer to abandon a path.
     /// See draft-ietf-quic-multipath-05.
     PathAbandon {
@@ -178,10 +182,6 @@ pub enum Frame {
         seq_num: u64,
         status: u64,
     },
-
-    /// DATAGRAM frame (types 0x30 and 0x31) is used to transmit application
-    /// data in an unreliable manner. See RFC 9221.
-    Datagram { data: Bytes },
 }
 
 impl Frame {
