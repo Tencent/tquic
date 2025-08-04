@@ -1549,7 +1549,6 @@ impl TransportHandler for WorkerHandler {
                 conn.trace_id()
             );
             self.try_new_request_sender(conn);
-            self.try_send_request(conn);
         }
     }
 
