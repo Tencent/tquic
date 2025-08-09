@@ -57,6 +57,7 @@ use tquic::error::Error;
 use tquic::h3::connection::Http3Connection;
 use tquic::h3::Header;
 use tquic::h3::Http3Config;
+use tquic::CertCompressionAlgorithm;
 use tquic::Config;
 use tquic::CongestionControlAlgorithm;
 use tquic::Connection;
@@ -66,6 +67,7 @@ use tquic::PacketInfo;
 use tquic::TlsConfig;
 use tquic::TransportHandler;
 use tquic_tools::ApplicationProto;
+use tquic_tools::CertCompressionAlgorithmArg;
 use tquic_tools::QuicSocket;
 use tquic_tools::Result;
 
@@ -164,6 +166,10 @@ pub struct ClientOpt {
     /// Enable early data.
     #[clap(short, long, help_heading = "Protocol")]
     pub enable_early_data: bool,
+
+    /// Enable certificate compression.
+    #[clap(long, value_name = "STR", help_heading = "Protocol")]
+    pub certificate_compression: Vec<CertCompressionAlgorithmArg>,
 
     /// Disable stateless reset.
     #[clap(long, help_heading = "Protocol")]
@@ -330,6 +336,10 @@ pub struct ClientOpt {
         help_heading = "Misc"
     )]
     pub max_sample: usize,
+
+    /// The range of the request, like "0-1023".
+    #[clap(long, value_name = "RANGE", help_heading = "Protocol")]
+    pub range: Option<String>,
 }
 
 const MAX_BUF_SIZE: usize = 65536;
@@ -547,10 +557,31 @@ impl Worker {
         config.set_multipath_algorithm(option.multipath_algor);
         config.set_active_connection_id_limit(option.active_cid_limit);
         config.enable_encryption(!option.disable_encryption);
-        let tls_config = TlsConfig::new_client_config(
+        let mut tls_config = TlsConfig::new_client_config(
             ApplicationProto::convert_to_vec(&option.alpn),
             option.enable_early_data,
         )?;
+
+        // Configure certificate compression if specified
+        if !option.certificate_compression.is_empty() {
+            let compression_algorithms: Vec<CertCompressionAlgorithm> = option
+                .certificate_compression
+                .iter()
+                .map(|&arg| arg.into())
+                .collect();
+
+            tls_config.enable_certificate_compression(compression_algorithms)?;
+            let algorithm_names: Vec<String> = option
+                .certificate_compression
+                .iter()
+                .map(|arg| format!("{:?}", arg).to_lowercase())
+                .collect();
+            info!(
+                "Enabled certificate compression: {}",
+                algorithm_names.join(", ")
+            );
+        }
+
         config.set_tls_config(tls_config);
 
         let poll = mio::Poll::new()?;
@@ -691,7 +722,7 @@ impl Worker {
                 self.end_time = Some(Instant::now());
             }
 
-            if senders.len() == 0 {
+            if senders.is_empty() {
                 // All connections are closed.
                 return Ok(true);
             }
@@ -881,7 +912,13 @@ impl Request {
     }
 
     // TODO: support custom headers.
-    fn new(method: &str, url: &Url, body: &Option<Vec<u8>>, dump_dir: &Option<String>) -> Self {
+    fn new(
+        method: &str,
+        url: &Url,
+        body: &Option<Vec<u8>>,
+        dump_dir: &Option<String>,
+        range: &Option<String>,
+    ) -> Self {
         let authority = match url.port() {
             Some(port) => format!("{}:{}", url.host_str().unwrap(), port),
             None => url.host_str().unwrap().to_string(),
@@ -894,6 +931,12 @@ impl Request {
             tquic::h3::Header::new(b":path", url[url::Position::BeforePath..].as_bytes()),
             tquic::h3::Header::new(b"user-agent", b"tquic"),
         ];
+        if let Some(range_val) = range {
+            headers.push(tquic::h3::Header::new(
+                b"range",
+                format!("bytes={}", range_val).as_bytes(),
+            ));
+        }
         if body.is_some() {
             headers.push(tquic::h3::Header::new(
                 b"content-length",
@@ -1017,7 +1060,8 @@ impl RequestSender {
 
     fn send_request(&mut self, conn: &mut Connection) -> Result<()> {
         let url = &self.option.urls[self.current_url_idx];
-        let mut request = Request::new("GET", url, &None, &self.option.dump_dir);
+        let mut request =
+            Request::new("GET", url, &None, &self.option.dump_dir, &self.option.range);
         debug!(
             "{} send request {} current index {}",
             conn.trace_id(),

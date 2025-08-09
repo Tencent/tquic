@@ -783,6 +783,7 @@ pub fn verify_retry_integrity_tag(buf: &mut [u8], odcid: &[u8], version: u32) ->
 
     let hdr_buf = &buf[..buf.len() - len];
     let tag = compute_retry_integrity_tag(hdr_buf, odcid, version)?;
+    #[allow(deprecated)]
     ring::constant_time::verify_slices_are_equal(&buf[buf.len() - len..], tag.as_ref())
         .map_err(|_| Error::CryptoFail)?;
 

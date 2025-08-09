@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::any::Any;
 use std::cmp;
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
@@ -56,6 +57,9 @@ pub struct Path {
 
     /// Destination CID sequence number used over that path.
     pub(crate) dcid_seq: Option<u64>,
+
+    /// Peer context for the path.
+    pub(crate) peer_context: Option<Box<dyn Any + Send + Sync>>,
 
     /// Is this path used to send non-probing packets. By default, the initial
     /// path is active and the others are not active.
@@ -133,6 +137,7 @@ impl Path {
             remote_addr,
             scid_seq,
             dcid_seq,
+            peer_context: None,
             active: false,
             recovery: Recovery::new(conf),
             state,
@@ -278,6 +283,19 @@ impl Path {
                 self.sent_chals.clear();
                 return;
             }
+        }
+    }
+
+    /// Set peer context
+    pub fn set_peer_context<T: Any + Send + Sync>(&mut self, ctx: T) {
+        self.peer_context = Some(Box::new(ctx));
+    }
+
+    /// Get peer context
+    pub fn peer_context(&mut self) -> Option<&mut dyn Any> {
+        match self.peer_context {
+            Some(ref mut data) => Some(data.as_mut()),
+            None => None,
         }
     }
 
@@ -884,6 +902,33 @@ mod tests {
         assert_eq!(path_mgr.get_mut(pid)?.state, PathState::Failed);
         assert_eq!(path_mgr.get_mut(pid)?.active(), false);
         assert_eq!(path_mgr.get_mut(pid)?.lost_chal, MAX_PROBING_TIMEOUTS);
+
+        Ok(())
+    }
+
+    #[test]
+    fn path_peer_context() -> Result<()> {
+        let client_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 9443);
+        let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 443);
+        let conf = new_test_recovery_config();
+        let mut path = Path::new(client_addr, server_addr, true, &conf, "");
+
+        // Test setting peer context
+        let text_context = String::from("test context");
+        path.set_peer_context(text_context);
+
+        // Test getting peer context
+        let context = path.peer_context();
+        assert!(context.is_some());
+
+        // Test downcasting to String
+        if let Some(ctx) = context {
+            if let Some(s) = ctx.downcast_mut::<String>() {
+                assert_eq!(s, "test context");
+            } else {
+                panic!("Failed to downcast to String");
+            }
+        }
 
         Ok(())
     }

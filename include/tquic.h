@@ -27,6 +27,24 @@
 #define MAX_CID_LEN 20
 
 /**
+ * Certificate compression algorithm types for C API compatibility.
+ */
+typedef enum quic_cert_compression_algorithm {
+  /**
+   * zlib compression (RFC 1950)
+   */
+  QUIC_CERT_COMPRESSION_ALGORITHM_ZLIB = 1,
+  /**
+   * Brotli compression (RFC 7932)
+   */
+  QUIC_CERT_COMPRESSION_ALGORITHM_BROTLI = 2,
+  /**
+   * Zstandard compression (RFC 8478)
+   */
+  QUIC_CERT_COMPRESSION_ALGORITHM_ZSTD = 3,
+} quic_cert_compression_algorithm;
+
+/**
  * Available congestion control algorithms.
  */
 typedef enum quic_congestion_control_algorithm {
@@ -365,6 +383,14 @@ typedef struct quic_path_stats_t {
    * Pacing rate estimated by congestion control algorithm.
    */
   uint64_t pacing_rate;
+  /**
+   * Min pacing rate estimated by congestion control algorithm.
+   */
+  uint64_t min_pacing_rate;
+  /**
+   * Record the total number of times the PTO is triggered on this path
+   */
+  uint64_t pto_count;
 } quic_path_stats_t;
 
 /**
@@ -852,6 +878,15 @@ int quic_tls_config_set_private_key_file(struct quic_tls_config_t *tls_config,
 int quic_tls_config_set_ca_certs(struct quic_tls_config_t *tls_config, const char *ca_path);
 
 /**
+ * Enable certificate compression for one or more algorithms.
+ * Supported algorithms: Zlib(1), Brotli(2), Zstd(3).
+ * The algorithms parameter is an array of algorithm values, and algorithms_len is the array length.
+ */
+int quic_tls_config_enable_certificate_compression(struct quic_tls_config_t *tls_config,
+                                                   const enum quic_cert_compression_algorithm *algorithms,
+                                                   size_t algorithms_len);
+
+/**
  * Set TLS config selector.
  */
 void quic_config_set_tls_selector(struct quic_config_t *config,
@@ -1006,7 +1041,14 @@ void quic_conn_session(struct quic_conn_t *conn, const uint8_t **out, size_t *ou
 /**
  * Return details why 0-RTT was accepted or rejected.
  */
-int quic_conn_early_data_reason(struct quic_conn_t *conn, const uint8_t **out, size_t *out_len);
+int quic_conn_early_data_reason(struct quic_conn_t *conn);
+
+/**
+ * Return a string representation for reason why 0-RTT was accepted or rejected.
+ */
+int quic_conn_early_data_reason_string(struct quic_conn_t *conn,
+                                       const uint8_t **out,
+                                       size_t *out_len);
 
 /**
  * Send a Ping frame on the active path(s) for keep-alive.
@@ -1265,7 +1307,7 @@ int quic_stream_set_priority(struct quic_conn_t *conn,
                              bool incremental);
 
 /**
- * Return the stream’s send capacity in bytes.
+ * Return the stream's send capacity in bytes.
  */
 ssize_t quic_stream_capacity(struct quic_conn_t *conn, uint64_t stream_id);
 
@@ -1280,7 +1322,7 @@ bool quic_stream_finished(struct quic_conn_t *conn, uint64_t stream_id);
 int quic_stream_set_context(struct quic_conn_t *conn, uint64_t stream_id, void *data);
 
 /**
- * Return the stream’s user context.
+ * Return the stream's user context.
  */
 void *quic_stream_context(struct quic_conn_t *conn, uint64_t stream_id);
 
@@ -1470,8 +1512,27 @@ void quic_set_logger(void (*cb)(const uint8_t *data, size_t data_len, void *argp
                      void *argp,
                      const char *level);
 
-#ifdef __cplusplus
-} // extern "C"
-#endif // __cplusplus
+/**
+ * Set peer context for the specified path.
+ */
+int quic_path_set_peer_context(struct quic_conn_t *conn,
+                               const struct sockaddr *local,
+                               socklen_t local_len,
+                               const struct sockaddr *remote,
+                               socklen_t remote_len,
+                               void *data);
 
-#endif /* _TQUIC_H_ */
+/**
+ * Get peer context for the specified path.
+ */
+void *quic_path_peer_context(struct quic_conn_t *conn,
+                             const struct sockaddr *local,
+                             socklen_t local_len,
+                             const struct sockaddr *remote,
+                             socklen_t remote_len);
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif  // __cplusplus
+
+#endif  /* _TQUIC_H_ */
