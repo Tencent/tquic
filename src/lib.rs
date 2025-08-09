@@ -53,6 +53,8 @@
 #![allow(unused_imports)]
 #![allow(dead_code)]
 #![allow(unexpected_cfgs)]
+#![allow(mismatched_lifetime_syntaxes)]
+#![allow(clippy::uninlined_format_args)]
 
 use std::cmp;
 use std::collections::VecDeque;
