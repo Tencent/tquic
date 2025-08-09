@@ -53,6 +53,8 @@
 #![allow(unused_imports)]
 #![allow(dead_code)]
 #![allow(unexpected_cfgs)]
+#![allow(mismatched_lifetime_syntaxes)]
+#![allow(clippy::uninlined_format_args)]
 
 use std::cmp;
 use std::collections::VecDeque;
@@ -1142,6 +1144,12 @@ pub struct PathStats {
 
     /// Pacing rate estimated by congestion control algorithm.
     pub pacing_rate: u64,
+
+    /// Min pacing rate estimated by congestion control algorithm.
+    pub min_pacing_rate: u64,
+
+    /// Record the total number of times the PTO is triggered on this path
+    pub pto_count: u64,
 }
 
 #[cfg(test)]
@@ -1249,6 +1257,7 @@ pub use crate::endpoint::Endpoint;
 pub use crate::error::Error;
 pub use crate::multipath_scheduler::MultipathAlgorithm;
 pub use crate::packet::PacketHeader;
+pub use crate::tls::CertCompressionAlgorithm;
 pub use crate::tls::TlsConfig;
 pub use crate::tls::TlsConfigSelector;
 

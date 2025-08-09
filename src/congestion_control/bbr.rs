@@ -319,6 +319,9 @@ pub struct Bbr {
 
     /// Time of the last recovery event starts.
     recovery_epoch_start: Option<Instant>,
+
+    /// BBR.min_pacing_rate: The min pacing rate for a BBR flow.
+    min_pacing_rate: Option<u64>,
 }
 
 impl Bbr {
@@ -354,6 +357,7 @@ impl Bbr {
             in_recovery: false,
             ack_state: AckState::default(),
             recovery_epoch_start: None,
+            min_pacing_rate: None,
         };
         bbr.init();
 
@@ -762,6 +766,7 @@ impl Bbr {
     /// BBR adjusts its control parameters to adapt to the updated model.
     fn update_control_parameters(&mut self) {
         self.set_pacing_rate();
+        self.set_min_pacing_rate();
         self.set_send_quantum();
         self.set_cwnd();
     }
@@ -807,6 +812,13 @@ impl Bbr {
     /// See draft-cardwell-iccrg-bbr-congestion-control-00 Section 4.2.1.
     fn set_pacing_rate(&mut self) {
         self.set_pacing_rate_with_gain(self.pacing_gain);
+    }
+
+    fn set_min_pacing_rate(&mut self) {
+        self.min_pacing_rate = match self.min_pacing_rate {
+            None => Some(self.pacing_rate),
+            Some(min) => Some(min.min(self.pacing_rate)),
+        }
     }
 
     /// On each ACK, BBR runs BBRSetSendQuantum() to update BBR.send_quantum
@@ -1047,6 +1059,14 @@ impl CongestionController for Bbr {
         }
     }
 
+    fn in_slow_start(&self) -> bool {
+        self.state == BbrStateMachine::Startup
+    }
+
+    fn in_recovery(&self, sent_time: Instant) -> bool {
+        self.recovery_epoch_start.is_some_and(|t| sent_time <= t)
+    }
+
     fn congestion_window(&self) -> u64 {
         self.cwnd.max(self.config.min_cwnd)
     }
@@ -1063,20 +1083,79 @@ impl CongestionController for Bbr {
         self.config.min_cwnd
     }
 
-    fn in_recovery(&self, sent_time: Instant) -> bool {
-        self.recovery_epoch_start.is_some_and(|t| sent_time <= t)
-    }
-
-    fn in_slow_start(&self) -> bool {
-        self.state == BbrStateMachine::Startup
-    }
-
     fn stats(&self) -> &CongestionStats {
         &self.stats
+    }
+
+    fn min_pacing_rate(&self) -> Option<u64> {
+        match self.min_pacing_rate {
+            Some(min_pacing_rate) => Some(min_pacing_rate),
+            None => Some(self.pacing_rate),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    // todo: unit test case
+    use super::*;
+
+    #[test]
+    fn bbr_ack() {
+        let bbr_cfg = BbrConfig::default();
+        let mut bbr = Bbr::new(bbr_cfg);
+        assert!(bbr.min_pacing_rate.is_none());
+        assert_eq!(bbr.min_pacing_rate(), bbr.pacing_rate());
+
+        let now = Instant::now();
+        let mut pkts: Vec<SentPacket> = Vec::new();
+        let rtt = RttEstimator::new(Duration::from_millis(20));
+        let bytes_lost = 0;
+        let pkt_size: u64 = 1200;
+        let n_pkts = 10;
+        bbr.full_pipe.is_filled_pipe = true;
+        for n in 0..n_pkts {
+            let mut packet = SentPacket {
+                pkt_num: n,
+                frames: Vec::new(),
+                // Sent timestamp differs.
+                time_sent: now + Duration::from_millis(n),
+                time_acked: Some(now + Duration::from_millis(20)),
+                time_lost: None,
+                ack_eliciting: true,
+                in_flight: true,
+                has_data: false,
+                sent_size: pkt_size as usize,
+                rate_sample_state: Default::default(),
+                ..SentPacket::default()
+            };
+            bbr.on_sent(now + Duration::from_millis(n), &mut packet, n * pkt_size);
+            pkts.push(packet);
+        }
+
+        let time_acked = now + Duration::from_millis(20);
+        bbr.begin_ack(time_acked, pkt_size);
+        for i in 0..(n_pkts - 3) {
+            bbr.on_ack(&mut pkts[i as usize], time_acked, false, &rtt, 0);
+        }
+        let before_end_ack_pacing_rate = bbr.pacing_rate;
+        bbr.end_ack();
+        assert!(bbr.pacing_rate < before_end_ack_pacing_rate);
+        assert_eq!(bbr.min_pacing_rate(), Some(bbr.pacing_rate));
+
+        let fast_rtt = RttEstimator::new(Duration::from_millis(10));
+        bbr.begin_ack(now + Duration::from_millis(20), pkt_size);
+        for i in 0..n_pkts {
+            bbr.on_ack(
+                &mut pkts[i as usize],
+                now + Duration::from_millis(20),
+                false,
+                &fast_rtt,
+                0,
+            );
+        }
+        let before_end_ack_pacing_rate = bbr.pacing_rate;
+        bbr.end_ack();
+        assert!(bbr.pacing_rate > before_end_ack_pacing_rate);
+        assert!(bbr.min_pacing_rate() < Some(bbr.pacing_rate));
+    }
 }

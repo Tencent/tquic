@@ -63,6 +63,12 @@ struct StackOf(c_void);
 struct CryptoBuffer(c_void);
 
 #[repr(transparent)]
+struct CryptoBufferPool(c_void);
+
+#[repr(transparent)]
+struct Cbb(c_void);
+
+#[repr(transparent)]
 struct CryptoExData(c_void);
 
 #[repr(C)]
@@ -89,6 +95,18 @@ struct SslQuicMethod {
     flush_flight: extern "C" fn(ssl: *mut Ssl) -> c_int,
 
     send_alert: extern "C" fn(ssl: *mut Ssl, level: tls::Level, alert: u8) -> c_int,
+}
+
+/// Certificate Compression Algorithm IDs from RFC 8879
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum CertCompressionAlgorithm {
+    /// zlib compression (RFC 1950)
+    Zlib = 1,
+    /// Brotli compression (RFC 7932)
+    Brotli = 2,
+    /// Zstandard compression (RFC 8478)
+    Zstd = 3,
 }
 
 #[repr(C)]
@@ -420,6 +438,56 @@ impl Context {
     pub fn set_session_psk_dhe_timeout(&mut self, timeout: u32) {
         unsafe {
             SSL_CTX_set_session_psk_dhe_timeout(self.as_mut_ptr(), timeout);
+        }
+    }
+
+    /// Enable certificate compression for the specified algorithm.
+    /// Returns Ok(()) on success, Err on failure.
+    pub fn add_cert_compression_alg(&mut self, algorithm: CertCompressionAlgorithm) -> Result<()> {
+        let (compress_func, decompress_func) = match algorithm {
+            CertCompressionAlgorithm::Zlib => (
+                cert_compress_zlib as extern "C" fn(*mut Ssl, *mut Cbb, *const u8, usize) -> c_int,
+                cert_decompress_zlib
+                    as extern "C" fn(
+                        *mut Ssl,
+                        *mut *mut CryptoBuffer,
+                        usize,
+                        *const u8,
+                        usize,
+                    ) -> c_int,
+            ),
+            CertCompressionAlgorithm::Brotli => (
+                cert_compress_brotli
+                    as extern "C" fn(*mut Ssl, *mut Cbb, *const u8, usize) -> c_int,
+                cert_decompress_brotli
+                    as extern "C" fn(
+                        *mut Ssl,
+                        *mut *mut CryptoBuffer,
+                        usize,
+                        *const u8,
+                        usize,
+                    ) -> c_int,
+            ),
+            CertCompressionAlgorithm::Zstd => {
+                return Err(Error::TlsFail(
+                    "Zstd compression not implemented yet".to_string(),
+                ));
+            }
+        };
+
+        match unsafe {
+            SSL_CTX_add_cert_compression_alg(
+                self.as_mut_ptr(),
+                algorithm as u16,
+                compress_func,
+                decompress_func,
+            )
+        } {
+            1 => Ok(()),
+            _ => Err(Error::TlsFail(format!(
+                "Failed to add certificate compression algorithm: {:?}",
+                algorithm
+            ))),
         }
     }
 }
@@ -1271,6 +1339,139 @@ extern "C" fn new_session(ssl: *mut Ssl, ssl_session: *mut SslSession) -> c_int 
     0
 }
 
+/// Certificate compression callback for zlib algorithm
+extern "C" fn cert_compress_zlib(
+    _ssl: *mut Ssl,
+    out: *mut Cbb,
+    in_data: *const u8,
+    in_len: usize,
+) -> c_int {
+    use std::io::Write;
+
+    let input = unsafe { std::slice::from_raw_parts(in_data, in_len) };
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+
+    if encoder.write_all(input).is_err() {
+        return 0;
+    }
+
+    let compressed = match encoder.finish() {
+        Ok(data) => data,
+        Err(_) => return 0,
+    };
+
+    // Add compressed data to CBB
+    match unsafe { CBB_add_bytes(out, compressed.as_ptr(), compressed.len()) } {
+        1 => 1,
+        _ => 0,
+    }
+}
+
+/// Certificate decompression callback for zlib algorithm  
+extern "C" fn cert_decompress_zlib(
+    _ssl: *mut Ssl,
+    out: *mut *mut CryptoBuffer,
+    uncompressed_len: usize,
+    in_data: *const u8,
+    in_len: usize,
+) -> c_int {
+    use std::io::Read;
+
+    let compressed = unsafe { std::slice::from_raw_parts(in_data, in_len) };
+    let mut decoder = flate2::read::ZlibDecoder::new(compressed);
+    let mut decompressed = vec![0u8; uncompressed_len];
+
+    match decoder.read_exact(&mut decompressed) {
+        Ok(()) => {
+            let buffer = unsafe {
+                CRYPTO_BUFFER_new(
+                    decompressed.as_ptr(),
+                    decompressed.len(),
+                    std::ptr::null_mut(),
+                )
+            };
+            if buffer.is_null() {
+                return 0;
+            }
+            unsafe {
+                *out = buffer;
+            }
+            1
+        }
+        Err(_) => 0,
+    }
+}
+
+/// Certificate compression callback for brotli algorithm
+extern "C" fn cert_compress_brotli(
+    _ssl: *mut Ssl,
+    out: *mut Cbb,
+    in_data: *const u8,
+    in_len: usize,
+) -> c_int {
+    use std::io::Write;
+
+    let input = unsafe { std::slice::from_raw_parts(in_data, in_len) };
+    let mut compressed = Vec::new();
+
+    let mut encoder = brotli::CompressorWriter::new(
+        &mut compressed,
+        4096, // buffer size
+        11,   // quality (max compression)
+        22,   // window size
+    );
+
+    if encoder.write_all(input).is_err() {
+        return 0;
+    }
+
+    if encoder.flush().is_err() {
+        return 0;
+    }
+
+    drop(encoder);
+
+    // Add compressed data to CBB
+    match unsafe { CBB_add_bytes(out, compressed.as_ptr(), compressed.len()) } {
+        1 => 1,
+        _ => 0,
+    }
+}
+
+/// Certificate decompression callback for brotli algorithm
+extern "C" fn cert_decompress_brotli(
+    _ssl: *mut Ssl,
+    out: *mut *mut CryptoBuffer,
+    uncompressed_len: usize,
+    in_data: *const u8,
+    in_len: usize,
+) -> c_int {
+    use std::io::Read;
+
+    let compressed = unsafe { std::slice::from_raw_parts(in_data, in_len) };
+    let mut decompressed = vec![0u8; uncompressed_len];
+
+    match brotli::Decompressor::new(compressed, 4096).read_exact(&mut decompressed) {
+        Ok(()) => {
+            let buffer = unsafe {
+                CRYPTO_BUFFER_new(
+                    decompressed.as_ptr(),
+                    decompressed.len(),
+                    std::ptr::null_mut(),
+                )
+            };
+            if buffer.is_null() {
+                return 0;
+            }
+            unsafe {
+                *out = buffer;
+            }
+            1
+        }
+        Err(_) => 0,
+    }
+}
+
 fn map_result_ptr<'a, T>(bssl_result: *const T) -> Result<&'a T> {
     match unsafe { bssl_result.as_ref() } {
         Some(v) => Ok(v),
@@ -1606,4 +1807,41 @@ extern "C" {
 
     /// Release memory associated with ptr.
     fn OPENSSL_free(ptr: *mut c_void);
+
+    /// Certificate compression algorithm types
+    /// TLS Certificate Compression Algorithm IDs from RFC 8879
+    /// Algorithm 1: zlib
+    /// Algorithm 2: brotli
+    /// Algorithm 3: zstd
+
+    /// Add a certificate compression algorithm to ctx.
+    /// Returns 1 on success and 0 on error.
+    fn SSL_CTX_add_cert_compression_alg(
+        ctx: *mut SslCtx,
+        alg_id: u16,
+        compress_func: extern "C" fn(
+            ssl: *mut Ssl,
+            out: *mut Cbb,
+            in_data: *const u8,
+            in_len: usize,
+        ) -> c_int,
+        decompress_func: extern "C" fn(
+            ssl: *mut Ssl,
+            out: *mut *mut CryptoBuffer,
+            uncompressed_len: usize,
+            in_data: *const u8,
+            in_len: usize,
+        ) -> c_int,
+    ) -> c_int;
+
+    /// CBB (Crypto Byte Builder) functions for building byte strings
+    fn CBB_add_bytes(cbb: *mut Cbb, data: *const u8, len: usize) -> c_int;
+
+    /// CRYPTO_BUFFER functions for managing certificate data
+    fn CRYPTO_BUFFER_new(
+        data: *const u8,
+        len: usize,
+        pool: *mut CryptoBufferPool,
+    ) -> *mut CryptoBuffer;
+
 }

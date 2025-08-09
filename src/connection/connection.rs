@@ -165,7 +165,7 @@ pub struct Connection {
     #[cfg(feature = "qlog")]
     qlog: Option<qlog::QlogWriter>,
 
-    /// Unique trace id for deubg logging
+    /// Unique trace id for debug logging
     trace_id: String,
 
     /// Whether peer supports grease QUIC bit extension
@@ -1270,6 +1270,38 @@ impl Connection {
 
         self.peer_transport_params = peer_params;
         Ok(())
+    }
+
+    /// Set peer context for the specific path
+    pub fn set_path_peer_context<T: Any + Send + Sync>(
+        &mut self,
+        local_addr: SocketAddr,
+        remote_addr: SocketAddr,
+        ctx: T,
+    ) -> Result<()> {
+        let path_id = self
+            .paths
+            .get_path_id(&(local_addr, remote_addr))
+            .ok_or(Error::InternalError)?;
+
+        let path = self.paths.get_mut(path_id)?;
+        path.set_peer_context(ctx);
+        Ok(())
+    }
+
+    /// Get peer context for the specific path
+    pub fn path_peer_context(
+        &mut self,
+        local_addr: SocketAddr,
+        remote_addr: SocketAddr,
+    ) -> Result<Option<&mut dyn Any>> {
+        let path_id = self
+            .paths
+            .get_path_id(&(local_addr, remote_addr))
+            .ok_or(Error::InternalError)?;
+
+        let path = self.paths.get_mut(path_id)?;
+        Ok(path.peer_context())
     }
 
     /// Prepare for sending NEW_CONNECTION_ID/NEW_TOKEN frames.
