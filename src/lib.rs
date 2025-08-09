@@ -747,6 +747,15 @@ impl Config {
         self.local_transport_params.disable_encryption = !v;
     }
 
+    /// Set the `max_datagram_frame_size` transport parameter.
+    /// This enables the DATAGRAM extension (RFC 9221) and specifies the maximum
+    /// size of datagram frames this endpoint is willing to receive.
+    /// Setting this to 0 disables the DATAGRAM extension.
+    /// The default value is 0.
+    pub fn set_max_datagram_frame_size(&mut self, v: u64) {
+        self.local_transport_params.max_datagram_frame_size = v;
+    }
+
     /// Set TLS config.
     pub fn set_tls_config(&mut self, tls_config: tls::TlsConfig) {
         self.set_tls_config_selector(Arc::new(tls::DefaultTlsConfigSelector {
@@ -932,6 +941,15 @@ enum Event {
 
     /// The stream is closed.
     StreamClosed(u64),
+
+    /// A datagram has been received and is ready for reading.
+    DatagramReceived,
+
+    /// A datagram has been acked
+    DatagramAcked(u64),
+
+    /// A datagram has been lost.
+    DatagramLost(u64),
 }
 
 #[derive(Default)]
@@ -1032,6 +1050,37 @@ pub trait TransportHandler {
 
     /// Called when client receives a token in NEW_TOKEN frame.
     fn on_new_token(&mut self, conn: &mut Connection, token: Vec<u8>);
+
+    /// Called when a datagram is received and ready for application consumption.
+    /// RFC 9221 basic notification.
+    fn on_datagram_received(&mut self, _conn: &mut Connection) {}
+
+    /// Called when a datagram is confirmed to have been successfully transmitted.
+    /// RFC 9221 Section 5.2 - Application-layer notification of successful transmission.
+    ///
+    /// # Arguments
+    /// * `conn` - The connection that sent the datagram
+    /// * `datagram_id` - Unique identifier of the acknowledged datagram
+    fn on_datagram_acked(&mut self, _conn: &mut Connection, _datagram_id: u64) {}
+
+    /// Called when a datagram is suspected to have been lost in transit.
+    /// RFC 9221 Section 5.2 - Application-layer notification of suspected loss.
+    ///
+    /// Note: This is a hint that the datagram might have been lost. Due to
+    /// network reordering, the datagram might still be delivered later.
+    ///
+    /// # Arguments
+    /// * `conn` - The connection that sent the datagram
+    /// * `datagram_id` - Unique identifier of the suspected lost datagram
+    fn on_datagram_lost(&mut self, _conn: &mut Connection, _datagram_id: u64) {}
+
+    /// Called when a datagram expires before it could be transmitted.
+    /// RFC 9221 Section 5.4 - Expiration time support.
+    ///
+    /// # Arguments
+    /// * `conn` - The connection that held the datagram
+    /// * `datagram_id` - Unique identifier of the expired datagram
+    fn on_datagram_expired(&mut self, _conn: &mut Connection, _datagram_id: u64) {}
 }
 
 /// The PacketSendHandler lists the callbacks used by the endpoint to
@@ -1224,6 +1273,8 @@ mod tests {
 }
 
 pub use crate::congestion_control::CongestionControlAlgorithm;
+pub use crate::connection::datagram::DatagramStats;
+
 pub use crate::connection::path::Path;
 pub use crate::connection::Connection;
 pub use crate::endpoint::Endpoint;

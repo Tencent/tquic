@@ -121,6 +121,12 @@ pub struct TransportParams {
     /// completely trust the path between themselves.
     /// See draft-banks-quic-disable-encryption-00.
     pub disable_encryption: bool,
+
+    /// The parameter is an integer value that indicates the maximum size, in bytes,
+    /// of DATAGRAM frames the endpoint is willing to receive; a value of 0 indicates
+    /// that DATAGRAM frames are not supported.
+    /// See RFC 9221.
+    pub max_datagram_frame_size: u64,
 }
 
 impl TransportParams {
@@ -257,7 +263,14 @@ impl TransportParams {
                     }
                     tp.retry_source_connection_id = Some(ConnectionId::new(val));
                 }
-
+                0x0020 => {
+                    // This value specifies the maximum size, in bytes, of DATAGRAM frames the
+                    // peer is willing to receive. It should be compared against other UDP
+                    // length limits in the application. A value of 0 indicates DATAGRAM
+                    // frames are not supported. (RFC 9221)
+                    let max_datagram_frame_size = val.read_varint()?;
+                    tp.max_datagram_frame_size = max_datagram_frame_size;
+                }
                 0x0f739bbc1b666d05 => {
                     tp.enable_multipath = true;
                 }
@@ -404,6 +417,21 @@ impl TransportParams {
             buf.write_varint(0)?;
         }
 
+        // Encodes the `max_datagram_frame_size` transport parameter.
+        //
+        // This parameter informs the peer of the maximum size of a DATAGRAM frame,
+        // including its type and length fields, that this endpoint is willing to receive.
+        // A value of 0 indicates that the endpoint does not support the DATAGRAM frame type.
+        //
+        // The encoding follows the standard QUIC Transport Parameter format:
+        //  - Parameter ID (0x0020) as a variable-length integer.
+        //  - Length of the value as a variable-length integer.
+        //  - Value (the max size) as a variable-length integer.
+        if tp.max_datagram_frame_size != 0 {
+            buf.write_varint(0x0020)?;
+            buf.write_varint(codec::encode_varint_len(tp.max_datagram_frame_size) as u64)?;
+            buf.write_varint(tp.max_datagram_frame_size)?;
+        }
         Ok(len - buf.len())
     }
 
@@ -438,7 +466,11 @@ impl TransportParams {
             initial_max_streams_bidi: Some(self.initial_max_streams_bidi),
             initial_max_streams_uni: Some(self.initial_max_streams_uni),
             preferred_address: None,
-            max_datagram_frame_size: None,
+            max_datagram_frame_size: if self.max_datagram_frame_size > 0 {
+                Some(self.max_datagram_frame_size)
+            } else {
+                None
+            },
             grease_quic_bit: None,
         }
     }
@@ -483,6 +515,10 @@ impl Default for TransportParams {
 
             enable_multipath: false,
             disable_encryption: false,
+
+            // RFC 9221 Section 3: the default value of this parameter is 0, indicating
+            // that DATAGRAM frames are not supported unless negotiated otherwise.
+            max_datagram_frame_size: 0,
         }
     }
 }
@@ -583,6 +619,7 @@ mod tests {
             retry_source_connection_id: None,
             enable_multipath: true,
             disable_encryption: false,
+            max_datagram_frame_size: 0,
         };
 
         // encode on the client side
@@ -627,6 +664,7 @@ mod tests {
             retry_source_connection_id: Some(ConnectionId::random()),
             enable_multipath: false,
             disable_encryption: true,
+            max_datagram_frame_size: 0,
         };
 
         // encode on the server side

@@ -863,6 +863,7 @@ impl ConnectionHandler {
                 self.recv_http09_request(buf, conn, stream_id)
             }
             ApplicationProto::H3 => self.recv_h3_request(conn, buf),
+            _ => {}
         }
     }
 
@@ -937,6 +938,7 @@ impl ConnectionHandler {
                 self.send_http09_response(conn, stream_id)
             }
             ApplicationProto::H3 => self.send_h3_response(conn, stream_id),
+            _ => {}
         }
     }
 }

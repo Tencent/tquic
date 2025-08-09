@@ -32,6 +32,7 @@ use log::*;
 use strum::IntoEnumIterator;
 
 use self::cid::ConnectionIdItem;
+use self::datagram::DatagramMap;
 use self::space::BufferFlags;
 use self::space::BufferType;
 use self::space::PacketNumSpace;
@@ -167,6 +168,10 @@ pub struct Connection {
 
     /// Unique trace id for debug logging
     trace_id: String,
+
+    /// Manages the sending and receiving of unreliable datagrams over the
+    /// connection, as defined in RFC 9221.
+    datagram: datagram::DatagramMap,
 }
 
 impl Connection {
@@ -248,6 +253,9 @@ impl Connection {
         }
         tls_session.set_trace_id(&trace_id);
 
+        let mut datagram = datagram::DatagramMap::new();
+        datagram.set_trace_id(&trace_id);
+
         let mut conn = Connection {
             version: crate::QUIC_VERSION_V1,
             is_server,
@@ -278,10 +286,19 @@ impl Connection {
             #[cfg(feature = "qlog")]
             qlog: None,
             trace_id,
+            datagram,
         };
 
         let write_method = conn.get_write_method();
         conn.tls_session.set_write_method(write_method);
+
+        // to be reviewed,compare with config,may be useless
+        // Configure local datagram settings based on transport parameters
+        if conn.local_transport_params.max_datagram_frame_size > 0 {
+            conn.datagram.set_local_max_datagram_frame_size(
+                conn.local_transport_params.max_datagram_frame_size,
+            );
+        }
 
         // When advertising the enable_multipath transport parameter, the
         // endpoint MUST use non-zero source and destination CIDs.
@@ -611,6 +628,9 @@ impl Connection {
         #[cfg(feature = "qlog")]
         let mut qframes = vec![];
 
+        // Used to check if the receive a packet only contains datagram frames
+        let mut frame_count = 0;
+        let mut datagram_frame_count = 0;
         while !payload.is_empty() {
             let (frame, len) = Frame::from_bytes(&mut payload, hdr.pkt_type)?;
             if frame.ack_eliciting() {
@@ -624,7 +644,11 @@ impl Connection {
                 qframes.push(frame.to_qlog());
             }
 
-            self.recv_frame(frame, &hdr, pid, space_id, info.time)?;
+            let datagram = self.recv_frame(frame, &hdr, pid, space_id, info.time)?;
+            frame_count += 1;
+            if datagram {
+                datagram_frame_count += 1;
+            }
             let _ = payload.split_to(len);
         }
 
@@ -665,7 +689,8 @@ impl Connection {
                 cmp::max(space.largest_rx_ack_eliciting_pkt_num, pkt_num);
         }
 
-        self.try_schedule_ack_frame(space_id, pkt_num, ack_eliciting_pkt)?;
+        let datagram_only = frame_count == datagram_frame_count;
+        self.try_schedule_ack_frame(space_id, pkt_num, ack_eliciting_pkt, datagram_only)?;
 
         // An endpoint restarts its idle timer when a packet from its peer is
         // received and processed successfully.
@@ -705,6 +730,7 @@ impl Connection {
     }
 
     /// Process an incoming QUIC frame from the peer.
+    /// Simple to check if is a datagram
     fn recv_frame(
         &mut self,
         frame: Frame,
@@ -712,7 +738,7 @@ impl Connection {
         path_id: usize,
         space_id: SpaceId,
         now: time::Instant,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         debug!("{} recv frame {:?}", self.trace_id, &frame);
         match frame {
             Frame::Paddings { .. } => (), // just ignore
@@ -731,7 +757,7 @@ impl Connection {
                 let ack_delay = ack_delay
                     .checked_mul(mul)
                     .ok_or(Error::FrameEncodingError)?;
-
+                debug!("debugonly the actual ack_delay {:?}", ack_delay);
                 if space_id == SpaceId::Handshake {
                     self.flags.insert(PeerVerifiedInitialAddress);
                 }
@@ -862,7 +888,7 @@ impl Connection {
                 // Remove the connection route entry on the endpoint
                 match self.cids.get_scid(seq_num) {
                     Ok(c) => self.events.add(Event::ScidRetired(c.cid)),
-                    Err(_) => return Ok(()),
+                    Err(_) => return Ok(false),
                 };
 
                 if let Some(pid) = self.cids.retire_scid(seq_num, &hdr.dcid)? {
@@ -983,9 +1009,39 @@ impl Connection {
             Frame::StreamsBlocked { bidi, max } => {
                 self.streams.on_streams_blocked_frame_received(max, bidi)?;
             }
+            Frame::Datagram { len, data, id } => {
+                // Process DATAGRAM frame according to RFC 9221
+                match self.datagram.on_datagram_frame_received(len, data) {
+                    Ok(()) => {
+                        //todo get the real len of 2 type.
+                        // debug!(
+                        //     "{} received DATAGRAM frame: {} bytes, queue size: {}",
+                        //     self.trace_id,
+                        //     data.len(),
+                        //     self.datagram.incoming_count()
+                        // );
+                        // Notify the application that a datagram is available
+                        self.events.add(Event::DatagramReceived);
+                        return Ok(true);
+                    }
+                    Err(e @ Error::ProtocolViolation) => {
+                        error!(
+                            "{} DATAGRAM frame received but extension is not enabled",
+                            self.trace_id
+                        );
+                        self.close(false, e.to_wire(), b"local can't handle DATAGRAM frame")
+                            .ok();
+                        return Err(e);
+                    }
+                    Err(e) => {
+                        warn!("{} DATAGRAM frame processing error: {:?}", self.trace_id, e);
+                        return Err(e);
+                    }
+                }
+            }
         }
 
-        Ok(())
+        Ok(false)
     }
 
     /// Process the incoming Version Negotiation packet.
@@ -1228,13 +1284,17 @@ impl Connection {
     }
 
     /// Set transport parameters advertised by the peer
+    /// Todo: set the max_datagram_frame_size may be compare with other param.
     fn set_peer_trans_params(&mut self, peer_params: TransportParams) -> Result<()> {
         trace!(
             "{} set peer transport parameters {:?}",
             self.trace_id,
             peer_params
         );
-
+        if peer_params.max_datagram_frame_size < self.peer_max_datagram_frame_size() {
+            error!("{} server's max_datagram_frame_size reduced", self.trace_id);
+            return Err(Error::ProtocolViolation);
+        }
         self.streams
             .update_peer_stream_transport_params(stream::StreamTransportParams::from(&peer_params));
 
@@ -1248,6 +1308,19 @@ impl Connection {
             .update_max_datagram_size(max_datagram_size, true);
 
         self.cids.set_scid_limit(peer_params.active_conn_id_limit);
+
+        // Configure DATAGRAM extension based on peer's transport parameters
+        if peer_params.max_datagram_frame_size > 0 {
+            self.datagram
+                .set_peer_max_datagram_frame_size(peer_params.max_datagram_frame_size);
+            debug!(
+                "{} DATAGRAM extension enabled, peer max frame size: {} bytes",
+                self.trace_id, peer_params.max_datagram_frame_size
+            );
+        } else {
+            self.datagram.set_enabled(false);
+            debug!("{} DATAGRAM extension disabled by peer", self.trace_id);
+        }
 
         self.peer_transport_params = peer_params;
         Ok(())
@@ -1374,6 +1447,7 @@ impl Connection {
         space_id: SpaceId,
         pkt_num: u64,
         ack_eliciting: bool,
+        datagram_only: bool,
     ) -> Result<()> {
         if !ack_eliciting {
             return Ok(());
@@ -1422,6 +1496,14 @@ impl Connection {
         if space.ack_timer.is_none() {
             let ack_delay = time::Duration::from_millis(self.peer_transport_params.max_ack_delay);
             space.ack_timer = Some(time::Instant::now() + ack_delay);
+
+            //inface rfc9221 section 5.2 Acknowledgement Handling is implemented by the author.
+            // to delete,here is the ack_delay test
+            if datagram_only {
+                let ack_delay =
+                    time::Duration::from_millis(self.peer_transport_params.max_ack_delay + 20);
+                space.ack_timer = Some(time::Instant::now() + ack_delay);
+            }
             debug!(
                 "{} set ack timer for space {:?}, timeout {:?} ",
                 &self.trace_id, space_id, space.ack_timer
@@ -1490,7 +1572,14 @@ impl Connection {
                             debug!("{} path {:?} MTU is {} now", self.trace_id, path, current);
                         }
                     }
-
+                    //rfc9221,notify the app that the datagram has been acked
+                    Frame::Datagram { len, data, id } => {
+                        debug!(
+                            "{} the datagram has been acked, len: {:?}, data: {:?}, id: {:?}",
+                            self.trace_id, len, data, id
+                        );
+                        self.events.add(Event::DatagramAcked(id.unwrap()));
+                    }
                     _ => (),
                 }
             }
@@ -2005,6 +2094,9 @@ impl Connection {
 
         // Write buffered frames
         self.try_write_buffered_frames(out, st, pkt_type, path_id)?;
+
+        // Write DATAGRAM frames
+        self.try_write_datagram_frames(out, st, pkt_type, path_id)?;
 
         // Write STREAM frames
         self.try_write_stream_frames(out, st, pkt_type, path_id)?;
@@ -2619,6 +2711,130 @@ impl Connection {
         Ok(())
     }
 
+    fn try_write_datagram_frames(
+        &mut self,
+        out: &mut [u8],
+        st: &mut FrameWriteStatus,
+        pkt_type: PacketType,
+        _path_id: usize,
+    ) -> Result<()> {
+        debug!(
+            "{} try_write_datagram_frames called, pkt_type: {:?}, enabled: {}, closing: {}, available_space: {}",
+            self.trace_id,
+            pkt_type,
+            self.datagram.is_enabled(),
+            self.is_closing(),
+            out.len() - st.written
+        );
+
+        // DATAGRAM frames can be sent in 0-RTT and 1-RTT packets
+        // RFC 9221 Section 5: When clients use 0-RTT, they store the value of the server's
+        // max_datagram_frame_size transport parameter. This allows the client to send
+        // DATAGRAM frames in 0-RTT packets.
+        if pkt_type != PacketType::OneRTT && pkt_type != PacketType::ZeroRTT {
+            // if pkt_type != PacketType::OneRTT && pkt_type != PacketType::ZeroRTT {
+            debug!(
+                "{} Not 0-RTT or 1-RTT packet, skipping DATAGRAM frames {:?}",
+                self.trace_id, pkt_type
+            );
+            return Ok(());
+        }
+
+        // For 0-RTT packets, we need to use the stored max_datagram_frame_size from the previous connection
+        // if pkt_type == PacketType::ZeroRTT {
+        //     debug!(
+        //         "{} Sending DATAGRAM frames in 0-RTT packet (early data)",
+        //         self.trace_id
+        //     );
+        // }
+        // Check if DATAGRAM extension is enabled
+        // section 3 ,must not send datagram,so if should open the if
+        // if !self.datagram.is_enabled() {
+        //     debug!("{} DATAGRAM extension not enabled, skipping", self.trace_id);
+        //     return Ok(());
+        // }
+
+        // Don't send DATAGRAM frames if we're closing
+        if self.is_closing() {
+            debug!(
+                "{} Connection is closing, skipping DATAGRAM frames",
+                self.trace_id
+            );
+            return Ok(());
+        }
+
+        debug!(
+            "{} Starting to send datagrams, queue has sendable: {}",
+            self.trace_id,
+            self.datagram.has_sendable_datagrams()
+        );
+
+        let mut frames_sent = 0;
+        // Send as many datagrams as possible within the available space
+        while self.datagram.has_sendable_datagrams() {
+            debug!(
+                "{} Loop iteration {}, checking for next datagram",
+                self.trace_id, frames_sent
+            );
+
+            // Get the next datagram to send
+            let datagram_item = match self.datagram.next_send_datagram() {
+                Some(item) => {
+                    debug!(
+                        "{} Got datagram from queue, data len: {}",
+                        self.trace_id,
+                        item.data.len()
+                    );
+                    item
+                }
+                None => {
+                    debug!("{} No more datagrams to send", self.trace_id);
+                    break;
+                }
+            };
+
+            // Create DATAGRAM frame
+            let frame = Frame::Datagram {
+                len: if datagram_item.with_length {
+                    Some(datagram_item.data.len() as u64)
+                } else {
+                    None
+                },
+                data: datagram_item.data.clone(),
+                id: datagram_item.id,
+            };
+
+            debug!(
+                "{} Created DATAGRAM frame, with_length: {}, data_len: {}",
+                self.trace_id,
+                datagram_item.with_length,
+                datagram_item.data.len()
+            );
+
+            // Try to write the frame to the packet
+            match Connection::write_frame_to_packet(frame, out, st) {
+                Ok(()) => {
+                    st.ack_eliciting = true;
+                    st.in_flight = true;
+                    frames_sent += 1;
+                    debug!(
+                        "{} sent DATAGRAM frame #{}: {} bytes, remaining queue: {}",
+                        self.trace_id,
+                        frames_sent,
+                        datagram_item.data.len(),
+                        self.datagram.outgoing_count()
+                    );
+                }
+                Err(e) => {
+                    warn!("{} failed to write DATAGRAM frame: {:?}", self.trace_id, e);
+                    return Err(e);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Populate NewToken frame to packet payload buffer.
     fn try_write_new_token_frame(
         &mut self,
@@ -2951,7 +3167,11 @@ impl Connection {
                             );
                         }
                     }
-
+                    Frame::Datagram { len, data, id } => {
+                        // Todo: implement datagram loss check
+                        error!("{} lost datagram on {:?} size={:?}", self.trace_id, id, len);
+                        self.events.add(Event::DatagramLost(id.unwrap()));
+                    }
                     _ => (),
                 }
             }
@@ -3111,6 +3331,7 @@ impl Connection {
                 || path.need_send_ping
                 || self.cids.need_send_cid_control_frames()
                 || self.streams.need_send_stream_frames()
+                || self.datagram.has_sendable_datagrams()
                 || self.spaces.need_send_buffered_frames())
         {
             if !self.is_server && self.tls_session.is_in_early_data() {
@@ -3129,6 +3350,7 @@ impl Connection {
             || self.local_error.as_ref().is_some_and(|e| e.is_app)
             || self.cids.need_send_cid_control_frames()
             || self.streams.need_send_stream_frames()
+            || self.datagram.has_sendable_datagrams()
     }
 
     /// Find space id for the specified packet type and path id.
@@ -3394,6 +3616,164 @@ impl Connection {
     /// Check whether the connection handshake is complete.
     pub fn is_established(&self) -> bool {
         self.flags.contains(HandshakeCompleted)
+    }
+
+    /// Send a datagram frame over the QUIC connection.
+    ///
+    /// This method sends unreliable data using the QUIC DATAGRAM extension (RFC 9221).
+    /// The datagram will be sent as soon as possible but may be dropped if the
+    /// peer's receive buffer is full or if network conditions cause packet loss.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - The data to send as a datagram. The size must not exceed the
+    /// peer's maximum datagram frame size.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(u64)` - The datagram was successfully queued for transmission
+    ///    and return the datagram id
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use tquic::Connection;
+    /// # use bytes::Bytes;
+    /// # let mut conn: Connection = todo!();
+    /// let message = Bytes::from("Hello, QUIC Datagram!");
+    /// match conn.send_datagram(message) {
+    ///     Ok(u64) => println!("Datagram queued for sending"),
+    ///     Err(e) => println!("Failed to send datagram: {}", e),
+    /// }
+    /// ```
+    pub fn send_datagram(&mut self, data: Bytes) -> Result<u64> {
+        debug!(
+            "{} send_datagram called, data len: {}, queue size before: {}",
+            self.trace_id,
+            data.len(),
+            self.datagram.outgoing_count()
+        );
+        let result = self.datagram.send_datagram(data);
+        debug!(
+            "{} send_datagram result: {:?}, queue size after: {}",
+            self.trace_id,
+            result,
+            self.datagram.outgoing_count()
+        );
+
+        // Mark connection as sendable if datagram was successfully queued
+        if result.is_ok() {
+            self.mark_tickable(true);
+            debug!(
+                "{} Connection marked as sendable after datagram queued",
+                self.trace_id
+            );
+        }
+
+        result
+    }
+
+    /// Receive the next available datagram from the connection.
+    ///
+    /// This method retrieves the oldest datagram that has been received from the peer.
+    /// Datagrams are delivered in the order they were received, but may be missing
+    /// if packets were lost during transmission.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(data)` - A datagram was available and has been returned
+    /// * `None` - No datagrams are currently available for reading
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use tquic::Connection;
+    /// # let mut conn: Connection = todo!();
+    /// while let Some(datagram) = conn.recv_datagram() {
+    ///     println!("Received datagram: {:?}", datagram);
+    /// }
+    /// ```
+    pub fn recv_datagram(&mut self) -> Option<Bytes> {
+        self.datagram.recv_datagram()
+    }
+
+    /// Checks whether the QUIC DATAGRAM extension is enabled for this connection.
+    ///
+    /// The DATAGRAM extension is considered enabled if the peer has negotiated
+    /// support for it during the handshake process **and** its
+    /// `max_datagram_size` is greater than 0.
+    ///
+    /// # Returns
+    ///
+    /// * `true` - The peer supports the DATAGRAM extension and `max_datagram_size > 0`
+    /// * `false` - The DATAGRAM extension is not supported or `max_datagram_size` is 0
+    pub fn is_datagram_enabled(&self) -> bool {
+        self.datagram.is_enabled()
+    }
+
+    /// Check if there are datagrams queued for transmission.
+    ///
+    /// # Returns
+    ///
+    /// * `true` - One or more datagrams are waiting to be sent
+    /// * `false` - No datagrams are currently queued for sending
+    pub fn has_sendable_datagrams(&self) -> bool {
+        self.datagram.has_sendable_datagrams()
+    }
+
+    /// Get the peer's maximum datagram frame size.
+    ///
+    /// This is the maximum size of datagram payload that the peer is willing
+    /// to receive, as advertised in their transport parameters.
+    ///
+    /// # Returns
+    ///
+    /// The maximum datagram frame size in bytes, or 0 if DATAGRAM extension
+    /// is not enabled.
+    pub fn peer_max_datagram_frame_size(&self) -> u64 {
+        self.datagram.peer_max_datagram_frame_size()
+    }
+
+    /// Get the local maximum datagram frame size.
+    ///
+    /// This is the maximum size of datagram payload that this endpoint is
+    /// willing to receive.
+    ///
+    /// # Returns
+    ///
+    /// The maximum datagram frame size in bytes.
+    pub fn local_max_datagram_frame_size(&self) -> u64 {
+        self.datagram.local_max_datagram_frame_size()
+    }
+
+    /// Get statistics about datagram usage for this connection.
+    ///
+    /// # Returns
+    ///
+    /// A `DatagramStats` structure containing information about:
+    /// - Number of datagrams sent and received
+    /// - Total bytes sent and received in datagrams
+    /// - Current queue sizes for outgoing and incoming datagrams
+    pub fn datagram_stats(&self) -> crate::connection::datagram::DatagramStats {
+        self.datagram.stats()
+    }
+
+    /// Get the number of datagrams waiting to be sent.
+    ///
+    /// # Returns
+    ///
+    /// The number of datagrams currently in the outgoing queue.
+    pub fn outgoing_datagram_count(&self) -> usize {
+        self.datagram.outgoing_count()
+    }
+
+    /// Get the number of datagrams waiting to be read.
+    ///
+    /// # Returns
+    ///
+    /// The number of datagrams currently in the incoming queue.
+    pub fn incoming_datagram_count(&self) -> usize {
+        self.datagram.incoming_count()
     }
 
     /// Check whether the connection handshake is confirmed.
@@ -7950,6 +8330,7 @@ pub(crate) mod tests {
 }
 
 mod cid;
+pub(crate) mod datagram;
 mod flowcontrol;
 pub mod path;
 mod pmtu;

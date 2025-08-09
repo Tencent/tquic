@@ -580,6 +580,23 @@ impl Endpoint {
                     self.handler.on_stream_closed(conn, stream_id);
                     conn.stream_destroy(stream_id);
                 }
+
+                Event::DatagramReceived => {
+                    // Datagram received event - applications can check for available datagrams
+                    // This is just a notification; the application needs to call recv_datagram()
+                    // to actually read the datagram data
+                    self.handler.on_datagram_received(conn);
+                }
+                Event::DatagramAcked(datagram_id) => {
+                    // Datagram acked event - applications can check for acked datagrams
+                    // This is just a notification
+                    self.handler.on_datagram_acked(conn, datagram_id);
+                }
+                Event::DatagramLost(datagram_id) => {
+                    // Datagram lost event - applications can check for lost datagrams
+                    // This is just a notification
+                    self.handler.on_datagram_lost(conn, datagram_id);
+                }
             }
             if conn.is_closed() {
                 return false;

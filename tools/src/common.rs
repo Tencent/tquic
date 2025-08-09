@@ -65,6 +65,9 @@ pub enum ApplicationProto {
     /// HTTP/3, see https://www.rfc-editor.org/rfc/rfc9114.html
     #[default]
     H3,
+
+    ///rfc9221 test echo
+    ECHO,
 }
 
 impl ApplicationProto {
@@ -74,6 +77,7 @@ impl ApplicationProto {
             b"hq-interop" => Self::Interop,
             b"http/0.9" => Self::Http09,
             b"h3" => Self::H3,
+            b"echo" => Self::ECHO,
             _ => unreachable!(),
         }
     }
@@ -84,6 +88,7 @@ impl ApplicationProto {
             Self::Interop => b"hq-interop",
             Self::Http09 => b"http/0.9",
             Self::H3 => b"h3",
+            Self::ECHO => b"echo",
         }
     }
 
@@ -102,11 +107,12 @@ impl ValueEnum for ApplicationProto {
             Self::Interop => PossibleValue::new("hq-interop"),
             Self::Http09 => PossibleValue::new("http/0.9"),
             Self::H3 => PossibleValue::new("h3"),
+            Self::ECHO => PossibleValue::new("echo"),
         })
     }
 
     fn value_variants<'a>() -> &'a [Self] {
-        &[Self::Interop, Self::Http09, Self::H3]
+        &[Self::Interop, Self::Http09, Self::H3, Self::ECHO]
     }
 }
 
