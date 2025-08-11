@@ -340,6 +340,10 @@ pub struct ClientOpt {
     /// The range of the request, like "0-1023".
     #[clap(long, value_name = "RANGE", help_heading = "Protocol")]
     pub range: Option<String>,
+
+    /// The percentage of streams to reset.
+    #[clap(long, default_value = "0", value_name = "NUM", help_heading = "Misc")]
+    pub reset_streams_percent: u8,
 }
 
 const MAX_BUF_SIZE: usize = 65536;
@@ -1086,6 +1090,13 @@ impl RequestSender {
         self.request_sent += 1;
         let mut worker_ctx = self.worker_ctx.borrow_mut();
         worker_ctx.request_sent += 1;
+
+        if self.option.reset_streams_percent > 0
+            && rand::thread_rng().gen_range(0..100) < self.option.reset_streams_percent
+        {
+            info!("{} resetting stream {}", conn.trace_id(), s);
+            conn.stream_shutdown(s, tquic::Shutdown::Write, 0)?;
+        }
 
         Ok(())
     }
