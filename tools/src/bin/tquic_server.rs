@@ -406,7 +406,7 @@ struct Response {
     file_path: Option<path::PathBuf>,
     file: Option<File>,
     file_len: u64,           // Total content length to send
-    file_offset: u64,        // Start position for range requests
+    _file_offset: u64,        // Start position for range requests
     bytes_remaining: u64,    // Bytes left to send for range requests  
     body_written: u64,       // Bytes already written
 }
@@ -566,7 +566,7 @@ impl ConnectionHandler {
                 file_path: Some(path),
                 file: None,
                 file_len,
-                file_offset: 0,        // Start from beginning for HTTP/0.9
+                _file_offset: 0,        // Start from beginning for HTTP/0.9
                 bytes_remaining: file_len,  // Send entire file
                 body_written: 0,
             };
@@ -592,7 +592,7 @@ impl ConnectionHandler {
                     file_path: None,
                     file: None,
                     file_len: body_len,
-                    file_offset: 0,              // Not a range request
+                    _file_offset: 0,              // Not a range request
                     bytes_remaining: body_len,   // Send entire body
                     body_written: written as u64,
                 };
@@ -687,6 +687,7 @@ impl ConnectionHandler {
                     if let Some(range_str) = range_header {
                         match self.parse_range(range_str, file_size) {
                             Ok((start, end)) => {
+                                let _file = file; // File will be opened on-demand during streaming
                                 let len = end - start + 1;
                                 // Read the specified range from the file
                                 let headers = vec![
@@ -809,7 +810,7 @@ impl ConnectionHandler {
                     file_path,
                     file: None,
                     file_len: bytes_remaining,  // Content length to send
-                    file_offset,                // Start position for range requests
+                    _file_offset: file_offset,                // Start position for range requests
                     bytes_remaining,            // Bytes left to send
                     body_written: 0,
                 };
@@ -828,7 +829,7 @@ impl ConnectionHandler {
             file_path,
             file: None,
             file_len: bytes_remaining,  // Content length to send
-            file_offset,                // Start position for range requests
+            _file_offset: file_offset,                // Start position for range requests
             bytes_remaining,            // Bytes left to send
             body_written: 0,
         };
@@ -955,23 +956,7 @@ impl ConnectionHandler {
 
         if let Some(path) = response.file_path.clone() {
             if response.file.is_none() {
-                match File::open(&path) {
-                    Ok(mut file) => {
-                        if response.file_offset > 0 {
-                            if let Err(e) = file.seek(SeekFrom::Start(response.file_offset)) {
-                                error!("failed to seek file: {:?}", e);
-                                self.responses.remove(&stream_id);
-                                return;
-                            }
-                        }
-                        response.file = Some(file);
-                    }
-                    Err(e) => {
-                        error!("failed to open file: {:?}", e);
-                        self.responses.remove(&stream_id);
-                        return;
-                    }
-                }
+                response.file = Some(File::open(&path).unwrap());
             }
 
             let file = response.file.as_mut().unwrap();
