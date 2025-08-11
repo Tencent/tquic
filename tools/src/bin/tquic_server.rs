@@ -405,10 +405,10 @@ struct Response {
     body: Option<Bytes>,
     file_path: Option<path::PathBuf>,
     file: Option<File>,
-    file_len: u64,           // Total content length to send
-    _file_offset: u64,        // Start position for range requests
-    bytes_remaining: u64,    // Bytes left to send for range requests  
-    body_written: u64,       // Bytes already written
+    file_len: u64,        // Total content length to send
+    _file_offset: u64,    // Start position for range requests
+    bytes_remaining: u64, // Bytes left to send for range requests
+    body_written: u64,    // Bytes already written
 }
 
 #[derive(Default)]
@@ -443,7 +443,7 @@ impl ConnectionHandler {
     fn get_content_type(path: &path::Path) -> &'static str {
         match path.extension().and_then(|s| s.to_str()) {
             Some("html") | Some("htm") => "text/html",
-            Some("css") => "text/css", 
+            Some("css") => "text/css",
             Some("js") => "application/javascript",
             Some("json") => "application/json",
             Some("xml") => "text/xml",
@@ -566,8 +566,8 @@ impl ConnectionHandler {
                 file_path: Some(path),
                 file: None,
                 file_len,
-                _file_offset: 0,        // Start from beginning for HTTP/0.9
-                bytes_remaining: file_len,  // Send entire file
+                _file_offset: 0,           // Start from beginning for HTTP/0.9
+                bytes_remaining: file_len, // Send entire file
                 body_written: 0,
             };
             self.responses.insert(stream_id, response);
@@ -592,8 +592,8 @@ impl ConnectionHandler {
                     file_path: None,
                     file: None,
                     file_len: body_len,
-                    _file_offset: 0,              // Not a range request
-                    bytes_remaining: body_len,   // Send entire body
+                    _file_offset: 0,           // Not a range request
+                    bytes_remaining: body_len, // Send entire body
                     body_written: written as u64,
                 };
                 self.responses.insert(stream_id, response);
@@ -660,8 +660,8 @@ impl ConnectionHandler {
         Vec<Header>,
         Option<Bytes>,
         Option<path::PathBuf>,
-        u64,  // file_offset
-        u64,  // bytes_remaining
+        u64, // file_offset
+        u64, // bytes_remaining
     ) {
         let mut path = "";
         let mut range_header = None;
@@ -694,11 +694,13 @@ impl ConnectionHandler {
                                     tquic::h3::Header::new(b":status", b"206"),
                                     tquic::h3::Header::new(b"server", b"tquic"),
                                     tquic::h3::Header::new(b"accept-ranges", b"bytes"),
-                                    tquic::h3::Header::new(b"content-type", Self::get_content_type(&path).as_bytes()),
+                                    tquic::h3::Header::new(
+                                        b"content-type",
+                                        Self::get_content_type(&path).as_bytes(),
+                                    ),
                                     tquic::h3::Header::new(
                                         b"content-range",
-                                        format!("bytes {}-{}/{}", start, end, file_size)
-                                            .as_bytes(),
+                                        format!("bytes {}-{}/{}", start, end, file_size).as_bytes(),
                                     ),
                                     tquic::h3::Header::new(
                                         b"content-length",
@@ -733,11 +735,11 @@ impl ConnectionHandler {
                         tquic::h3::Header::new(b":status", b"200"),
                         tquic::h3::Header::new(b"server", b"tquic"),
                         tquic::h3::Header::new(b"accept-ranges", b"bytes"),
-                        tquic::h3::Header::new(b"content-type", Self::get_content_type(&path).as_bytes()),
                         tquic::h3::Header::new(
-                            b"content-length",
-                            file_len.to_string().as_bytes(),
+                            b"content-type",
+                            Self::get_content_type(&path).as_bytes(),
                         ),
+                        tquic::h3::Header::new(b"content-length", file_len.to_string().as_bytes()),
                     ];
                     (headers, None, Some(path), 0, file_len)
                 } else {
@@ -809,9 +811,9 @@ impl ConnectionHandler {
                     body,
                     file_path,
                     file: None,
-                    file_len: bytes_remaining,  // Content length to send
-                    _file_offset: file_offset,                // Start position for range requests
-                    bytes_remaining,            // Bytes left to send
+                    file_len: bytes_remaining, // Content length to send
+                    _file_offset: file_offset, // Start position for range requests
+                    bytes_remaining,           // Bytes left to send
                     body_written: 0,
                 };
 
@@ -828,9 +830,9 @@ impl ConnectionHandler {
             body,
             file_path,
             file: None,
-            file_len: bytes_remaining,  // Content length to send
-            _file_offset: file_offset,                // Start position for range requests
-            bytes_remaining,            // Bytes left to send
+            file_len: bytes_remaining, // Content length to send
+            _file_offset: file_offset, // Start position for range requests
+            bytes_remaining,           // Bytes left to send
             body_written: 0,
         };
         self.responses.insert(stream_id, response);
@@ -970,15 +972,18 @@ impl ConnectionHandler {
                 Ok(read) => {
                     // Update bytes remaining for range requests
                     if response.bytes_remaining > 0 {
-                        response.bytes_remaining = response.bytes_remaining.saturating_sub(read as u64);
+                        response.bytes_remaining =
+                            response.bytes_remaining.saturating_sub(read as u64);
                     }
-                    
+
                     let fin = (response.body_written + read as u64) >= response.file_len;
                     match conn.stream_write(stream_id, Bytes::copy_from_slice(&buf[..read]), fin) {
                         Ok(written) => {
                             response.body_written += written as u64;
                             if written < read {
-                                if let Err(e) = file.seek(SeekFrom::Current(-((read - written) as i64))) {
+                                if let Err(e) =
+                                    file.seek(SeekFrom::Current(-((read - written) as i64)))
+                                {
                                     error!("Failed to seek back: {:?}", e);
                                     self.responses.remove(&stream_id);
                                     return;
@@ -1040,8 +1045,7 @@ impl ConnectionHandler {
                 return;
             }
 
-            let fin = (response.body_written + body_slice.len() as u64)
-                == response.file_len;
+            let fin = (response.body_written + body_slice.len() as u64) == response.file_len;
             let written = match h3_conn.send_body(conn, stream_id, body_slice, fin) {
                 Ok(v) => v,
                 Err(tquic::h3::Http3Error::Done) => 0,
@@ -1075,8 +1079,12 @@ impl ConnectionHandler {
                 }
                 Ok(read) => {
                     let fin = (response.body_written + read as u64) >= response.file_len;
-                    match h3_conn.send_body(conn, stream_id, Bytes::copy_from_slice(&buf[..read]), fin)
-                    {
+                    match h3_conn.send_body(
+                        conn,
+                        stream_id,
+                        Bytes::copy_from_slice(&buf[..read]),
+                        fin,
+                    ) {
                         Ok(written) => {
                             response.body_written += written as u64;
                             if written < read {
