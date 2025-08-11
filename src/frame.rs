@@ -188,7 +188,7 @@ pub enum Frame {
     Datagram {
         len: Option<u64>,
         data: Bytes,
-        id: Option<u64>,
+        id: u64,
     },
 }
 
@@ -382,7 +382,7 @@ impl Frame {
                 Frame::Datagram {
                     len: len_field,
                     data,
-                    id: None,
+                    id: 0, //the id is used only to notify the user,not in the wire.
                 }
             }
             0x15228c05 => Frame::PathAbandon {
@@ -421,10 +421,6 @@ impl Frame {
             (PacketType::ZeroRTT, Frame::PathResponse { .. }) => false,
             (PacketType::ZeroRTT, Frame::RetireConnectionId { .. }) => false,
             (PacketType::ZeroRTT, Frame::ConnectionClose { .. }) => false,
-
-            //to be reviewed.
-            (PacketType::Initial, Frame::Datagram { .. }) => false,
-            (PacketType::Handshake, Frame::Datagram { .. }) => false,
 
             // ACK, CRYPTO and CONNECTION_CLOSE can be sent on all other packet
             // types.

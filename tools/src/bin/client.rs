@@ -240,7 +240,10 @@ impl DatagramClient {
                 }
 
                 // Try to send a datagram if we're in early data mode or connected and the interval has passed
-                if messages_sent < self.message_count && now >= next_send_time {
+                if messages_sent < self.message_count
+                    && now >= next_send_time
+                    && conn.is_datagram_enabled()
+                {
                     let payload = format!("Datagram {}", messages_sent + 1).into_bytes();
 
                     let payload_bytes = Bytes::from(payload);
@@ -430,6 +433,22 @@ impl TransportHandler for ClientHandler {
     fn on_datagram_lost(&mut self, conn: &mut Connection, datagram_id: u64) {
         debug!(
             "Datagram with ID {} has been lost on connection {}",
+            datagram_id,
+            conn.trace_id()
+        );
+    }
+
+    fn on_datagram_receiver_drop(&mut self, conn: &mut Connection, datagram_id: u64) {
+        debug!(
+            "Datagram with ID {} has been dropped on connection {}",
+            datagram_id,
+            conn.trace_id()
+        );
+    }
+
+    fn on_datagram_sender_drop(&mut self, conn: &mut Connection, datagram_id: u64) {
+        debug!(
+            "Datagram with ID {} has been dropped on connection {}",
             datagram_id,
             conn.trace_id()
         );

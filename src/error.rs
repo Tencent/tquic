@@ -151,6 +151,12 @@ pub enum Error {
 
     /// I/O error.
     IoError(String),
+
+    /// Datagram is disabled
+    DatagramDisabled,
+
+    /// Want to send a datagram beyond the size of peer set.
+    DatagramTooLarge,
 }
 
 impl Error {
@@ -216,6 +222,8 @@ impl Error {
             Error::StreamStopped(_) => -110,
             Error::StreamReset(_) => -111,
             Error::IoError(_) => -112,
+            Error::DatagramDisabled => -113,
+            Error::DatagramTooLarge => -114,
         }
     }
 }

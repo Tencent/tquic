@@ -913,6 +913,7 @@ impl Default for MultipathConfig {
 }
 
 /// Events sent from a Connection to an Endpoint.
+#[derive(Debug)]
 enum Event {
     /// The connection handshake is complete.
     ConnectionEstablished,
@@ -950,6 +951,15 @@ enum Event {
 
     /// A datagram has been lost.
     DatagramLost(u64),
+
+    /// A datagram has been dropped by the sender queue.
+    DatagramSenderDrop(u64),
+
+    /// A datagram has been dropped by the receiver queue.
+    DatagramReceiverDrop(u64),
+
+    /// A datagram has expired.
+    DatagramTimeExpiredDrop(u64),
 }
 
 #[derive(Default)]
@@ -1074,13 +1084,10 @@ pub trait TransportHandler {
     /// * `datagram_id` - Unique identifier of the suspected lost datagram
     fn on_datagram_lost(&mut self, _conn: &mut Connection, _datagram_id: u64) {}
 
-    /// Called when a datagram expires before it could be transmitted.
-    /// RFC 9221 Section 5.4 - Expiration time support.
-    ///
-    /// # Arguments
-    /// * `conn` - The connection that held the datagram
-    /// * `datagram_id` - Unique identifier of the expired datagram
-    fn on_datagram_expired(&mut self, _conn: &mut Connection, _datagram_id: u64) {}
+    fn on_datagram_receiver_drop(&mut self, _conn: &mut Connection, _datagram_id: u64) {}
+
+    fn on_datagram_sender_drop(&mut self, _conn: &mut Connection, _datagram_id: u64) {}
+    fn on_datagram_time_expired_drop(&mut self, _conn: &mut Connection, _datagram_id: u64) {}
 }
 
 /// The PacketSendHandler lists the callbacks used by the endpoint to

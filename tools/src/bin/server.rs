@@ -225,12 +225,7 @@ impl ConnectionHandler {
     fn process_datagrams(&mut self, conn: &mut Connection) {
         while let Some(datagram) = conn.recv_datagram() {
             let message = String::from_utf8_lossy(&datagram);
-            info!(
-                "[Conn {}] Received datagram ({} bytes): {}",
-                conn.trace_id(),
-                datagram.len(),
-                message
-            );
+            info!("Received datagram ({} bytes): {}", datagram.len(), message);
             self.datagrams_received += 1;
 
             // Echo the datagram back
@@ -275,6 +270,8 @@ impl ServerHandler {
         if self.conns.get_mut(&index).is_some() {
             return;
         }
+        //enable all the notify
+        conn.enable_all_datagram_notifications();
         self.conns.insert(index, ConnectionHandler::new());
     }
 }
@@ -282,9 +279,6 @@ impl ServerHandler {
 impl TransportHandler for ServerHandler {
     fn on_conn_created(&mut self, conn: &mut Connection) {
         debug!("New connection created: {}", conn.trace_id());
-
-        // let handler = ConnectionHandler::new();
-        // self.conns.insert(conn.index().unwrap(), handler);
 
         // Set up qlog if a directory is specified
         if let Some(ref dir) = self.qlog_dir {
@@ -379,8 +373,15 @@ impl TransportHandler for ServerHandler {
         }
     }
 
+    // Unused handlers
+    fn on_stream_created(&mut self, _conn: &mut Connection, _stream_id: u64) {}
+    fn on_stream_readable(&mut self, _conn: &mut Connection, _stream_id: u64) {}
+    fn on_stream_writable(&mut self, _conn: &mut Connection, _stream_id: u64) {}
+    fn on_stream_closed(&mut self, _conn: &mut Connection, _stream_id: u64) {}
+    fn on_new_token(&mut self, _conn: &mut Connection, _token: Vec<u8>) {}
+
     fn on_datagram_acked(&mut self, conn: &mut Connection, datagram_id: u64) {
-        debug!(
+        info!(
             "Datagram with ID {} has been acked on connection {}",
             datagram_id,
             conn.trace_id()
@@ -388,18 +389,34 @@ impl TransportHandler for ServerHandler {
     }
 
     fn on_datagram_lost(&mut self, conn: &mut Connection, datagram_id: u64) {
-        debug!(
+        info!(
             "Datagram with ID {} has been lost on connection {}",
             datagram_id,
             conn.trace_id()
         );
+        info!(
+            "Connection {} notifyFlags {:?} ",
+            conn.trace_id(),
+            conn.datagram_notification_flags()
+        );
+        conn.disable_all_datagram_notifications();
     }
-    // Unused handlers
-    fn on_stream_created(&mut self, _conn: &mut Connection, _stream_id: u64) {}
-    fn on_stream_readable(&mut self, _conn: &mut Connection, _stream_id: u64) {}
-    fn on_stream_writable(&mut self, _conn: &mut Connection, _stream_id: u64) {}
-    fn on_stream_closed(&mut self, _conn: &mut Connection, _stream_id: u64) {}
-    fn on_new_token(&mut self, _conn: &mut Connection, _token: Vec<u8>) {}
+
+    fn on_datagram_receiver_drop(&mut self, conn: &mut Connection, datagram_id: u64) {
+        debug!(
+            "Datagram with ID {} has been dropped on connection {}",
+            datagram_id,
+            conn.trace_id()
+        );
+    }
+
+    fn on_datagram_sender_drop(&mut self, conn: &mut Connection, datagram_id: u64) {
+        debug!(
+            "Datagram with ID {} has been dropped on connection {}",
+            datagram_id,
+            conn.trace_id()
+        );
+    }
 }
 
 /// Helper function to process arguments like initializing the logger and creating directories.
