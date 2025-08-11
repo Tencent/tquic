@@ -967,7 +967,6 @@ impl ConnectionHandler {
                 Ok(0) => {
                     // EOF
                     self.responses.remove(&stream_id);
-                    return;
                 }
                 Ok(read) => {
                     // Update bytes remaining for range requests
@@ -1075,7 +1074,6 @@ impl ConnectionHandler {
                 Ok(0) => {
                     // EOF
                     self.responses.remove(&stream_id);
-                    return;
                 }
                 Ok(read) => {
                     let fin = (response.body_written + read as u64) >= response.file_len;
