@@ -405,9 +405,10 @@ struct Response {
     body: Option<Bytes>,
     file_path: Option<path::PathBuf>,
     file: Option<File>,
-    file_offset: u64,
-    file_len: u64,
-    body_written: u64,
+    file_len: u64,           // Total content length to send
+    file_offset: u64,        // Start position for range requests
+    bytes_remaining: u64,    // Bytes left to send for range requests  
+    body_written: u64,       // Bytes already written
 }
 
 #[derive(Default)]
@@ -438,6 +439,28 @@ struct ConnectionHandler {
 }
 
 impl ConnectionHandler {
+    /// Get MIME content type based on file extension
+    fn get_content_type(path: &path::Path) -> &'static str {
+        match path.extension().and_then(|s| s.to_str()) {
+            Some("html") | Some("htm") => "text/html",
+            Some("css") => "text/css", 
+            Some("js") => "application/javascript",
+            Some("json") => "application/json",
+            Some("xml") => "text/xml",
+            Some("txt") => "text/plain",
+            Some("png") => "image/png",
+            Some("jpg") | Some("jpeg") => "image/jpeg",
+            Some("gif") => "image/gif",
+            Some("svg") => "image/svg+xml",
+            Some("ico") => "image/x-icon",
+            Some("pdf") => "application/pdf",
+            Some("zip") => "application/zip",
+            Some("mp4") => "video/mp4",
+            Some("mp3") => "audio/mpeg",
+            _ => "application/octet-stream",
+        }
+    }
+
     // Parse a Range header.
     //
     // Returns Ok((start, end)) or an error string.
@@ -528,53 +551,52 @@ impl ConnectionHandler {
             stream_id
         );
 
-        match path.metadata() {
-            Ok(metadata) => {
-                let file_len = metadata.len();
-                debug!(
-                    "{} sending response of size {} on stream {}",
-                    conn.trace_id(),
-                    file_len,
-                    stream_id
-                );
+        if path.exists() {
+            let file_len = path.metadata().unwrap().len();
+            debug!(
+                "{} sending response of size {} on stream {}",
+                conn.trace_id(),
+                file_len,
+                stream_id
+            );
 
+            let response = Response {
+                headers: None,
+                body: None,
+                file_path: Some(path),
+                file: None,
+                file_len,
+                file_offset: 0,        // Start from beginning for HTTP/0.9
+                bytes_remaining: file_len,  // Send entire file
+                body_written: 0,
+            };
+            self.responses.insert(stream_id, response);
+            self.send_http09_response(conn, stream_id);
+        } else {
+            let body = Bytes::from_static(b"Not Found!\r\n");
+            let written = match conn.stream_write(stream_id, body.clone(), true) {
+                Ok(v) => v,
+                Err(tquic::error::Error::Done) => 0,
+                Err(e) => {
+                    error!("{} stream write failed {:?}", conn.trace_id(), e);
+                    return Ok(());
+                }
+            };
+
+            let body_len = body.len() as u64;
+            if (written as u64) < body_len {
+                _ = conn.stream_want_write(stream_id, true);
                 let response = Response {
                     headers: None,
-                    body: None,
-                    file_path: Some(path),
+                    body: Some(body),
+                    file_path: None,
                     file: None,
-                        file_offset: 0,
-                    file_len,
-                    body_written: 0,
+                    file_len: body_len,
+                    file_offset: 0,              // Not a range request
+                    bytes_remaining: body_len,   // Send entire body
+                    body_written: written as u64,
                 };
                 self.responses.insert(stream_id, response);
-                self.send_http09_response(conn, stream_id);
-            }
-            Err(_) => {
-                let body = Bytes::from_static(b"Not Found!\r\n");
-                let written = match conn.stream_write(stream_id, body.clone(), true) {
-                    Ok(v) => v,
-                    Err(tquic::error::Error::Done) => 0,
-                    Err(e) => {
-                        error!("{} stream write failed {:?}", conn.trace_id(), e);
-                        return Ok(());
-                    }
-                };
-
-                let body_len = body.len() as u64;
-                if (written as u64) < body_len {
-                    _ = conn.stream_want_write(stream_id, true);
-                    let response = Response {
-                        headers: None,
-                        body: Some(body),
-                        file_path: None,
-                        file: None,
-                        file_offset: 0,
-                        file_len: body_len,
-                        body_written: written as u64,
-                    };
-                    self.responses.insert(stream_id, response);
-                }
             }
         }
 
@@ -638,8 +660,8 @@ impl ConnectionHandler {
         Vec<Header>,
         Option<Bytes>,
         Option<path::PathBuf>,
-        u64,
-        u64,
+        u64,  // file_offset
+        u64,  // bytes_remaining
     ) {
         let mut path = "";
         let mut range_header = None;
@@ -658,87 +680,78 @@ impl ConnectionHandler {
             "GET" => {
                 let path = Self::generate_file_path(path, &self.root);
 
-                match std::fs::metadata(&path) {
-                    Ok(metadata) => {
-                        let file_size = metadata.len();
+                if let Ok(file) = std::fs::File::open(&path) {
+                    let file_size = file.metadata().unwrap().len();
 
-                        // Process range request
-                        if let Some(range_str) = range_header {
-                            match self.parse_range(range_str, file_size) {
-                                Ok((start, end)) => {
-                                    let len = end - start + 1;
-                                    // Read the specified range from the file
+                    // Process range request
+                    if let Some(range_str) = range_header {
+                        match self.parse_range(range_str, file_size) {
+                            Ok((start, end)) => {
+                                let len = end - start + 1;
+                                // Read the specified range from the file
+                                let headers = vec![
+                                    tquic::h3::Header::new(b":status", b"206"),
+                                    tquic::h3::Header::new(b"server", b"tquic"),
+                                    tquic::h3::Header::new(b"accept-ranges", b"bytes"),
+                                    tquic::h3::Header::new(b"content-type", Self::get_content_type(&path).as_bytes()),
+                                    tquic::h3::Header::new(
+                                        b"content-range",
+                                        format!("bytes {}-{}/{}", start, end, file_size)
+                                            .as_bytes(),
+                                    ),
+                                    tquic::h3::Header::new(
+                                        b"content-length",
+                                        len.to_string().as_bytes(),
+                                    ),
+                                ];
+                                return (headers, None, Some(path), start, len);
+                            }
+                            Err(e) => {
+                                // If range is invalid or multi-part, return 416 or 200.
+                                // Here we follow Nginx's strategy for multi-part ranges.
+                                if e != "Multi-part ranges not supported" {
+                                    // Invalid range, return 416
                                     let headers = vec![
-                                        tquic::h3::Header::new(b":status", b"206"),
+                                        tquic::h3::Header::new(b":status", b"416"),
                                         tquic::h3::Header::new(b"server", b"tquic"),
-                                        tquic::h3::Header::new(b"accept-ranges", b"bytes"),
                                         tquic::h3::Header::new(
                                             b"content-range",
-                                            format!("bytes {}-{}/{}", start, end, file_size)
-                                                .as_bytes(),
-                                        ),
-                                        tquic::h3::Header::new(
-                                            b"content-length",
-                                            len.to_string().as_bytes(),
-                                        ),
-                                        tquic::h3::Header::new(
-                                            b"content-type",
-                                            Self::get_content_type(&path).as_bytes(),
+                                            format!("bytes */{}", file_size).as_bytes(),
                                         ),
                                     ];
-                                    return (headers, None, Some(path), start, len);
+                                    return (headers, Some(Bytes::new()), None, 0, 0);
                                 }
-                                Err(e) => {
-                                    // If range is invalid or multi-part, return 416 or 200.
-                                    // Here we follow Nginx's strategy for multi-part ranges.
-                                    if e != "Multi-part ranges not supported" {
-                                        // Invalid range, return 416
-                                        let headers = vec![
-                                            tquic::h3::Header::new(b":status", b"416"),
-                                            tquic::h3::Header::new(b"server", b"tquic"),
-                                            tquic::h3::Header::new(
-                                                b"content-range",
-                                                format!("bytes */{}", file_size).as_bytes(),
-                                            ),
-                                        ];
-                                        return (headers, Some(Bytes::new()), None, 0, 0);
-                                    }
-                                    // Fall through to serve the whole file with 200 OK for multi-part
-                                }
+                                // Fall through to serve the whole file with 200 OK for multi-part
                             }
                         }
+                    }
 
-                        // Default case: serve the whole file with 200 OK
-                        let file_len = file_size;
-                        let headers = vec![
-                            tquic::h3::Header::new(b":status", b"200"),
-                            tquic::h3::Header::new(b"server", b"tquic"),
-                            tquic::h3::Header::new(b"accept-ranges", b"bytes"),
-                            tquic::h3::Header::new(
-                                b"content-length",
-                                file_len.to_string().as_bytes(),
-                            ),
-                            tquic::h3::Header::new(
-                                b"content-type",
-                                Self::get_content_type(&path).as_bytes(),
-                            ),
-                        ];
-                        (headers, None, Some(path), 0, file_len)
-                    }
-                    Err(_) => {
-                        // File not found
-                        let body = Bytes::from_static(b"Not Found!");
-                        let body_len = body.len() as u64;
-                        let headers = vec![
-                            tquic::h3::Header::new(b":status", b"404"),
-                            tquic::h3::Header::new(b"server", b"tquic"),
-                            tquic::h3::Header::new(
-                                b"content-length",
-                                body.len().to_string().as_bytes(),
-                            ),
-                        ];
-                        (headers, Some(body), None, 0, body_len)
-                    }
+                    // Default case: serve the whole file with 200 OK
+                    let file_len = file_size;
+                    let headers = vec![
+                        tquic::h3::Header::new(b":status", b"200"),
+                        tquic::h3::Header::new(b"server", b"tquic"),
+                        tquic::h3::Header::new(b"accept-ranges", b"bytes"),
+                        tquic::h3::Header::new(b"content-type", Self::get_content_type(&path).as_bytes()),
+                        tquic::h3::Header::new(
+                            b"content-length",
+                            file_len.to_string().as_bytes(),
+                        ),
+                    ];
+                    (headers, None, Some(path), 0, file_len)
+                } else {
+                    // File not found
+                    let body = Bytes::from_static(b"Not Found!");
+                    let body_len = body.len() as u64;
+                    let headers = vec![
+                        tquic::h3::Header::new(b":status", b"404"),
+                        tquic::h3::Header::new(b"server", b"tquic"),
+                        tquic::h3::Header::new(
+                            b"content-length",
+                            body.len().to_string().as_bytes(),
+                        ),
+                    ];
+                    (headers, Some(body), None, 0, body_len)
                 }
             }
             "POST" => {
@@ -782,7 +795,7 @@ impl ConnectionHandler {
         conn.stream_shutdown(stream_id, tquic::Shutdown::Read, 0)?;
         self.processed_requests = std::cmp::max(self.processed_requests, stream_id);
 
-        let (headers, body, file_path, file_offset, file_len) =
+        let (headers, body, file_path, file_offset, bytes_remaining) =
             self.build_h3_response(headers, data);
         let h3_conn = self.h3_conn.as_mut().unwrap();
         let fin = (body.is_some() && body.as_ref().unwrap().is_empty()) && file_path.is_none();
@@ -795,8 +808,9 @@ impl ConnectionHandler {
                     body,
                     file_path,
                     file: None,
-            file_offset,
-                    file_len,
+                    file_len: bytes_remaining,  // Content length to send
+                    file_offset,                // Start position for range requests
+                    bytes_remaining,            // Bytes left to send
                     body_written: 0,
                 };
 
@@ -813,8 +827,9 @@ impl ConnectionHandler {
             body,
             file_path,
             file: None,
-            file_offset,
-            file_len,
+            file_len: bytes_remaining,  // Content length to send
+            file_offset,                // Start position for range requests
+            bytes_remaining,            // Bytes left to send
             body_written: 0,
         };
         self.responses.insert(stream_id, response);
@@ -961,22 +976,28 @@ impl ConnectionHandler {
 
             let file = response.file.as_mut().unwrap();
             let mut buf = [0; 4096];
-            let bytes_to_read =
-                std::cmp::min(buf.len() as u64, response.file_len - response.body_written) as usize;
-            match file.read(&mut buf[..bytes_to_read]) {
+            match file.read(&mut buf) {
                 Ok(0) => {
                     // EOF
                     self.responses.remove(&stream_id);
                     return;
                 }
                 Ok(read) => {
+                    // Update bytes remaining for range requests
+                    if response.bytes_remaining > 0 {
+                        response.bytes_remaining = response.bytes_remaining.saturating_sub(read as u64);
+                    }
+                    
                     let fin = (response.body_written + read as u64) >= response.file_len;
                     match conn.stream_write(stream_id, Bytes::copy_from_slice(&buf[..read]), fin) {
                         Ok(written) => {
                             response.body_written += written as u64;
                             if written < read {
-                                file.seek(SeekFrom::Current(-((read - written) as i64)))
-                                    .unwrap();
+                                if let Err(e) = file.seek(SeekFrom::Current(-((read - written) as i64))) {
+                                    error!("Failed to seek back: {:?}", e);
+                                    self.responses.remove(&stream_id);
+                                    return;
+                                }
                             }
 
                             if response.body_written < response.file_len {
@@ -986,7 +1007,11 @@ impl ConnectionHandler {
                             }
                         }
                         Err(tquic::error::Error::Done) => {
-                            file.seek(SeekFrom::Current(-(read as i64))).unwrap();
+                            if let Err(e) = file.seek(SeekFrom::Current(-(read as i64))) {
+                                error!("Failed to seek back on Done: {:?}", e);
+                                self.responses.remove(&stream_id);
+                                return;
+                            }
                             _ = conn.stream_want_write(stream_id, true);
                         }
                         Err(e) => {
@@ -1052,30 +1077,12 @@ impl ConnectionHandler {
 
         if let Some(path) = response.file_path.clone() {
             if response.file.is_none() {
-                match File::open(&path) {
-                    Ok(mut file) => {
-                        if response.file_offset > 0 {
-                            if let Err(e) = file.seek(SeekFrom::Start(response.file_offset)) {
-                                error!("failed to seek file: {:?}", e);
-                                self.responses.remove(&stream_id);
-                                return;
-                            }
-                        }
-                        response.file = Some(file);
-                    }
-                    Err(e) => {
-                        error!("failed to open file: {:?}", e);
-                        self.responses.remove(&stream_id);
-                        return;
-                    }
-                }
+                response.file = Some(File::open(&path).unwrap());
             }
 
             let file = response.file.as_mut().unwrap();
             let mut buf = [0; 4096];
-            let bytes_to_read =
-                std::cmp::min(buf.len() as u64, response.file_len - response.body_written) as usize;
-            match file.read(&mut buf[..bytes_to_read]) {
+            match file.read(&mut buf) {
                 Ok(0) => {
                     // EOF
                     self.responses.remove(&stream_id);
@@ -1130,19 +1137,6 @@ impl ConnectionHandler {
                 self.send_http09_response(conn, stream_id)
             }
             ApplicationProto::H3 => self.send_h3_response(conn, stream_id),
-        }
-    }
-
-    fn get_content_type(path: &path::Path) -> &str {
-        match path.extension().and_then(|s| s.to_str()) {
-            Some("html") => "text/html",
-            Some("css") => "text/css",
-            Some("js") => "application/javascript",
-            Some("json") => "application/json",
-            Some("png") => "image/png",
-            Some("jpg") | Some("jpeg") => "image/jpeg",
-            Some("gif") => "image/gif",
-            _ => "application/octet-stream",
         }
     }
 }
