@@ -115,6 +115,7 @@ jobs:
         uses: actions-rs/install@v0.1
         with:
           crate: cargo-ndk
+          version: ^3.0.0
       - name: Run cargo ndk
         uses: actions-rs/cargo@v1
         with:
