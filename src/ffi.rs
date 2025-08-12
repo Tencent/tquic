@@ -1569,10 +1569,7 @@ pub extern "C" fn quic_conn_datagram_recv(
 /// Get the maximum datagram payload size that can be sent.
 #[no_mangle]
 pub extern "C" fn quic_conn_datagram_max_size(conn: &mut Connection) -> size_t {
-    match conn.datagram_max_size() {
-        Some(size) => size,
-        None => 0,
-    }
+    conn.datagram_max_size().unwrap_or_default()
 }
 
 /// Get the available space in the datagram send buffer.
