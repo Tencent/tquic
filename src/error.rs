@@ -155,8 +155,16 @@ pub enum Error {
     /// Datagram is disabled
     DatagramDisabled,
 
-    /// Want to send a datagram beyond the size of peer set.
+    /// The datagram is DatagramTooLarge, because its size exceeds the `max_datagram_frame_size`
+    /// advertised by the peer. Sending it would cause a `PROTOCOL_VIOLATION` on the remote end.
     DatagramTooLarge,
+
+    /// A datagram beyond the send/recv memory max size.
+    /// True means the sender, False is receiver.
+    DatagramBeyondMemory(bool),
+
+    /// Only used in the ffi,
+    DatagramInvalidParameter,
 }
 
 impl Error {
@@ -224,6 +232,8 @@ impl Error {
             Error::IoError(_) => -112,
             Error::DatagramDisabled => -113,
             Error::DatagramTooLarge => -114,
+            Error::DatagramBeyondMemory(_) => -115,
+            Error::DatagramInvalidParameter => -116,
         }
     }
 }

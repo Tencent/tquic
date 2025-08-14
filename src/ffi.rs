@@ -1770,6 +1770,18 @@ pub struct TransportMethods {
     /// is optional.
     pub on_new_token:
         Option<fn(tctx: *mut c_void, conn: &mut Connection, token: *const u8, token_len: size_t)>,
+
+    pub on_datagram_received: Option<fn(conn: &mut Connection, len: u64)>,
+
+    pub on_datagram_acked: Option<fn(conn: &mut Connection, datagram_id: u64)>,
+
+    pub on_datagram_lost: Option<fn(conn: &mut Connection, datagram_id: u64)>,
+
+    pub on_datagram_receiver_drop: Option<fn(conn: &mut Connection, datagram_id: u64)>,
+
+    pub on_datagram_sender_drop: Option<fn(conn: &mut Connection, datagram_id: u64)>,
+
+    pub on_datagram_time_expired_drop: Option<fn(conn: &mut Connection, datagram_id: u64)>,
 }
 
 #[repr(transparent)]
@@ -1845,6 +1857,54 @@ impl crate::TransportHandler for TransportHandler {
         unsafe {
             if let Some(f) = (*self.methods).on_new_token {
                 f(self.context.0, conn, token, token_len);
+            }
+        }
+    }
+
+    fn on_datagram_received(&mut self, conn: &mut Connection, len: u64) {
+        unsafe {
+            if let Some(f) = (*self.methods).on_datagram_received {
+                f(conn, len);
+            }
+        }
+    }
+
+    fn on_datagram_acked(&mut self, conn: &mut Connection, datagram_id: u64) {
+        unsafe {
+            if let Some(f) = (*self.methods).on_datagram_acked {
+                f(conn, datagram_id);
+            }
+        }
+    }
+
+    fn on_datagram_lost(&mut self, conn: &mut Connection, datagram_id: u64) {
+        unsafe {
+            if let Some(f) = (*self.methods).on_datagram_lost {
+                f(conn, datagram_id);
+            }
+        }
+    }
+
+    fn on_datagram_sender_drop(&mut self, conn: &mut Connection, datagram_id: u64) {
+        unsafe {
+            if let Some(f) = (*self.methods).on_datagram_sender_drop {
+                f(conn, datagram_id);
+            }
+        }
+    }
+
+    fn on_datagram_receiver_drop(&mut self, conn: &mut Connection, datagram_id: u64) {
+        unsafe {
+            if let Some(f) = (*self.methods).on_datagram_receiver_drop {
+                f(conn, datagram_id);
+            }
+        }
+    }
+
+    fn on_datagram_time_expired_drop(&mut self, conn: &mut Connection, datagram_id: u64) {
+        unsafe {
+            if let Some(f) = (*self.methods).on_datagram_time_expired_drop {
+                f(conn, datagram_id);
             }
         }
     }
@@ -2642,4 +2702,628 @@ pub extern "C" fn quic_path_peer_context(
         Ok(Some(v)) => v.downcast_mut::<Context>().unwrap().0,
         _ => ptr::null_mut(),
     }
+}
+
+/// Send a datagram over the connection.
+///
+/// This method queues a datagram for transmission with default parameters
+/// (priority 127, no expiration). The datagram will be sent as soon as
+/// possible based on the connection's congestion control and available
+/// bandwidth.
+///
+/// # Returns
+///
+/// On success, returns the unique ID assigned to the datagram (>= 1).
+/// On error, returns one of the following negative values:
+/// * -113: DATAGRAM extension is disabled
+/// * -114: Datagram is too large for peer's advertised limit
+/// * -115: Datagram exceeds memory limits
+/// * Other negative values for other errors
+#[no_mangle]
+pub extern "C" fn quic_conn_send_datagram(
+    conn: &mut Connection,
+    data: *const u8,
+    data_len: size_t,
+) -> i64 {
+    if data.is_null() {
+        return Error::DatagramInvalidParameter.to_errno() as i64;
+    }
+
+    let data = unsafe { slice::from_raw_parts(data, data_len) };
+    let data = Bytes::copy_from_slice(data);
+
+    match conn.send_datagram(data) {
+        Ok(id) => id as i64,
+        Err(e) => e.to_errno() as i64,
+    }
+}
+
+/// Send a datagram over the connection with specified priority.
+///
+/// This method queues a datagram for transmission with the specified priority
+/// level but no expiration time. Lower priority values have higher precedence
+/// (0 is highest priority, 255 is lowest).
+///
+/// # Arguments
+/// * `conn` - The QUIC connection
+/// * `data` - Pointer to the datagram payload
+/// * `data_len` - Length of the datagram payload in bytes
+/// * `priority` - Priority level (0-255, where 0 is highest priority)
+///
+/// # Returns
+///
+/// On success, returns the unique ID assigned to the datagram (>= 1).
+/// On error, returns one of the following negative values:
+/// * -113: DATAGRAM extension is disabled
+/// * -114: Datagram is too large for peer's advertised limit
+/// * -115: Datagram exceeds memory limits
+/// * Other negative values for other errors
+#[no_mangle]
+pub extern "C" fn quic_conn_send_datagram_with_priority(
+    conn: &mut Connection,
+    data: *const u8,
+    data_len: size_t,
+    priority: u8,
+) -> i64 {
+    if data.is_null() {
+        return Error::DatagramInvalidParameter.to_errno() as i64;
+    }
+
+    let data = unsafe { slice::from_raw_parts(data, data_len) };
+    let data = Bytes::copy_from_slice(data);
+    let params = crate::connection::datagram::SendDatagramParams::with_priority(priority);
+
+    match conn.send_datagram_with_param(data, params) {
+        Ok(id) => id as i64,
+        Err(e) => e.to_errno() as i64,
+    }
+}
+
+/// Send a datagram over the connection with full parameter control.
+///
+/// This method queues a datagram for transmission with both priority and
+/// optional expiration time. This provides the most control over datagram
+/// transmission behavior.
+///
+/// # Arguments
+/// * `conn` - The QUIC connection
+/// * `data` - Pointer to the datagram payload
+/// * `data_len` - Length of the datagram payload in bytes
+/// * `priority` - Priority level (0-255, where 0 is highest priority)
+/// * `expiration_ms` - Expiration time in milliseconds from now (0 = no expiration)
+///
+/// # Returns
+///
+/// On success, returns the unique ID assigned to the datagram (>= 1).
+/// On error, returns one of the following negative values:
+/// * -113: DATAGRAM extension is disabled
+/// * -114: Datagram is too large for peer's advertised limit
+/// * -115: Datagram exceeds memory limits
+/// * Other negative values for other errors
+/// For now, to simplify the export function, direct calls using the SendDatagramParams structure are not provided.
+#[no_mangle]
+pub extern "C" fn quic_conn_send_datagram_with_param(
+    conn: &mut Connection,
+    data: *const u8,
+    data_len: size_t,
+    priority: u8,
+    expiration_ms: u64,
+) -> i64 {
+    if data.is_null() {
+        return Error::DatagramInvalidParameter.to_errno() as i64;
+    }
+
+    let data = unsafe { slice::from_raw_parts(data, data_len) };
+    let data = Bytes::copy_from_slice(data);
+    let params = crate::connection::datagram::SendDatagramParams::with_priority_and_expiration(
+        priority,
+        expiration_ms,
+    );
+
+    match conn.send_datagram_with_param(data, params) {
+        Ok(id) => id as i64,
+        Err(e) => e.to_errno() as i64,
+    }
+}
+
+/// Receive the next available datagram from the connection.
+///
+/// This method retrieves the oldest datagram that has been received from the peer.
+/// Datagrams are delivered in the order they were received.
+///
+/// # Arguments
+/// * `conn` - The QUIC connection
+/// * `out` - Buffer to store the received datagram data
+/// * `out_len` - Size of the output buffer in bytes
+///
+/// # Returns
+///
+/// On success, returns the number of bytes copied to the output buffer.
+/// Returns 0 if no datagrams are available.
+/// Returns -101 if the output buffer is too small for the available datagram.
+#[no_mangle]
+pub extern "C" fn quic_conn_recv_datagram(
+    conn: &mut Connection,
+    out: *mut u8,
+    out_len: usize,
+) -> i64 {
+    if out.is_null() {
+        return Error::DatagramInvalidParameter.to_errno() as i64;
+    }
+    match conn.peek_recv_datagram_len() {
+        Some(len) if len > out_len => {
+            // Buffer too small
+            return Error::BufferTooShort.to_errno() as i64;
+        }
+        Some(len) => {
+            // Buffer is large enough
+            let out_slice = unsafe { slice::from_raw_parts_mut(out, len) };
+            // Assuming a single-threaded context, no two threads will read the same packet simultaneously.
+            match conn.recv_datagram() {
+                Some(data) => {
+                    out_slice.copy_from_slice(&data);
+                    data.len() as i64
+                }
+                None => {
+                    // error!("{} data expected, but missing", conn.trace_id());
+                    return Error::InternalError.to_errno() as i64;
+                }
+            }
+        }
+        None => {
+            // No datagrams available
+            return Error::Done.to_errno() as i64;
+        }
+    }
+}
+
+/// Same as quic_conn_recv_datagram,but does not check the output buffer size.
+/// This means if buffer is short than the data,then lose the data.
+#[no_mangle]
+pub extern "C" fn quic_conn_recv_datagram_without_check(
+    conn: &mut Connection,
+    out: *mut u8,
+    out_len: usize,
+) -> i64 {
+    if out.is_null() {
+        return Error::DatagramInvalidParameter.to_errno() as i64;
+    }
+    let out_slice = unsafe { slice::from_raw_parts_mut(out, out_len) };
+    // Assuming a single-threaded context, no two threads will read the same packet simultaneously.
+    match conn.recv_datagram() {
+        Some(data) => {
+            out_slice.copy_from_slice(&data);
+            data.len() as i64
+        }
+        None => {
+            return Error::Done.to_errno() as i64;
+        }
+    }
+}
+
+/// Before write data to user's buffer,get the len of data.
+#[no_mangle]
+pub extern "C" fn quic_conn_peek_recv_datagram_len(conn: &mut Connection) -> i64 {
+    match conn.peek_recv_datagram_len() {
+        Some(len) => {
+            return len as i64;
+        }
+        None => {
+            return Error::Done.to_errno() as i64;
+        }
+    }
+}
+
+/// Sets the outgoing datagram buffer size. The size is specified in Kilobytes (KB).
+///
+/// Returns a u8 status code:
+/// - 0 (Success): The buffer size was successfully increased.
+/// - 1 (Normal):  The size was adjusted but is smaller than the previous maximum.
+/// - 2 (TooSmall): The new size is smaller than the data currently in the buffer; the operation failed.
+#[no_mangle]
+pub extern "C" fn quic_conn_set_datagram_out_buffer_size(
+    conn: &mut Connection,
+    new_max_bytes: usize,
+) -> u8 {
+    conn.datagram_set_outgoing_queue_limit(new_max_bytes) as u8
+}
+
+/// Sets the incoming datagram buffer size. The size is specified in Kilobytes (KB).
+///
+/// Returns a u8 status code:
+/// - 0 (Success): The buffer size was successfully increased.
+/// - 1 (Normal):  The size was adjusted but is smaller than the previous maximum.
+/// - 2 (TooSmall): The new size is smaller than the data currently in the buffer; the operation failed.
+#[no_mangle]
+pub extern "C" fn quic_conn_set_datagram_in_buffer_size(
+    conn: &mut Connection,
+    new_max_bytes: usize,
+) -> u8 {
+    conn.datagram_set_incoming_queue_limit(new_max_bytes) as u8
+}
+
+/// Check if the QUIC DATAGRAM extension is enabled for this connection.
+///
+/// The DATAGRAM extension is considered enabled if the peer has negotiated
+/// support for it during the handshake process and its max_datagram_size
+/// is greater than 0.
+///
+/// # Returns
+///
+/// * `true` - The peer supports the DATAGRAM extension and max_datagram_size > 0
+/// * `false` - The DATAGRAM extension is not supported or max_datagram_size is 0
+#[no_mangle]
+pub extern "C" fn quic_conn_is_datagram_enabled(conn: &Connection) -> bool {
+    conn.is_datagram_enabled()
+}
+
+/// Check if there are datagrams queued for transmission.
+///
+/// This method can be used to determine if calling the packet sending
+/// functions might result in datagram frames being included in outgoing
+/// packets.
+///
+/// # Returns
+///
+/// * `true` - One or more datagrams are waiting to be sent
+/// * `false` - No datagrams are currently queued for sending
+#[no_mangle]
+pub extern "C" fn quic_conn_has_sendable_datagrams(conn: &Connection) -> bool {
+    conn.has_sendable_datagrams()
+}
+
+/// Get the peer's maximum datagram frame size.
+///
+/// This is the maximum size of datagram payload that the peer is willing
+/// to receive, as advertised in their transport parameters during the
+/// handshake process.
+///
+/// # Returns
+///
+/// The maximum datagram frame size in bytes, or 0 if the DATAGRAM extension
+/// is not enabled.
+#[no_mangle]
+pub extern "C" fn quic_conn_peer_max_datagram_frame_size(conn: &Connection) -> u64 {
+    conn.peer_max_datagram_frame_size()
+}
+
+/// Get the local maximum datagram frame size.
+///
+/// This is the maximum size of datagram payload that this endpoint is
+/// willing to receive, as configured in the transport parameters.
+///
+/// # Returns
+///
+/// The maximum datagram frame size in bytes.
+#[no_mangle]
+pub extern "C" fn quic_conn_local_max_datagram_frame_size(conn: &Connection) -> u64 {
+    conn.local_max_datagram_frame_size()
+}
+
+/// Get statistics about datagram usage for this connection.
+///
+/// This function fills a DatagramStats structure with information about
+/// datagram transmission and reception for this connection.
+///
+/// # Arguments
+/// * `conn` - The QUIC connection
+/// * `stats` - Pointer to a DatagramStats structure to be filled
+///
+/// # Returns
+///
+/// 0 on success, -116 if stats pointer is null.
+#[repr(C)]
+pub struct DatagramStats {
+    /// Total number of datagrams sent.
+    pub sent_count: u64,
+    /// Total number of datagrams received.
+    pub received_count: u64,
+    /// Total bytes sent in datagram frames.
+    pub sent_bytes: u64,
+    /// Total bytes received in datagram frames.
+    pub received_bytes: u64,
+    /// Number of datagrams in outgoing queue.
+    pub outgoing_queue_size: usize,
+    /// Number of datagrams in incoming queue.
+    pub incoming_queue_size: usize,
+}
+
+#[no_mangle]
+pub extern "C" fn quic_conn_datagram_stats(conn: &Connection, stats: *mut DatagramStats) -> c_int {
+    if stats.is_null() {
+        return Error::DatagramInvalidParameter.to_errno() as c_int;
+    }
+
+    let conn_stats = conn.datagram_stats();
+    unsafe {
+        (*stats).sent_count = conn_stats.sent_count;
+        (*stats).received_count = conn_stats.received_count;
+        (*stats).sent_bytes = conn_stats.sent_bytes;
+        (*stats).received_bytes = conn_stats.received_bytes;
+        (*stats).outgoing_queue_size = conn_stats.outgoing_queue_size;
+        (*stats).incoming_queue_size = conn_stats.incoming_queue_size;
+    }
+    0
+}
+
+/// Get the number of datagrams waiting to be sent.
+///
+/// # Returns
+///
+/// The number of datagrams currently in the outgoing queue.
+#[no_mangle]
+pub extern "C" fn quic_conn_outgoing_datagram_count(conn: &Connection) -> usize {
+    conn.outgoing_datagram_count()
+}
+
+/// Get the number of datagrams waiting to be read.
+///
+/// # Returns
+///
+/// The number of datagrams currently in the incoming queue.
+#[no_mangle]
+pub extern "C" fn quic_conn_incoming_datagram_count(conn: &Connection) -> usize {
+    conn.incoming_datagram_count()
+}
+
+/// Clear all datagrams in a specific priority queue.
+///
+/// This function removes all datagrams from the specified priority level
+/// and generates drop events for each removed datagram.
+///
+/// # Arguments
+/// * `conn` - The QUIC connection
+/// * `priority` - The priority level to clear (0-255)
+///
+/// # Returns
+///
+/// The number of datagrams that were cleared from the specified priority level.
+#[no_mangle]
+pub extern "C" fn quic_conn_clear_datagram_priority_queue(
+    conn: &mut Connection,
+    priority: u8,
+) -> usize {
+    conn.clear_datagram_clear_priority_queue(priority)
+}
+
+/// Clear all datagram buffers (both sender and receiver).
+///
+/// This function removes all queued datagrams from both the outgoing
+/// and incoming queues.
+#[no_mangle]
+pub extern "C" fn quic_conn_clear_datagram_all_buffer(conn: &mut Connection) {
+    conn.clear_datagram_all_buffer()
+}
+
+/// Clear the outgoing datagram buffer.
+///
+/// This function removes all datagrams waiting to be sent.
+#[no_mangle]
+pub extern "C" fn quic_conn_clear_datagram_sender_buffer(conn: &mut Connection) {
+    conn.clear_datagram_sender_buffer()
+}
+
+/// Clear the incoming datagram buffer.
+///
+/// This function removes all received datagrams waiting to be read.
+#[no_mangle]
+pub extern "C" fn quic_conn_clear_datagram_receiver_buffer(conn: &mut Connection) {
+    conn.clear_datagram_receiver_buffer()
+}
+
+/// Set the `max_datagram_frame_size` transport parameter in Config.
+///
+/// This enables the DATAGRAM extension (RFC 9221) and specifies the maximum
+/// size of datagram frames this endpoint is willing to receive.
+/// Setting this to 0 disables the DATAGRAM extension.
+///
+/// # Arguments
+/// * `config` - The QUIC configuration
+/// * `v` - Maximum datagram frame size in bytes (0 to disable)
+#[no_mangle]
+pub extern "C" fn quic_config_set_max_datagram_frame_size(config: &mut Config, v: u64) {
+    config.set_max_datagram_frame_size(v);
+}
+
+/// Datagram notification flags for C API compatibility.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatagramNotifyFlag {
+    /// The datagram has been acked.
+    DatagramAcked = 1 << 0,
+    /// The datagram has been lost.
+    DatagramLost = 1 << 1,
+    /// Datagram dropped by sender (memory limit/priority).
+    DatagramSenderDrop = 1 << 2,
+    /// Datagram dropped by receiver (memory limit).
+    DatagramReceiverDrop = 1 << 3,
+    /// Datagram dropped due to expiration.
+    DatagramTimeExpiredDrop = 1 << 4,
+}
+
+/// Enable all datagram notifications for the connection.
+///
+/// This enables all types of datagram event notifications including
+/// acknowledgments, losses, and drops.
+#[no_mangle]
+pub extern "C" fn quic_conn_enable_all_datagram_notifications(conn: &mut Connection) {
+    conn.enable_all_datagram_notifications();
+}
+
+/// Disable all datagram notifications for the connection.
+///
+/// This disables all types of datagram event notifications.
+#[no_mangle]
+pub extern "C" fn quic_conn_disable_all_datagram_notifications(conn: &mut Connection) {
+    conn.disable_all_datagram_notifications();
+}
+
+/// Enable specific datagram notifications.
+///
+/// # Arguments
+/// * `conn` - The QUIC connection
+/// * `flags` - Bitwise OR of DatagramNotifyFlag values to enable
+#[no_mangle]
+pub extern "C" fn quic_conn_enable_datagram_notifications(conn: &mut Connection, flags: u16) {
+    use crate::connection::DatagramNotifyFlags;
+    use enumflags2::BitFlags;
+
+    let mut bitflags = BitFlags::empty();
+    if flags & (DatagramNotifyFlag::DatagramAcked as u16) != 0 {
+        bitflags.insert(DatagramNotifyFlags::DatagramAcked);
+    }
+    if flags & (DatagramNotifyFlag::DatagramLost as u16) != 0 {
+        bitflags.insert(DatagramNotifyFlags::DatagramLost);
+    }
+    if flags & (DatagramNotifyFlag::DatagramSenderDrop as u16) != 0 {
+        bitflags.insert(DatagramNotifyFlags::DatagramSenderDrop);
+    }
+    if flags & (DatagramNotifyFlag::DatagramReceiverDrop as u16) != 0 {
+        bitflags.insert(DatagramNotifyFlags::DatagramReceiverDrop);
+    }
+    if flags & (DatagramNotifyFlag::DatagramTimeExpiredDrop as u16) != 0 {
+        bitflags.insert(DatagramNotifyFlags::DatagramTimeExpiredDrop);
+    }
+
+    conn.enable_datagram_notifications(bitflags);
+}
+
+/// Disable specific datagram notifications.
+///
+/// # Arguments
+/// * `conn` - The QUIC connection
+/// * `flags` - Bitwise OR of DatagramNotifyFlag values to disable
+#[no_mangle]
+pub extern "C" fn quic_conn_disable_datagram_notifications(conn: &mut Connection, flags: u16) {
+    use crate::connection::DatagramNotifyFlags;
+    use enumflags2::BitFlags;
+
+    let mut bitflags = BitFlags::empty();
+    if flags & (DatagramNotifyFlag::DatagramAcked as u16) != 0 {
+        bitflags.insert(DatagramNotifyFlags::DatagramAcked);
+    }
+    if flags & (DatagramNotifyFlag::DatagramLost as u16) != 0 {
+        bitflags.insert(DatagramNotifyFlags::DatagramLost);
+    }
+    if flags & (DatagramNotifyFlag::DatagramSenderDrop as u16) != 0 {
+        bitflags.insert(DatagramNotifyFlags::DatagramSenderDrop);
+    }
+    if flags & (DatagramNotifyFlag::DatagramReceiverDrop as u16) != 0 {
+        bitflags.insert(DatagramNotifyFlags::DatagramReceiverDrop);
+    }
+    if flags & (DatagramNotifyFlag::DatagramTimeExpiredDrop as u16) != 0 {
+        bitflags.insert(DatagramNotifyFlags::DatagramTimeExpiredDrop);
+    }
+
+    conn.disable_datagram_notifications(bitflags);
+}
+
+/// Set specific datagram notifications (replaces current settings).
+///
+/// # Arguments
+/// * `conn` - The QUIC connection
+/// * `flags` - Bitwise OR of DatagramNotifyFlag values to set
+#[no_mangle]
+pub extern "C" fn quic_conn_set_datagram_notifications(conn: &mut Connection, flags: u16) {
+    use crate::connection::DatagramNotifyFlags;
+    use enumflags2::BitFlags;
+
+    let mut bitflags = BitFlags::empty();
+    if flags & (DatagramNotifyFlag::DatagramAcked as u16) != 0 {
+        bitflags.insert(DatagramNotifyFlags::DatagramAcked);
+    }
+    if flags & (DatagramNotifyFlag::DatagramLost as u16) != 0 {
+        bitflags.insert(DatagramNotifyFlags::DatagramLost);
+    }
+    if flags & (DatagramNotifyFlag::DatagramSenderDrop as u16) != 0 {
+        bitflags.insert(DatagramNotifyFlags::DatagramSenderDrop);
+    }
+    if flags & (DatagramNotifyFlag::DatagramReceiverDrop as u16) != 0 {
+        bitflags.insert(DatagramNotifyFlags::DatagramReceiverDrop);
+    }
+    if flags & (DatagramNotifyFlag::DatagramTimeExpiredDrop as u16) != 0 {
+        bitflags.insert(DatagramNotifyFlags::DatagramTimeExpiredDrop);
+    }
+
+    conn.set_datagram_notifications(bitflags);
+}
+
+/// Check if a specific datagram notification is enabled.
+///
+/// # Arguments
+/// * `conn` - The QUIC connection
+/// * `flag` - DatagramNotifyFlag value to check
+///
+/// # Returns
+/// * `true` - The notification is enabled
+/// * `false` - The notification is disabled
+#[no_mangle]
+pub extern "C" fn quic_conn_is_datagram_notification_enabled(
+    conn: &Connection,
+    flag: DatagramNotifyFlag,
+) -> bool {
+    use crate::connection::DatagramNotifyFlags;
+
+    match flag {
+        DatagramNotifyFlag::DatagramAcked => {
+            conn.is_datagram_notification_enabled(DatagramNotifyFlags::DatagramAcked)
+        }
+        DatagramNotifyFlag::DatagramLost => {
+            conn.is_datagram_notification_enabled(DatagramNotifyFlags::DatagramLost)
+        }
+        DatagramNotifyFlag::DatagramSenderDrop => {
+            conn.is_datagram_notification_enabled(DatagramNotifyFlags::DatagramSenderDrop)
+        }
+        DatagramNotifyFlag::DatagramReceiverDrop => {
+            conn.is_datagram_notification_enabled(DatagramNotifyFlags::DatagramReceiverDrop)
+        }
+        DatagramNotifyFlag::DatagramTimeExpiredDrop => {
+            conn.is_datagram_notification_enabled(DatagramNotifyFlags::DatagramTimeExpiredDrop)
+        }
+    }
+}
+
+/// Get the current datagram notification flags.
+///
+/// # Returns
+///
+/// A bitwise OR of enabled DatagramNotifyFlag values.
+#[no_mangle]
+pub extern "C" fn quic_conn_datagram_notification_flags(conn: &Connection) -> u16 {
+    use crate::connection::DatagramNotifyFlags;
+
+    let flags = conn.datagram_notification_flags();
+    let mut result = 0u16;
+
+    if flags.contains(DatagramNotifyFlags::DatagramAcked) {
+        result |= DatagramNotifyFlag::DatagramAcked as u16;
+    }
+    if flags.contains(DatagramNotifyFlags::DatagramLost) {
+        result |= DatagramNotifyFlag::DatagramLost as u16;
+    }
+    if flags.contains(DatagramNotifyFlags::DatagramSenderDrop) {
+        result |= DatagramNotifyFlag::DatagramSenderDrop as u16;
+    }
+    if flags.contains(DatagramNotifyFlags::DatagramReceiverDrop) {
+        result |= DatagramNotifyFlag::DatagramReceiverDrop as u16;
+    }
+    if flags.contains(DatagramNotifyFlags::DatagramTimeExpiredDrop) {
+        result |= DatagramNotifyFlag::DatagramTimeExpiredDrop as u16;
+    }
+
+    result
+}
+
+/// Check if there are readable datagrams (alias for has_readable_datagrams).
+///
+/// This method can be used to determine if calling recv_datagram might
+/// return a datagram.
+///
+/// # Returns
+///
+/// * `true` - One or more datagrams are ready to be read
+/// * `false` - No datagrams are currently available for reading
+#[no_mangle]
+pub extern "C" fn quic_conn_has_readable_datagrams(conn: &Connection) -> bool {
+    conn.incoming_datagram_count() > 0
 }

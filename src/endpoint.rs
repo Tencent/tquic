@@ -583,11 +583,11 @@ impl Endpoint {
                     conn.stream_destroy(stream_id);
                 }
 
-                Event::DatagramReceived => {
+                Event::DatagramReceived(len) => {
                     // Datagram received event - applications can check for available datagrams
                     // This is just a notification; the application needs to call recv_datagram()
                     // to actually read the datagram data
-                    self.handler.on_datagram_received(conn);
+                    self.handler.on_datagram_received(conn, len);
                 }
                 Event::DatagramAcked(datagram_id) => {
                     // Datagram acked event - applications can check for acked datagrams

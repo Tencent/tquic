@@ -358,7 +358,6 @@ impl Frame {
             },
 
             0x1e => Frame::HandshakeDone,
-            //to be reviewed
             0x30..=0x31 => {
                 let first = frame_type as u8;
                 let has_len = (first & 0x01) == 1;

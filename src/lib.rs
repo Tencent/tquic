@@ -944,7 +944,7 @@ enum Event {
     StreamClosed(u64),
 
     /// A datagram has been received and is ready for reading.
-    DatagramReceived,
+    DatagramReceived(u64),
 
     /// A datagram has been acked
     DatagramAcked(u64),
@@ -1063,7 +1063,7 @@ pub trait TransportHandler {
 
     /// Called when a datagram is received and ready for application consumption.
     /// RFC 9221 basic notification.
-    fn on_datagram_received(&mut self, _conn: &mut Connection) {}
+    fn on_datagram_received(&mut self, _conn: &mut Connection, _len: u64) {}
 
     /// Called when a datagram is confirmed to have been successfully transmitted.
     /// RFC 9221 Section 5.2 - Application-layer notification of successful transmission.

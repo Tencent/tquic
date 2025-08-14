@@ -359,7 +359,7 @@ impl TransportHandler for ServerHandler {
         }
     }
 
-    fn on_datagram_received(&mut self, conn: &mut Connection) {
+    fn on_datagram_received(&mut self, conn: &mut Connection, _len: u64) {
         self.try_new_conn_handler(conn);
 
         // This callback is the trigger to process datagrams for a connection.

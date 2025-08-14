@@ -396,8 +396,12 @@ impl TransportHandler for ClientHandler {
         info!("Connection closed: {}", conn.trace_id());
     }
 
-    fn on_datagram_received(&mut self, conn: &mut Connection) {
-        debug!("Datagram received on connection: {}", conn.trace_id());
+    fn on_datagram_received(&mut self, conn: &mut Connection, len: u64) {
+        debug!(
+            "Datagram received on connection: {} len: {}",
+            conn.trace_id(),
+            len
+        );
     }
 
     // Unused handlers

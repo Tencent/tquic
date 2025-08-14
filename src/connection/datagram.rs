@@ -226,14 +226,14 @@ pub struct DatagramManager {
     /// Events sent to the endpoint.
     pub(super) events: Rc<RefCell<EventQueue>>,
 }
-
+#[repr(u8)]
 pub enum AdjustResult {
     /// Successfully adjusted the queue size,the new max size is bigger than old.
-    Success,
+    Success = 0,
     /// The new size is smaller than the maximum allowed size but bigger than the current size.
-    Normal,
+    Normal = 1,
     /// The new size is smaller than the current size.
-    TooSmall,
+    TooSmall = 2,
 }
 
 /// A memory-limited queue for datagrams.
@@ -274,7 +274,7 @@ impl DatagramQueue {
             self.events
                 .borrow_mut()
                 .add(Event::DatagramReceiverDrop(item.id));
-            return Err(Error::DatagramTooLarge);
+            return Err(Error::DatagramBeyondMemory(false));
         }
         // If adding this item would exceed the memory limit, try to make space
         if self.current_size + item_size > self.max_size {
@@ -492,6 +492,7 @@ impl DatagramManager {
     }
 
     /// Set local maximum datagram frame size.
+    /// This should only be called when creating the connection.
     pub fn set_local_max_datagram_frame_size(&mut self, size: u64) {
         self.local_max_datagram_frame_size = size;
     }
@@ -546,23 +547,20 @@ impl DatagramManager {
             params.priority,
             params.expiration_ms
         );
+
         if !self.is_enabled() {
             return Err(Error::DatagramDisabled);
         }
 
-        if data.len() as u64 > self.peer_max_datagram_frame_size {
-            return Err(Error::DatagramTooLarge);
-        }
-
         let item_size = data.len();
 
-        // Check if this single item exceeds the total queue capacity
+        // Check if a single item exceeds the total queue capacity.
+        // If so, reject the item and report an error without generating an event.
         if item_size > self.max_outgoing_size {
-            let datagram_id = self.next_send_datagram_id;
-            self.next_send_datagram_id += 1;
-            self.events
-                .borrow_mut()
-                .add(Event::DatagramSenderDrop(datagram_id));
+            return Err(Error::DatagramBeyondMemory(true));
+        }
+
+        if data.len() as u64 > self.peer_max_datagram_frame_size {
             return Err(Error::DatagramTooLarge);
         }
 
@@ -792,7 +790,7 @@ impl DatagramManager {
 
     /// Process a received DATAGRAM frame.
     ///
-    pub fn on_datagram_frame_received(&mut self, len: Option<u64>, data: Bytes) -> Result<()> {
+    pub fn on_datagram_frame_received(&mut self, len: Option<u64>, data: Bytes) -> Result<u64> {
         // Validate the incoming datagram's size against the locally configured limit.
         //
         // According to RFC 9221 (Section 3), an endpoint that receives a DATAGRAM
@@ -814,9 +812,9 @@ impl DatagramManager {
         self.next_recv_datagram_id += 1;
         self.received_count += 1;
         self.received_bytes += item.data.len() as u64;
-
+        let len = item.data.len() as u64;
         self.incoming_queue.enqueue(item)?;
-        Ok(())
+        Ok(len)
     }
 
     /// Receive the next datagram from the incoming queue.
@@ -826,6 +824,11 @@ impl DatagramManager {
         self.incoming_queue.dequeue().map(|item| item.data)
     }
 
+    /// Peek at the next datagram length without removing it from the queue.
+    /// This should only be called in the ffi call.
+    pub fn peek_recv_datagram_len(&self) -> Option<usize> {
+        self.incoming_queue.data.front().map(|item| item.data.len())
+    }
     /// Check if there are datagrams ready for consumption.
     pub fn has_readable_datagrams(&self) -> bool {
         !self.incoming_queue.is_empty()
@@ -854,6 +857,7 @@ impl DatagramManager {
     }
 
     /// Creates a new DatagramManager with specified memory limits for its queues.
+    /// There is no need to supply this function for ffi,we use set_xx_limit instead.
     pub fn with_limits(outgoing_max_bytes: usize, incoming_max_bytes: usize) -> Self {
         let events = Rc::new(RefCell::new(EventQueue::default()));
 
@@ -1149,9 +1153,10 @@ mod tests {
         manager.next_send_datagram();
 
         // Receive two datagrams
-        manager
+        let len = manager
             .on_datagram_frame_received(None, data1.clone())
             .unwrap();
+        assert_eq!(len, data1.len() as u64);
         manager
             .on_datagram_frame_received(None, data2.clone())
             .unwrap();
@@ -1526,11 +1531,14 @@ mod tests {
         assert_eq!(item.data.len(), 0);
         assert_eq!(item.memory_size(), 0);
 
+        assert_eq!(manager.peek_recv_datagram_len(), None);
         // Receive empty datagram
         manager
             .on_datagram_frame_received(Some(0), empty_data.clone())
             .unwrap();
         assert_eq!(manager.incoming_count(), 1);
+        assert_eq!(manager.peek_recv_datagram_len(), Some(0));
+
         let received = manager.recv_datagram().unwrap();
         assert_eq!(received.len(), 0);
     }
@@ -1570,29 +1578,6 @@ mod tests {
         assert!(
             matches!(result, Err(Error::DatagramDisabled)),
             "Should fail with DatagramDisabled when extension is not enabled"
-        );
-    }
-
-    /// Test that sending a datagram larger than the entire local queue capacity fails.
-    #[test]
-    fn datagram_send_fails_if_larger_than_queue_capacity() {
-        let mut manager = DatagramManager::with_limits(1, 1); // 1KB limit
-        manager.set_peer_max_datagram_frame_size(2048); // Peer allows larger frames
-        manager.events.borrow_mut().enable();
-
-        let oversized_data = Bytes::from(vec![0; 1025]); // Exceeds local queue capacity
-        let result = manager.send_datagram(oversized_data, SendDatagramParams::default());
-
-        assert!(
-            matches!(result, Err(Error::DatagramTooLarge)),
-            "Should fail with DatagramTooLarge when data exceeds queue capacity"
-        );
-
-        // Check that a drop event was generated
-        let event = manager.events.borrow_mut().poll();
-        assert!(
-            matches!(event, Some(Event::DatagramSenderDrop(1))),
-            "Should generate sender drop event for oversized datagram"
         );
     }
 
@@ -1919,17 +1904,8 @@ mod tests {
             SendDatagramParams::default(),
         );
         assert!(
-            matches!(result, Err(Error::DatagramTooLarge)),
+            matches!(result, Err(Error::DatagramBeyondMemory(true))),
             "Sending to a zero-sized queue should fail"
-        );
-
-        // Check for the corresponding drop event
-        assert!(
-            matches!(
-                manager.events.borrow_mut().poll(),
-                Some(Event::DatagramSenderDrop(1))
-            ),
-            "A drop event should be generated"
         );
 
         // Sending an empty datagram should succeed as it takes no space
@@ -2139,8 +2115,8 @@ mod tests {
 
         // Assert: The operation should fail, the datagram should be dropped, and an event generated.
         assert!(
-            matches!(result, Err(Error::DatagramTooLarge)),
-            "Should return DatagramTooLarge because it exceeds queue memory limit"
+            matches!(result, Err(Error::DatagramBeyondMemory(false))),
+            "Should return DatagramBeyondMemory because it exceeds queue memory limit"
         );
         assert_eq!(
             manager.incoming_count(),
