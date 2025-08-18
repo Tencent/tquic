@@ -1218,6 +1218,15 @@ pub enum QuicFrame {
         raw: Option<String>,
     },
 
+    ImmediateAck,
+
+    AckFrequency {
+        sequence_number: u64,
+        requested_max_ack_delay: u64,
+        reordering_threshold: u64,
+        ack_eliciting_threshold: u64,
+    },
+
     Unknown {
         raw_frame_type: u64,
         frame_type_value: Option<u64>,

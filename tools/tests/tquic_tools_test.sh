@@ -22,7 +22,7 @@ set -e
 
 BIN_DIR="./"
 TEST_DIR="./test-`date +%Y%m%d%H%M%S`"
-TEST_CASES="multipath_minrtt,multipath_roundrobin,multipath_redundant,range_request"
+TEST_CASES="multipath_minrtt,multipath_roundrobin,multipath_redundant,range_request,ack_frequency_test,test_system_overhead"
 TEST_PID="$$"
 TEST_FILE="10M"
 PATH_NUM=4
@@ -276,6 +276,90 @@ test_range_request() {
     echo -e "Test range_request OK\n"
 }
 
+test_ack_frequency() {
+    local test_dir=$1
+    local min_ack_delay=$2
+    echo "[-] Running ACK frequency test with min_ack_delay $min_ack_delay"
+
+    # 准备测试环境
+    local cert_dir="$test_dir/cert"
+    local data_dir="$test_dir/data"
+    local dump_dir="$test_dir/dump"
+    local qlog_dir="$test_dir/qlog"
+
+    generate_cert $test_dir
+    generate_files $test_dir
+
+    # 启动服务器（添加ACK频率参数）
+    RUST_BACKTRACE=1 $BIN_DIR/tquic_server -l 127.0.0.1:8443 \
+        --cert $cert_dir/cert.crt --key $cert_dir/cert.key --root $data_dir \
+        --log-file $test_dir/server.log --log-level $LOG_LEVEL \
+        --min-ack-delay $min_ack_delay \
+        $SRV_OPTIONS &
+    server_pid=$!
+
+    # 启动客户端（添加ACK频率参数）
+    RUST_BACKTRACE=1 $BIN_DIR/tquic_client -c 127.0.0.1:8443 \
+        --qlog-dir $qlog_dir --log-file $test_dir/client.log --log-level $LOG_LEVEL \
+        --dump-dir $dump_dir $CLI_OPTIONS \
+        --min-ack-delay $min_ack_delay \
+        https://example.org/$TEST_FILE
+
+    kill $server_pid
+    server_pid=""
+    echo -e "Test ack_frequency OK\n"
+}
+
+test_system_overhead() {
+    local test_dir=$1
+    local min_ack_delay=$2
+    echo "[-] Running system overhead test for ACK frequency $min_ack_delay"
+
+
+    local cert_dir="$test_dir/cert"
+    local data_dir="$test_dir/data"
+    local dump_dir="$test_dir/dump"
+    local qlog_dir="$test_dir/qlog"
+
+    generate_cert $test_dir
+    generate_files $test_dir
+
+
+    RUST_BACKTRACE=1 $BIN_DIR/tquic_server -l 127.0.0.1:8443 \
+        --cert $cert_dir/cert.crt --key $cert_dir/cert.key --root $data_dir \
+        --log-file $test_dir/server.log --log-level $LOG_LEVEL \
+        --congestion-control-algor BBR \
+        --min-ack-delay $min_ack_delay \
+        $SRV_OPTIONS &
+    server_pid=$!
+
+    sleep 2
+
+    top -p $server_pid -b -d 0.5 > $test_dir/cpu_usage.log &
+    monitor_pid=$!
+
+    while kill -0 $server_pid 2>/dev/null; do
+        ps -p $server_pid -o pid,vsz,rss,pmem --no-headers >> $test_dir/memory_usage.log
+        sleep 1
+    done &
+    memory_monitor_pid=$!
+
+    sleep 2
+
+    RUST_BACKTRACE=1 $BIN_DIR/tquic_client -c 127.0.0.1:8443 \
+        --qlog-dir $qlog_dir --log-file $test_dir/client.log --log-level $LOG_LEVEL \
+        --dump-dir $dump_dir $CLI_OPTIONS \
+        --congestion-control-algor BBR \
+        --min-ack-delay $min_ack_delay \
+        https://example.org/$TEST_FILE
+
+    sleep 2
+
+    kill $monitor_pid 2>/dev/null
+    kill $memory_monitor_pid 2>/dev/null
+    kill $server_pid
+}
+
 for TEST_CASE in ${TEST_CASES//,/ }; do
     case $TEST_CASE in
         multipath_minrtt)
@@ -289,6 +373,14 @@ for TEST_CASE in ${TEST_CASES//,/ }; do
             ;;
         range_request)
             test_range_request "$TEST_DIR/range"
+            ;;
+        ack_frequency_test)
+            delay=5000;
+            test_ack_frequency "$TEST_DIR/ack_delay_$delay" $delay
+            ;;
+        overhead_default)
+            delay=5000;
+            test_system_overhead "$TEST_DIR/overhead_default" $delay
             ;;
         *)
             echo "[x] Unknown test case $TEST_CASE"

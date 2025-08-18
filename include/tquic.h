@@ -570,6 +570,11 @@ void quic_config_set_ack_delay_exponent(struct quic_config_t *config, uint64_t v
 void quic_config_set_max_ack_delay(struct quic_config_t *config, uint64_t v);
 
 /**
+ * Set the `min_ack_delay` transport parameter.
+ */
+void quic_config_set_min_ack_delay(struct quic_config_t *config, uint64_t v);
+
+/**
  * Set congestion control algorithm that the connection would use.
  */
 void quic_config_set_congestion_control_algorithm(struct quic_config_t *config,

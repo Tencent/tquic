@@ -189,6 +189,14 @@ pub struct ServerOpt {
     )]
     pub initial_rtt: u64,
 
+    /// Minimum ACK delay to enable ACK frequency control
+    #[clap(
+        long,
+        value_name = "TIME",
+        help_heading = "Protocol"
+    )]
+    pub min_ack_delay: Option<u64>,
+
     /// Linear factor for calculating the probe timeout.
     #[clap(
         long,
@@ -300,6 +308,9 @@ impl Server {
         config.set_multipath_algorithm(option.multipath_algor);
         config.set_active_connection_id_limit(option.active_cid_limit);
         config.enable_encryption(!option.disable_encryption);
+        if let Some(min_ack_delay) = option.min_ack_delay {
+            config.set_min_ack_delay(min_ack_delay);
+        }
 
         if let Some(address_token_key) = &option.address_token_key {
             let address_token_key = convert_address_token_key(address_token_key);
