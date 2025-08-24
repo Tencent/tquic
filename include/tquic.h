@@ -1697,7 +1697,7 @@ int64_t quic_conn_send_datagram_with_param(struct quic_conn_t *conn,
  * Returns 0 if no datagrams are available.
  * Returns -101 if the output buffer is too small for the available datagram.
  */
-int64_t quic_conn_recv_datagram(struct quic_conn_t *conn, uint8_t *out, size_t out_len);
+int64_t quic_conn_recv_datagram(struct quic_conn_t *conn, uint8_t *out, uintptr_t out_len);
 
 /**
  * Same as quic_conn_recv_datagram,but does not check the output buffer size.
@@ -1705,7 +1705,7 @@ int64_t quic_conn_recv_datagram(struct quic_conn_t *conn, uint8_t *out, size_t o
  */
 int64_t quic_conn_recv_datagram_without_check(struct quic_conn_t *conn,
                                               uint8_t *out,
-                                              size_t out_len);
+                                              uintptr_t out_len);
 
 /**
  * Before write data to user's buffer,get the len of data.
@@ -1751,16 +1751,22 @@ bool quic_conn_is_datagram_enabled(const struct quic_conn_t *conn);
 /**
  * Check if there are datagrams queued for transmission.
  *
- * This method can be used to determine if calling the packet sending
- * functions might result in datagram frames being included in outgoing
- * packets.
- *
  * # Returns
  *
  * * `true` - One or more datagrams are waiting to be sent
  * * `false` - No datagrams are currently queued for sending
  */
 bool quic_conn_has_sendable_datagrams(const struct quic_conn_t *conn);
+
+/**
+ * Check if there are datagrams queued for processing.
+ *
+ * # Returns
+ *
+ * * `true` - One or more datagrams are waiting to be processed
+ * * `false` - No datagrams are currently queued for processing
+ */
+bool quic_conn_has_readable_datagrams(const struct quic_conn_t *conn);
 
 /**
  * Get the peer's maximum datagram frame size.
@@ -1923,19 +1929,6 @@ bool quic_conn_is_datagram_notification_enabled(const struct quic_conn_t *conn,
  * A bitwise OR of enabled DatagramNotifyFlag values.
  */
 uint16_t quic_conn_datagram_notification_flags(const struct quic_conn_t *conn);
-
-/**
- * Check if there are readable datagrams (alias for has_readable_datagrams).
- *
- * This method can be used to determine if calling recv_datagram might
- * return a datagram.
- *
- * # Returns
- *
- * * `true` - One or more datagrams are ready to be read
- * * `false` - No datagrams are currently available for reading
- */
-bool quic_conn_has_readable_datagrams(const struct quic_conn_t *conn);
 
 #ifdef __cplusplus
 }  // extern "C"

@@ -35,7 +35,6 @@ use strum::IntoEnumIterator;
 use self::cid::ConnectionIdItem;
 use self::datagram::AdjustResult;
 use self::datagram::DatagramManager;
-use self::datagram::SendDatagramParams;
 use self::space::BufferFlags;
 use self::space::BufferType;
 use self::space::PacketNumSpace;
@@ -2783,6 +2782,7 @@ impl Connection {
             out.len() - st.written
         );
 
+        // This check is moved to select_to_write_datagram_or_stream
         // DATAGRAM frames can be sent in 0-RTT and 1-RTT packets
         // RFC 9221 Section 5: When clients use 0-RTT, they store the value of the server's
         // max_datagram_frame_size transport parameter. This allows the client to send
@@ -2794,7 +2794,17 @@ impl Connection {
         // {
         //     return Ok(());
         // }
-        if out.len() < self.datagram.get_next_send_datagram_info().1 {
+
+        // Just Write datagram with length.
+        let mut data_len = self.datagram.get_next_send_datagram_info().1;
+        if data_len == usize::MAX {
+            // No more datagrams to send
+            return Ok(());
+        }
+        let mut datagram_wire_len = data_len + 1 + codec::encode_varint_len(data_len as u64);
+        let mut cap: usize = out.len() - st.written;
+        // should compare with the next datagram's wire_len
+        if cap < datagram_wire_len {
             return Ok(());
         }
 
@@ -2836,16 +2846,9 @@ impl Connection {
                 } else {
                     None
                 },
-                data: datagram_item.data.clone(),
+                data: datagram_item.data,
                 id: datagram_item.id,
             };
-
-            debug!(
-                "{} Created DATAGRAM frame, with_length: {}, data_len: {}",
-                self.trace_id,
-                datagram_item.with_length,
-                datagram_item.data.len()
-            );
 
             // Try to write the frame to the packet
             match Connection::write_frame_to_packet(frame, out, st) {
@@ -2853,11 +2856,12 @@ impl Connection {
                     st.ack_eliciting = true;
                     st.in_flight = true;
                     frames_sent += 1;
+                    cap -= datagram_wire_len;
                     debug!(
                         "{} sent DATAGRAM frame #{}: {} bytes, remaining queue: {}",
                         self.trace_id,
                         frames_sent,
-                        datagram_item.data.len(),
+                        data_len,
                         self.datagram.outgoing_count()
                     );
                 }
@@ -2865,6 +2869,15 @@ impl Connection {
                     warn!("{} failed to write DATAGRAM frame: {:?}", self.trace_id, e);
                     return Err(e);
                 }
+            }
+            data_len = self.datagram.get_next_send_datagram_info().1;
+            if data_len == usize::MAX {
+                // No more datagrams to send
+                break;
+            }
+            datagram_wire_len = data_len + 1 + codec::encode_varint_len(data_len as u64);
+            if cap < datagram_wire_len {
+                break;
             }
         }
 
@@ -4624,6 +4637,8 @@ impl Connection {
     pub fn recv_datagram(&mut self) -> Option<Bytes> {
         self.datagram.recv_datagram()
     }
+    /// Peek the length of the next available datagram without removing it from the queue.
+    /// Use it for ffi,the client may get the datagram length and then allocate the memory.
     pub fn peek_recv_datagram_len(&self) -> Option<usize> {
         self.datagram.peek_recv_datagram_len()
     }
@@ -4649,6 +4664,32 @@ impl Connection {
     /// * `false` - No datagrams are currently queued for sending
     pub fn has_sendable_datagrams(&self) -> bool {
         self.datagram.has_sendable_datagrams()
+    }
+
+    /// Check if there are datagrams queued for processing.
+    ///
+    /// # Returns
+    ///
+    /// * `true` - One or more datagrams are waiting to be processed
+    /// * `false` - No datagrams are currently queued for processing
+    pub fn has_readable_datagrams(&self) -> bool {
+        self.datagram.has_readable_datagrams()
+    }
+
+    pub fn datagram_max_outgoing_size(&self) -> usize {
+        self.datagram.max_outgoing_size()
+    }
+
+    pub fn datagram_max_incoming_size(&self) -> usize {
+        self.datagram.max_incoming_size()
+    }
+
+    pub fn datagram_current_outgoing_size(&self) -> usize {
+        self.datagram.current_outgoing_size()
+    }
+
+    pub fn datagram_current_incoming_size(&self) -> usize {
+        self.datagram.current_incoming_size()
     }
 
     /// Get the peer's maximum datagram frame size.
@@ -4705,7 +4746,7 @@ impl Connection {
     pub fn incoming_datagram_count(&self) -> usize {
         self.datagram.incoming_count()
     }
-    pub fn clear_datagram_clear_priority_queue(&mut self, priority: u8) -> usize {
+    pub fn clear_datagram_priority_queue(&mut self, priority: u8) -> usize {
         self.datagram.clear_priority_queue(priority)
     }
     pub fn clear_datagram_all_buffer(&mut self) {
@@ -4765,6 +4806,92 @@ impl Connection {
 enum WriteOrder {
     StreamFirst,
     DatagramFirst,
+}
+
+/// Parameters for sending a datagram with priority and expiration control.
+///
+/// This structure encapsulates all parameters needed for datagram transmission,
+/// making it easy to extend with additional parameters in the future without
+/// breaking API compatibility.
+///
+/// ## Priority System
+///
+/// The priority system uses a numeric scale where lower numbers indicate higher priority:
+/// - 0: Highest priority (critical data)
+/// - 127: Default priority (normal data)  
+/// - 255: Lowest priority (background data)
+///
+/// ## Expiration
+///
+/// Datagrams can optionally be given an expiration time. Expired datagrams are
+/// automatically dropped when encountered during transmission, helping prevent
+/// the transmission of stale data.
+#[derive(Debug, Clone)]
+pub struct SendDatagramParams {
+    /// Priority of the datagram (lower number = higher priority).
+    ///
+    /// Range: 0-255, where 0 is highest priority and 255 is lowest.
+    /// Default is 127 to provide a middle ground for most applications.
+    pub priority: u8,
+
+    /// Relative expiration time in milliseconds from now.
+    ///
+    /// When set to `Some(ms)`, the datagram will be dropped if not transmitted
+    /// within the specified number of milliseconds. `None` means no expiration.
+    pub expiration_ms: Option<u64>,
+}
+
+impl Default for SendDatagramParams {
+    fn default() -> Self {
+        Self {
+            priority: 127,
+            expiration_ms: None,
+        }
+    }
+}
+
+impl SendDatagramParams {
+    /// Create new send parameters with priority only (no expiration).
+    ///
+    /// # Arguments
+    /// * `priority` - Priority level (0 = highest, 255 = lowest)
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// let params = SendDatagramParams::with_priority(0); // Highest priority
+    /// let params = SendDatagramParams::with_priority(255); // Lowest priority
+    /// ```
+    pub fn with_priority(priority: u8) -> Self {
+        Self {
+            priority,
+            expiration_ms: None,
+        }
+    }
+
+    /// Create new send parameters with both priority and expiration.
+    ///
+    /// # Arguments
+    /// * `priority` - Priority level (0 = highest, 255 = lowest)
+    /// * `expiration_ms` - Expiration time in milliseconds from now,0 is no expiration
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// // High priority datagram that expires in 5 seconds
+    /// let params = SendDatagramParams::with_priority_and_expiration(0, 5000);
+    ///
+    /// // Low priority datagram that expires in 30 seconds
+    /// let params = SendDatagramParams::with_priority_and_expiration(200, 30000);
+    /// ```
+    pub fn with_priority_and_expiration(priority: u8, expiration_ms: u64) -> Self {
+        Self {
+            priority,
+            expiration_ms: if expiration_ms > 0 {
+                Some(expiration_ms)
+            } else {
+                None
+            },
+        }
+    }
 }
 
 #[bitflags]
@@ -8484,6 +8611,7 @@ pub(crate) mod tests {
         let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
         TestPair::conn_packets_in(&mut test_pair.server, packets)?;
 
+        assert_eq!(test_pair.server.has_readable_datagrams(), true);
         // Read datagrams in order
         assert_eq!(test_pair.server.datagram.incoming_count(), 3);
 
@@ -8596,6 +8724,9 @@ pub(crate) mod tests {
         // Replace client datagram manager with a limited one
         test_pair.client.datagram_set_incoming_queue_limit(1);
         test_pair.client.datagram_set_outgoing_queue_limit(1);
+
+        assert_eq!(test_pair.client.datagram_max_outgoing_size(), 1024);
+        assert_eq!(test_pair.client.datagram_current_outgoing_size(), 0);
         // test_pair.client.datagram = datagram::DatagramManager::with_limits(1, 1); // 1KB each
         // Manually enable the new manager as if handshake happened
         test_pair
@@ -8865,6 +8996,9 @@ pub(crate) mod tests {
 
         // Adjust server's datagram manager to have a limited queue (1KB)
         test_pair.server.datagram.set_incoming_queue_limit(1); // 1KB limit
+
+        assert_eq!(test_pair.server.datagram_max_incoming_size(), 1024);
+        assert_eq!(test_pair.server.datagram_current_incoming_size(), 0);
         test_pair
             .server
             .datagram
@@ -8993,23 +9127,21 @@ pub(crate) mod tests {
         let medium_priority_data = Bytes::from_static(b"medium priority");
         let low_priority_data = Bytes::from_static(b"low priority");
 
-        test_pair.client.send_datagram_with_param(
-            high_priority_data,
-            crate::connection::datagram::SendDatagramParams::with_priority(0),
-        )?;
+        test_pair
+            .client
+            .send_datagram_with_param(high_priority_data, SendDatagramParams::with_priority(0))?;
         test_pair.client.send_datagram_with_param(
             medium_priority_data,
-            crate::connection::datagram::SendDatagramParams::with_priority(100),
+            SendDatagramParams::with_priority(100),
         )?;
-        test_pair.client.send_datagram_with_param(
-            low_priority_data,
-            crate::connection::datagram::SendDatagramParams::with_priority(200),
-        )?;
+        test_pair
+            .client
+            .send_datagram_with_param(low_priority_data, SendDatagramParams::with_priority(200))?;
 
         assert_eq!(test_pair.client.outgoing_datagram_count(), 3);
 
-        // Test clear_datagram_clear_priority_queue() method
-        let cleared_count = test_pair.client.clear_datagram_clear_priority_queue(100);
+        // Test clear_datagram_priority_queue() method
+        let cleared_count = test_pair.client.clear_datagram_priority_queue(100);
         assert_eq!(cleared_count, 1); // Should clear 1 item with priority 100
         assert_eq!(test_pair.client.outgoing_datagram_count(), 2);
 
@@ -9232,7 +9364,6 @@ pub(crate) mod tests {
         //     test_pair.server.stream_read(sid2, &mut buf),
         //     Err(Error::StreamStateError)
         // );
-        // info!("last5");
         Ok(())
     }
 }

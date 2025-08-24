@@ -652,6 +652,8 @@ impl Frame {
                     b.write_varint(0x31)?;
                     b.write_varint(data.len() as u64)?;
                 } else {
+                    // It's hard to write this type datagram,now that we can't determine whether this
+                    // frame is the last frame in the packet.
                     b.write_varint(0x30)?;
                 }
                 b.write(data.as_ref())?;

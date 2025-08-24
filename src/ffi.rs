@@ -2771,7 +2771,7 @@ pub extern "C" fn quic_conn_send_datagram_with_priority(
 
     let data = unsafe { slice::from_raw_parts(data, data_len) };
     let data = Bytes::copy_from_slice(data);
-    let params = crate::connection::datagram::SendDatagramParams::with_priority(priority);
+    let params = crate::connection::SendDatagramParams::with_priority(priority);
 
     match conn.send_datagram_with_param(data, params) {
         Ok(id) => id as i64,
@@ -2815,7 +2815,7 @@ pub extern "C" fn quic_conn_send_datagram_with_param(
 
     let data = unsafe { slice::from_raw_parts(data, data_len) };
     let data = Bytes::copy_from_slice(data);
-    let params = crate::connection::datagram::SendDatagramParams::with_priority_and_expiration(
+    let params = crate::connection::SendDatagramParams::with_priority_and_expiration(
         priority,
         expiration_ms,
     );
@@ -2959,10 +2959,6 @@ pub extern "C" fn quic_conn_is_datagram_enabled(conn: &Connection) -> bool {
 
 /// Check if there are datagrams queued for transmission.
 ///
-/// This method can be used to determine if calling the packet sending
-/// functions might result in datagram frames being included in outgoing
-/// packets.
-///
 /// # Returns
 ///
 /// * `true` - One or more datagrams are waiting to be sent
@@ -2970,6 +2966,17 @@ pub extern "C" fn quic_conn_is_datagram_enabled(conn: &Connection) -> bool {
 #[no_mangle]
 pub extern "C" fn quic_conn_has_sendable_datagrams(conn: &Connection) -> bool {
     conn.has_sendable_datagrams()
+}
+
+/// Check if there are datagrams queued for processing.
+///
+/// # Returns
+///
+/// * `true` - One or more datagrams are waiting to be processed
+/// * `false` - No datagrams are currently queued for processing
+#[no_mangle]
+pub extern "C" fn quic_conn_has_readable_datagrams(conn: &Connection) -> bool {
+    conn.has_readable_datagrams()
 }
 
 /// Get the peer's maximum datagram frame size.
@@ -3083,7 +3090,7 @@ pub extern "C" fn quic_conn_clear_datagram_priority_queue(
     conn: &mut Connection,
     priority: u8,
 ) -> usize {
-    conn.clear_datagram_clear_priority_queue(priority)
+    conn.clear_datagram_priority_queue(priority)
 }
 
 /// Clear all datagram buffers (both sender and receiver).
@@ -3312,18 +3319,4 @@ pub extern "C" fn quic_conn_datagram_notification_flags(conn: &Connection) -> u1
     }
 
     result
-}
-
-/// Check if there are readable datagrams (alias for has_readable_datagrams).
-///
-/// This method can be used to determine if calling recv_datagram might
-/// return a datagram.
-///
-/// # Returns
-///
-/// * `true` - One or more datagrams are ready to be read
-/// * `false` - No datagrams are currently available for reading
-#[no_mangle]
-pub extern "C" fn quic_conn_has_readable_datagrams(conn: &Connection) -> bool {
-    conn.incoming_datagram_count() > 0
 }

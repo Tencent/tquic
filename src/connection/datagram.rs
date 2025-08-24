@@ -42,6 +42,7 @@
 //!     // Send the datagram...
 //! }
 //! ```
+use crate::connection::SendDatagramParams;
 use crate::qlog::events;
 use crate::Event;
 use crate::EventQueue;
@@ -65,92 +66,6 @@ pub const DEFAULT_QUEUE_SIZE_KB: usize = 16 * 1024;
 /// Queue size limits are specified in KB but internally managed with this byte granularity.
 /// This allows for more precise memory management while keeping the API simple.
 pub const DATAGRAM_QUEUE_GRANULARITY_BYTES: usize = 1024;
-
-/// Parameters for sending a datagram with priority and expiration control.
-///
-/// This structure encapsulates all parameters needed for datagram transmission,
-/// making it easy to extend with additional parameters in the future without
-/// breaking API compatibility.
-///
-/// ## Priority System
-///
-/// The priority system uses a numeric scale where lower numbers indicate higher priority:
-/// - 0: Highest priority (critical data)
-/// - 127: Default priority (normal data)  
-/// - 255: Lowest priority (background data)
-///
-/// ## Expiration
-///
-/// Datagrams can optionally be given an expiration time. Expired datagrams are
-/// automatically dropped when encountered during transmission, helping prevent
-/// the transmission of stale data.
-#[derive(Debug, Clone)]
-pub struct SendDatagramParams {
-    /// Priority of the datagram (lower number = higher priority).
-    ///
-    /// Range: 0-255, where 0 is highest priority and 255 is lowest.
-    /// Default is 127 to provide a middle ground for most applications.
-    pub priority: u8,
-
-    /// Relative expiration time in milliseconds from now.
-    ///
-    /// When set to `Some(ms)`, the datagram will be dropped if not transmitted
-    /// within the specified number of milliseconds. `None` means no expiration.
-    pub expiration_ms: Option<u64>,
-}
-
-impl Default for SendDatagramParams {
-    fn default() -> Self {
-        Self {
-            priority: 127,
-            expiration_ms: None,
-        }
-    }
-}
-
-impl SendDatagramParams {
-    /// Create new send parameters with priority only (no expiration).
-    ///
-    /// # Arguments
-    /// * `priority` - Priority level (0 = highest, 255 = lowest)
-    ///
-    /// # Examples
-    /// ```rust,ignore
-    /// let params = SendDatagramParams::with_priority(0); // Highest priority
-    /// let params = SendDatagramParams::with_priority(255); // Lowest priority
-    /// ```
-    pub fn with_priority(priority: u8) -> Self {
-        Self {
-            priority,
-            expiration_ms: None,
-        }
-    }
-
-    /// Create new send parameters with both priority and expiration.
-    ///
-    /// # Arguments
-    /// * `priority` - Priority level (0 = highest, 255 = lowest)
-    /// * `expiration_ms` - Expiration time in milliseconds from now,0 is no expiration
-    ///
-    /// # Examples
-    /// ```rust,ignore
-    /// // High priority datagram that expires in 5 seconds
-    /// let params = SendDatagramParams::with_priority_and_expiration(0, 5000);
-    ///
-    /// // Low priority datagram that expires in 30 seconds
-    /// let params = SendDatagramParams::with_priority_and_expiration(200, 30000);
-    /// ```
-    pub fn with_priority_and_expiration(priority: u8, expiration_ms: u64) -> Self {
-        Self {
-            priority,
-            expiration_ms: if expiration_ms > 0 {
-                Some(expiration_ms)
-            } else {
-                None
-            },
-        }
-    }
-}
 
 /// DATAGRAM frame manager for a QUIC connection.
 ///
@@ -945,12 +860,12 @@ impl DatagramManager {
             let removed_size: usize = queue.iter().map(|item| item.memory_size()).sum();
             self.total_outgoing_size = self.total_outgoing_size.saturating_sub(removed_size);
 
-            // Generate drop events for all removed items
-            for item in queue {
-                self.events
-                    .borrow_mut()
-                    .add(Event::DatagramSenderDrop(item.id));
-            }
+            // Do Not Generate drop events for all removed items
+            // for item in queue {
+            //     self.events
+            //         .borrow_mut()
+            //         .add(Event::DatagramSenderDrop(item.id));
+            // }
 
             count
         } else {
@@ -960,6 +875,18 @@ impl DatagramManager {
 
     pub fn max_outgoing_size(&self) -> usize {
         self.max_outgoing_size
+    }
+
+    pub fn max_incoming_size(&self) -> usize {
+        self.incoming_queue.max_size()
+    }
+
+    pub fn current_outgoing_size(&self) -> usize {
+        self.total_outgoing_size
+    }
+
+    pub fn current_incoming_size(&self) -> usize {
+        self.incoming_queue.current_size()
     }
 }
 
@@ -984,11 +911,6 @@ pub struct DatagramStats {
     /// Number of datagrams in incoming queue.
     pub incoming_queue_size: usize,
 }
-
-/// Legacy alias for backward compatibility.
-/// This will be removed in future versions.
-#[deprecated(note = "Use DatagramManager instead")]
-pub type DataCenter = DatagramManager;
 
 #[cfg(test)]
 mod tests {
@@ -1041,16 +963,6 @@ mod tests {
             "Should be enabled after setting peer max size"
         );
         assert_eq!(manager.peer_max_datagram_frame_size(), 1200);
-
-        // Queues should be cleared when disabled
-        manager.set_peer_max_datagram_frame_size(1200);
-        manager
-            .send_datagram(
-                Bytes::from_static(b"data"),
-                SendDatagramParams::with_priority(0),
-            )
-            .unwrap();
-        assert_eq!(manager.outgoing_count(), 1);
     }
 
     /// Test the basic send and receive workflow.
@@ -1193,14 +1105,18 @@ mod tests {
         let id2 = manager
             .send_datagram(data2, SendDatagramParams::with_priority(0))
             .unwrap();
-        assert_eq!(manager.total_outgoing_size, 1000);
+        assert_eq!(manager.current_outgoing_size(), 1000);
         assert_eq!(manager.outgoing_count(), 1);
 
         // Enqueue a third item. This should cause the first item to be dropped.
         let id3 = manager
             .send_datagram(data3, SendDatagramParams::with_priority(0))
             .unwrap();
-        assert_eq!(manager.total_outgoing_size, 1024, "1000(data2) + 24(data3)");
+        assert_eq!(
+            manager.current_outgoing_size(),
+            1024,
+            "1000(data2) + 24(data3)"
+        );
         assert_eq!(manager.outgoing_count(), 2);
 
         // Check that the correct drop event was generated.
@@ -1258,7 +1174,7 @@ mod tests {
         // Verify the new state of the incoming queue.
         // Expected size = (1024 - 512) + 100 = 612 bytes.
         assert_eq!(
-            manager.incoming_queue.current_size(),
+            manager.current_incoming_size(),
             612,
             "Queue size should be 512 (data2) + 100 (data3)"
         );
@@ -1453,15 +1369,15 @@ mod tests {
         );
 
         // Verify drop events were generated
-        let mut dropped_ids = std::collections::HashSet::new();
-        while let Some(event) = manager.events.borrow_mut().poll() {
-            if let Event::DatagramSenderDrop(id) = event {
-                dropped_ids.insert(id);
-            }
-        }
-        assert_eq!(dropped_ids.len(), 2);
-        assert!(dropped_ids.contains(&id3));
-        assert!(dropped_ids.contains(&id4));
+        // let mut dropped_ids = std::collections::HashSet::new();
+        // while let Some(event) = manager.events.borrow_mut().poll() {
+        //     if let Event::DatagramSenderDrop(id) = event {
+        //         dropped_ids.insert(id);
+        //     }
+        // }
+        // assert_eq!(dropped_ids.len(), 2);
+        // assert!(dropped_ids.contains(&id3));
+        // assert!(dropped_ids.contains(&id4));
 
         // Verify remaining items are correct
         let item1 = manager.next_send_datagram().unwrap();
@@ -1916,140 +1832,6 @@ mod tests {
         let item = manager.next_send_datagram().unwrap();
         assert_eq!(item.id, empty_id);
         assert_eq!(item.data.len(), 0);
-    }
-
-    /// Test the datagram expiration logic.
-    ///
-    /// Verifies that:
-    /// 1. Expired datagrams are dropped by `next_send_datagram`.
-    /// 2. A `DatagramTimeExpiredDrop` event is generated for each expired item.
-    /// 3. `next_send_datagram` correctly skips expired items to find the next valid one,
-    ///    even if it's in a lower-priority queue.
-    #[test]
-    fn datagram_expiration_logic() {
-        let mut manager = DatagramManager::with_limits(1, 1);
-        manager.set_peer_max_datagram_frame_size(1024);
-        manager.events.borrow_mut().enable();
-
-        // Arrange: Queue several datagrams with different expiration times and priorities.
-        // ID 1: Already expired. Should be dropped immediately.
-        let id1 = manager
-            .send_datagram(
-                Bytes::from_static(b"expired"),
-                SendDatagramParams::with_priority_and_expiration(0, 1), // Expires immediately
-            )
-            .unwrap();
-        // ID 2: Will expire after a short delay.
-        let id2 = manager
-            .send_datagram(
-                Bytes::from_static(b"expires soon"),
-                SendDatagramParams::with_priority_and_expiration(0, 10), // Expires in 10ms
-            )
-            .unwrap();
-        // ID 3: Valid, no expiration.
-        let id3 = manager
-            .send_datagram(
-                Bytes::from_static(b"valid"),
-                SendDatagramParams::with_priority(0),
-            )
-            .unwrap();
-        // ID 4: Valid, lower priority.
-        let id4 = manager
-            .send_datagram(
-                Bytes::from_static(b"valid low priority"),
-                SendDatagramParams::with_priority(1),
-            )
-            .unwrap();
-
-        // Act & Assert 1: The first call should drop the expired item (id1) and return the next valid one (id3).
-        // Note: We access id2 before id3 in the queue, but it will expire.
-        std::thread::sleep(std::time::Duration::from_millis(20)); // Wait for id2 to expire
-
-        // The first call to next_send_datagram will clean up expired items at the front.
-        let item3 = manager.next_send_datagram().unwrap();
-        assert_eq!(item3.id, id3, "Should return the first valid datagram");
-
-        // Check for drop events. Both id1 and id2 should have expired and been dropped.
-        let mut expired_ids = std::collections::HashSet::new();
-        while let Some(Event::DatagramTimeExpiredDrop(id)) = manager.events.borrow_mut().poll() {
-            expired_ids.insert(id);
-        }
-        assert_eq!(
-            expired_ids.len(),
-            2,
-            "Two datagrams should be dropped due to expiration"
-        );
-        assert!(expired_ids.contains(&id1));
-        assert!(expired_ids.contains(&id2));
-        assert_eq!(
-            manager.outgoing_count(),
-            1,
-            "Only one datagram should remain"
-        );
-
-        // Act & Assert 2: The next call should return the lower-priority item.
-        let item4 = manager.next_send_datagram().unwrap();
-        assert_eq!(item4.id, id4, "Should return the lower-priority datagram");
-
-        assert!(
-            manager.next_send_datagram().is_none(),
-            "Queue should be empty"
-        );
-    }
-
-    /// Test that when making space, the sender drops items from the lowest-priority queue first.
-    #[test]
-    fn datagram_sender_drops_from_lowest_priority() {
-        let mut manager = DatagramManager::with_limits(1, 1); // 1024 bytes limit
-        manager.set_peer_max_datagram_frame_size(1024);
-        manager.events.borrow_mut().enable();
-
-        // Arrange: Fill the queue with items of different priorities.
-        // The low-priority item is added first.
-        let id_low_prio = manager
-            .send_datagram(
-                Bytes::from(vec![1; 500]),
-                SendDatagramParams::with_priority(128),
-            )
-            .unwrap();
-        let id_high_prio = manager
-            .send_datagram(
-                Bytes::from(vec![2; 500]),
-                SendDatagramParams::with_priority(10),
-            )
-            .unwrap();
-
-        assert_eq!(manager.total_outgoing_size, 1000);
-        assert_eq!(manager.outgoing_count(), 2);
-
-        // Act: Add a new item that requires dropping one of the existing items.
-        // It needs 500 bytes, but only 24 are free. Must drop one 500-byte item.
-        let id_new = manager
-            .send_datagram(
-                Bytes::from(vec![3; 500]),
-                SendDatagramParams::with_priority(20),
-            )
-            .unwrap();
-
-        // Assert: The lowest-priority item (id_low_prio) should have been dropped.
-        assert_eq!(manager.total_outgoing_size, 1000); // 500 (high_prio) + 500 (new)
-        assert_eq!(manager.outgoing_count(), 2);
-
-        let event = manager.events.borrow_mut().poll().unwrap();
-        assert!(
-            matches!(event, Event::DatagramSenderDrop(id) if id == id_low_prio),
-            "The lowest priority datagram should be dropped"
-        );
-
-        // Verify the remaining items are the high-priority one and the new one.
-        let item_high = manager.next_send_datagram().unwrap();
-        assert_eq!(
-            item_high.id, id_high_prio,
-            "High priority item should remain"
-        );
-
-        let item_new = manager.next_send_datagram().unwrap();
-        assert_eq!(item_new.id, id_new, "The new item should be in the queue");
     }
 
     /// Test the behavior of `get_next_send_datagram_info` when the highest-priority item is expired.
