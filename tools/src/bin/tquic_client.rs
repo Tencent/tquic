@@ -1542,11 +1542,11 @@ impl TransportHandler for WorkerHandler {
 
     fn on_new_token(&mut self, _conn: &mut Connection, _token: Vec<u8>) {}
 
-    fn on_datagram_readable(&mut self, conn: &mut Connection) {}
+    fn on_datagram_readable(&mut self, _conn: &mut Connection) {}
 
-    fn on_datagram_lost(&mut self, conn: &mut Connection, length: u64, timeout_lost: bool) {}
+    fn on_datagram_lost(&mut self, _conn: &mut Connection, _length: u64, _timeout_lost: bool) {}
 
-    fn on_datagram_acked(&mut self, conn: &mut Connection, length: u64) {}
+    fn on_datagram_acked(&mut self, _conn: &mut Connection, _length: u64) {}
 }
 
 fn process_connect_address(option: &mut ClientOpt) {
