@@ -225,6 +225,15 @@ pub struct ServerOpt {
     )]
     pub cid_len: usize,
 
+    /// Maximum datagram size in packets.
+    #[clap(
+        long,
+        default_value = "0",
+        value_name = "NUM",
+        help_heading = "Protocol"
+    )]
+    pub max_datagram_frame_size: u64,
+
     /// Log level, support OFF/ERROR/WARN/INFO/DEBUG/TRACE.
     #[clap(long, default_value = "INFO", help_heading = "Output")]
     pub log_level: log::LevelFilter,
@@ -300,6 +309,7 @@ impl Server {
         config.set_multipath_algorithm(option.multipath_algor);
         config.set_active_connection_id_limit(option.active_cid_limit);
         config.enable_encryption(!option.disable_encryption);
+        config.set_max_datagram_frame_size(option.max_datagram_frame_size);
 
         if let Some(address_token_key) = &option.address_token_key {
             let address_token_key = convert_address_token_key(address_token_key);
@@ -1095,11 +1105,34 @@ impl TransportHandler for ServerHandler {
 
     fn on_new_token(&mut self, _conn: &mut Connection, _token: Vec<u8>) {}
 
-    fn on_datagram_readable(&mut self, _conn: &mut Connection) {}
+    fn on_datagram_readable(&mut self, conn: &mut Connection) {
+        debug!("{} has datagram to read", conn.trace_id());
+        let read = conn.datagram_read(&mut self.buf);
+        let data = std::str::from_utf8(&self.buf[..read.unwrap_or(0)]).unwrap();
+        debug!("Received data len: {}", data.len());
+        let _ = conn.datagram_write(
+            0,
+            Bytes::copy_from_slice(String::from("Datagram data received").as_bytes()),
+            0,
+        );
+    }
 
-    fn on_datagram_lost(&mut self, _conn: &mut Connection, _length: u64, _timeout_lost: bool) {}
+    fn on_datagram_lost(&mut self, conn: &mut Connection, length: u64, timeout_lost: bool) {
+        debug!(
+            "{} has datagram frame lost, length {}, caused by timeout {}",
+            conn.trace_id(),
+            length,
+            timeout_lost,
+        );
+    }
 
-    fn on_datagram_acked(&mut self, _conn: &mut Connection, _length: u64) {}
+    fn on_datagram_acked(&mut self, conn: &mut Connection, length: u64) {
+        debug!(
+            "{} has datagram frame acked, length {}",
+            conn.trace_id(),
+            length
+        );
+    }
 }
 
 fn process_option(option: &mut ServerOpt) -> Result<()> {
@@ -1115,6 +1148,7 @@ fn process_option(option: &mut ServerOpt) -> Result<()> {
             return Err(Box::new(e));
         }
     }
+
     Ok(())
 }
 

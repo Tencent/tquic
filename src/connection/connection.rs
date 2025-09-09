@@ -24,6 +24,8 @@ use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::time;
+use std::time::Duration;
+use std::time::Instant;
 
 use bytes::Bytes;
 use enumflags2::bitflags;
@@ -44,9 +46,11 @@ use self::ConnectionFlags::*;
 use crate::codec;
 use crate::codec::Decoder;
 use crate::codec::Encoder;
+use crate::connection::datagram::DatagramMap;
 use crate::error::ConnectionError;
 use crate::error::Error;
 use crate::frame;
+use crate::frame::encode_datagram_header;
 use crate::frame::Frame;
 use crate::multipath_scheduler::*;
 use crate::packet;
@@ -167,6 +171,12 @@ pub struct Connection {
 
     /// Unique trace id for debug logging
     trace_id: String,
+
+    /// Buffer for Datagrams
+    datagrams: datagram::DatagramMap,
+
+    /// Max available payload size of a QUIC packet.
+    max_payload_size: usize,
 }
 
 impl Connection {
@@ -248,6 +258,12 @@ impl Connection {
         }
         tls_session.set_trace_id(&trace_id);
 
+        let datagrams = datagram::DatagramMap::new(
+            conf.max_datagram_send_queue_size,
+            conf.max_datagram_recv_queue_size,
+            datagram::DatagramTransportParams::from(&conf.local_transport_params),
+        );
+
         let mut conn = Connection {
             version: crate::QUIC_VERSION_V1,
             is_server,
@@ -278,6 +294,8 @@ impl Connection {
             #[cfg(feature = "qlog")]
             qlog: None,
             trace_id,
+            datagrams: datagrams,
+            max_payload_size: 0,
         };
 
         let write_method = conn.get_write_method();
@@ -814,6 +832,11 @@ impl Connection {
                 self.drop_space_state(SpaceId::Handshake, now);
             }
 
+            Frame::Datagram { length, data } => {
+                let total_length = 1 + codec::encode_varint_len(length) as u64 + length;
+                self.datagrams.on_recv_datagram(total_length, data)?;
+            }
+
             Frame::NewConnectionId {
                 seq_num,
                 retire_prior_to,
@@ -1192,6 +1215,11 @@ impl Connection {
             if peer_params.retry_source_connection_id != self.rscid {
                 return Err(Error::TransportParameterError);
             }
+            if peer_params.max_datagram_frame_size
+                < self.peer_transport_params.max_datagram_frame_size
+            {
+                return Err(Error::ProtocolViolation);
+            }
         }
 
         // The remote server can issue a stateless_reset_token transport parameter
@@ -1491,6 +1519,10 @@ impl Connection {
                         }
                     }
 
+                    Frame::Datagram { length, .. } => {
+                        self.datagrams.events.add(Event::DatagramFrameAcked(length));
+                    }
+
                     _ => (),
                 }
             }
@@ -1759,6 +1791,9 @@ impl Connection {
             ..FrameWriteStatus::default()
         };
 
+        // Store max available size of current packet.
+        self.max_payload_size = left;
+
         match self.send_frames(
             &mut out[payload_offset..],
             left,
@@ -1826,6 +1861,7 @@ impl Connection {
             frames: write_status.frames,
             rate_sample_state: Default::default(),
             buffer_flags: write_status.buffer_flags,
+            has_datagram: write_status.has_datagram,
         };
         debug!(
             "{} sent packet {:?} {:?} {:?}",
@@ -2006,8 +2042,8 @@ impl Connection {
         // Write buffered frames
         self.try_write_buffered_frames(out, st, pkt_type, path_id)?;
 
-        // Write STREAM frames
-        self.try_write_stream_frames(out, st, pkt_type, path_id)?;
+        // Write stream and datagram frames based on priority
+        self.try_write_stream_and_datagram_frame(out, st, pkt_type, path_id)?;
 
         // Write a NEW_TOKEN frame
         self.try_write_new_token_frame(out, st, pkt_type, path_id)?;
@@ -2526,6 +2562,102 @@ impl Connection {
         Ok(())
     }
 
+    // Populate DATAGRAM and STREAM frames based on priority.
+    fn try_write_stream_and_datagram_frame(
+        &mut self,
+        out: &mut [u8],
+        st: &mut FrameWriteStatus,
+        pkt_type: PacketType,
+        path_id: usize,
+    ) -> Result<()> {
+        match (
+            self.datagrams.get_highest_priority(),
+            self.streams.get_highest_priority(),
+        ) {
+            // Write frames based on priority.
+            (Some(datagram_p), Some(stream_p)) => {
+                if datagram_p > stream_p {
+                    self.try_write_stream_frames(out, st, pkt_type, path_id)?;
+                    self.try_write_datagram_frame(out, st, pkt_type, path_id)?;
+                } else {
+                    self.try_write_datagram_frame(out, st, pkt_type, path_id)?;
+                    self.try_write_stream_frames(out, st, pkt_type, path_id)?;
+                }
+            }
+
+            // No DATAGRAM frame writable, write STREAM frames only.
+            (None, Some(stream_p)) => self.try_write_stream_frames(out, st, pkt_type, path_id)?,
+
+            // No STREAM frame writable, write DATAGRAM frames only.
+            (Some(datagram_p), None) => {
+                self.try_write_datagram_frame(out, st, pkt_type, path_id)?
+            }
+
+            _ => (),
+        }
+        Ok(())
+    }
+
+    /// Populate Datagram frames to packet payload buffer.
+    fn try_write_datagram_frame(
+        &mut self,
+        out: &mut [u8],
+        st: &mut FrameWriteStatus,
+        pkt_type: PacketType,
+        path_id: usize,
+    ) -> Result<()> {
+        let out = &mut out[st.written..];
+        if (pkt_type != PacketType::OneRTT && pkt_type != PacketType::ZeroRTT)
+            || self.is_closing()
+            || out.len() <= frame::MAX_DATAGRAM_OVERHEAD
+            || !self.paths.get(path_id)?.active()
+        {
+            return Ok(());
+        }
+
+        let header_size: usize;
+        // Try to retrieve data from queue and put it into packet.
+        let data = match self.datagrams.peek_data() {
+            Some(v) => {
+                // The payload size isn't going to be larger in a short time.
+                // If the size of an empty payload is not large enough to encode this data.
+                // In this case, data will be dropped. Otherwise, try to send it next time.
+                header_size = codec::encode_varint_len(v.data.len() as u64) + 1;
+                if v.data.len() > out.len() - header_size {
+                    if v.data.len() > self.max_payload_size - header_size || st.frames.len() == 0 {
+                        debug!(
+                            "Datagram frame to large, max datagram frame payload size is {}",
+                            self.max_payload_size - 3
+                        );
+                        self.datagrams
+                            .events
+                            .add(Event::DatagramFrameLost(v.data.len() as u64, false));
+                        let _ = self.datagrams.remove_data();
+                        self.mark_tickable(true);
+                    }
+                    return Ok(());
+                }
+                v.data
+            }
+            None => return Ok(()),
+        };
+
+        frame::encode_datagram_header(data.len() as u64, &mut out[..header_size])?;
+        out[header_size..header_size + data.len()].copy_from_slice(&data);
+        let _ = self.datagrams.remove_data();
+        let frame_size = header_size + data.len();
+        st.written += frame_size;
+        st.ack_eliciting = true;
+        st.in_flight = true;
+        st.has_datagram = true;
+        st.frames.push(Frame::Datagram {
+            length: data.len() as u64,
+            data: data,
+        });
+
+        Ok(())
+    }
+
     /// Populate Stream frame to packet payload buffer.
     fn try_write_stream_frames(
         &mut self,
@@ -2813,6 +2945,7 @@ impl Connection {
     /// in new frames as needed.
     /// See RFC 9000 Section 13.3
     fn process_all_lost_frames(&mut self) {
+        let mut need_mark_tickable = false;
         for (_, space) in self.spaces.iter_mut() {
             for lost_frame in space.lost.drain(..) {
                 match lost_frame {
@@ -2890,6 +3023,14 @@ impl Connection {
                         self.streams.on_max_stream_data_frame_lost(stream_id);
                     }
 
+                    // Notify the application a datagram frame is lost.
+                    Frame::Datagram { length, .. } => {
+                        self.datagrams
+                            .events
+                            .add(Event::DatagramFrameLost(length, true));
+                        need_mark_tickable = true;
+                    }
+
                     // An updated value is sent in a MAX_DATA frame if the packet
                     // containing the most recently sent MAX_DATA frame is
                     // declared lost.
@@ -2955,6 +3096,10 @@ impl Connection {
                     _ => (),
                 }
             }
+        }
+
+        if need_mark_tickable {
+            self.mark_tickable(true);
         }
     }
 
@@ -3111,6 +3256,7 @@ impl Connection {
                 || path.need_send_ping
                 || self.cids.need_send_cid_control_frames()
                 || self.streams.need_send_stream_frames()
+                || self.datagrams.need_send_datagram_frames()
                 || self.spaces.need_send_buffered_frames())
         {
             if !self.is_server && self.tls_session.is_in_early_data() {
@@ -4021,6 +4167,7 @@ impl Connection {
         self.index = Some(v);
         self.events.enable();
         self.streams.events.enable();
+        self.datagrams.events.enable();
     }
 
     /// Set the queues shared by the endpoint and the connection.
@@ -4049,6 +4196,9 @@ impl Connection {
         if let Some(event) = self.streams.events.poll() {
             return Some(event);
         }
+        if let Some(event) = self.datagrams.events.poll() {
+            return Some(event);
+        }
         None
     }
 
@@ -4058,6 +4208,8 @@ impl Connection {
             || !self.streams.events.is_empty()
             || self.streams.has_readable()
             || self.streams.has_writable()
+            || !self.datagrams.events.is_empty()
+            || self.datagrams.has_writable()
             || self.is_closed()
     }
 
@@ -4128,6 +4280,68 @@ impl Connection {
     /// Set user context for the connection.
     pub fn set_context<T: Any + Send + Sync>(&mut self, data: T) {
         self.context = Some(Box::new(data))
+    }
+
+    /// Write data to datagram send queue of the connection.
+    /// Data will never expire when expiration_time is 0.
+    /// The incoming unit of the expiration_time parameter is milliseconds.
+    pub fn datagram_write(
+        &mut self,
+        priority: u8,
+        buf: Bytes,
+        expiration_time: u64,
+    ) -> Result<usize> {
+        self.mark_tickable(true);
+        if self.peer_transport_params.max_datagram_frame_size == 0 {
+            debug!("peer datagram support disabled!");
+            return Err(Error::Done);
+        }
+
+        // Assume that Datagram Frame always contain length
+        let header_size = codec::encode_varint_len(buf.len() as u64) + 1;
+        if buf.len() > (self.peer_transport_params.max_datagram_frame_size as usize) - header_size {
+            debug!("Datagram too Large!");
+            return Err(Error::Done);
+        }
+
+        // Calculate expiration time if expiration_time parameter is not 0.
+        let mut expire_at: Option<time::Instant> = None;
+        if expiration_time != 0 {
+            expire_at = Some(time::Instant::now() + time::Duration::from_millis(expiration_time));
+        }
+
+        match self.datagrams.write(priority, buf, expire_at) {
+            Ok(write) => {
+                // Write QuicStreamDataMoved event to qlog
+                #[cfg(feature = "qlog")]
+                if let Some(qlog) = &mut self.qlog {
+                    Self::qlog_datagramframe_write(qlog, write);
+                }
+                Ok(write)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Read data from datagram recv queue of the connection.
+    pub fn datagram_read(&mut self, out: &mut [u8]) -> Result<usize> {
+        self.mark_tickable(true);
+        match self.datagrams.read(out) {
+            Ok(read) => {
+                // Write QuicStreamDataMoved event to qlog
+                #[cfg(feature = "qlog")]
+                if let Some(qlog) = &mut self.qlog {
+                    Self::qlog_datagramframe_read(qlog, read);
+                }
+                Ok(read)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Check whether datagram recv queue is able to read or not.
+    pub fn datagram_check_readable(&mut self) -> bool {
+        self.datagrams.is_readable()
     }
 
     /// Write a QuicParametersSet event to the qlog.
@@ -4269,6 +4483,30 @@ impl Connection {
             length: Some(written as u64),
             from: Some(qlog::events::DataRecipient::Application),
             to: Some(qlog::events::DataRecipient::Transport),
+            raw: None,
+        };
+        qlog.add_event_data(time::Instant::now(), ev_data).ok();
+    }
+
+    /// Write a QuicDatagramDataMoved event to the qlog.
+    #[cfg(feature = "qlog")]
+    fn qlog_datagramframe_write(qlog: &mut qlog::QlogWriter, length: usize) {
+        let ev_data = qlog::events::EventData::QuicDatagramDataMoved {
+            length: Some(length as u64),
+            from: Some(qlog::events::DataRecipient::Application),
+            to: Some(qlog::events::DataRecipient::Transport),
+            raw: None,
+        };
+        qlog.add_event_data(time::Instant::now(), ev_data).ok();
+    }
+
+    /// Write a QuicDatagramDataMoved event to the qlog.
+    #[cfg(feature = "qlog")]
+    fn qlog_datagramframe_read(qlog: &mut qlog::QlogWriter, length: usize) {
+        let ev_data = qlog::events::EventData::QuicDatagramDataMoved {
+            length: Some(length as u64),
+            from: Some(qlog::events::DataRecipient::Transport),
+            to: Some(qlog::events::DataRecipient::Application),
             raw: None,
         };
         qlog.add_event_data(time::Instant::now(), ev_data).ok();
@@ -4534,6 +4772,9 @@ struct FrameWriteStatus {
 
     /// Status about buffered frames written to the packet.
     buffer_flags: BufferFlags,
+
+    /// Whether an DATAGRAM frame is written to the packet.
+    has_datagram: bool,
 }
 
 /// Handshake status for loss recovery
@@ -4848,6 +5089,7 @@ pub(crate) mod tests {
             conf.enable_multipath(false);
             conf.enable_dplpmtud(true);
             conf.enable_pacing(false);
+            conf.set_max_datagram_frame_size(65535);
 
             let application_protos = vec![b"h3".to_vec()];
             let tls_config = if !is_server {
@@ -7947,9 +8189,31 @@ pub(crate) mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn datagram_send_test() -> Result<()> {
+        let mut test_pair = TestPair::new_with_test_config()?;
+        assert_eq!(test_pair.handshake(), Ok(()));
+
+        // Client send datagram
+        let data = TestPair::new_test_data(30);
+        assert_eq!(
+            test_pair.client.datagram_write(1, data.clone(), 10)?,
+            data.len()
+        );
+        let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+        TestPair::conn_packets_in(&mut test_pair.server, packets)?;
+
+        // Server read datagram
+        let mut buf = [0; 64];
+        assert_eq!(test_pair.server.datagram_read(&mut buf)?, data.len());
+
+        Ok(())
+    }
 }
 
 mod cid;
+pub(crate) mod datagram;
 mod flowcontrol;
 pub mod path;
 mod pmtu;

@@ -711,6 +711,7 @@ impl EventData {
             QuicStreamStateUpdated { .. } => EventImportance::Base,
             QuicFramesProcessed { .. } => EventImportance::Extra,
             QuicStreamDataMoved { .. } => EventImportance::Base,
+            QuicDatagramDataMoved { .. } => EventImportance::Base,
 
             SecurityKeyUpdated { .. } => EventImportance::Base,
             SecurityKeyDiscarded { .. } => EventImportance::Base,

@@ -35,6 +35,7 @@ use crate::congestion_control::CongestionController;
 use crate::congestion_control::Pacer;
 use crate::connection::Timer;
 use crate::frame;
+use crate::frame::Frame;
 #[cfg(feature = "qlog")]
 use crate::qlog;
 #[cfg(feature = "qlog")]
@@ -650,16 +651,26 @@ impl Recovery {
         // An endpoint SHOULD include new data in packets that are sent on PTO
         // expiration. Previously sent data MAY be sent if no new data can be
         // sent. However, we only try to retransmit the oldest unacked data.
+        // Since Datagram frame do not need to retransmit, filter packet that
+        // only contain datagram frame.
         let unacked_iter = space
             .sent
             .iter_mut()
-            .filter(|p| p.has_data && p.time_acked.is_none() && p.time_lost.is_none())
+            .filter(|p| {
+                p.has_data
+                    && p.time_acked.is_none()
+                    && p.time_lost.is_none()
+                    && !(p.frames.len() == 1 && p.has_datagram)
+            })
             .take(space.loss_probes);
 
         for unacked in unacked_iter {
             // A PTO timer expiration event does not indicate packet loss and
             // MUST NOT cause prior unacknowledged packets to be marked as lost.
             space.lost.extend_from_slice(&unacked.frames);
+            // Since a PTO timer expiration event does not indicate packet loss and
+            // we do not need to retransmit Datagram frame, delete all Datagram frame.
+            space.lost.retain(|f| !matches!(f, Frame::Datagram { .. }))
         }
 
         self.set_loss_detection_timer(space_id, spaces, handshake_status, now);

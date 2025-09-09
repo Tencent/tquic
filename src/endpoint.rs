@@ -580,6 +580,12 @@ impl Endpoint {
                     self.handler.on_stream_closed(conn, stream_id);
                     conn.stream_destroy(stream_id);
                 }
+
+                Event::DatagramFrameLost(length, timeout_lost) => {
+                    self.handler.on_datagram_lost(conn, length, timeout_lost)
+                }
+
+                Event::DatagramFrameAcked(length) => self.handler.on_datagram_acked(conn, length),
             }
             if conn.is_closed() {
                 return false;
@@ -599,6 +605,13 @@ impl Endpoint {
                 if conn.is_closed() {
                     return false;
                 }
+            }
+        }
+
+        if conn.datagram_check_readable() {
+            self.handler.on_datagram_readable(conn);
+            if conn.is_closed() {
+                return false;
             }
         }
 
@@ -1091,7 +1104,7 @@ impl PacketQueue {
         }
     }
 
-    /// Get a packet buffer from the buffer pool.
+    /// Put a packet buffer to the buffer pool.
     fn put_buffer(&mut self, mut buf: Vec<u8>) {
         buf.resize(MAX_BUFFER_SIZE, 0);
         self.buffers.push_back(buf);
@@ -1831,6 +1844,12 @@ mod tests {
         fn on_new_token(&mut self, conn: &mut Connection, token: Vec<u8>) {
             self.token = Some(token);
         }
+
+        fn on_datagram_readable(&mut self, conn: &mut Connection) {}
+
+        fn on_datagram_lost(&mut self, conn: &mut Connection, length: u64, timeout_lost: bool) {}
+
+        fn on_datagram_acked(&mut self, conn: &mut Connection, length: u64) {}
     }
 
     struct ServerStreamContext {
@@ -1912,6 +1931,12 @@ mod tests {
         }
 
         fn on_new_token(&mut self, conn: &mut Connection, token: Vec<u8>) {}
+
+        fn on_datagram_readable(&mut self, conn: &mut Connection) {}
+
+        fn on_datagram_lost(&mut self, conn: &mut Connection, length: u64, timeout_lost: bool) {}
+
+        fn on_datagram_acked(&mut self, conn: &mut Connection, length: u64) {}
     }
 
     // Test Initial packet

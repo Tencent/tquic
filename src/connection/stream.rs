@@ -1722,6 +1722,13 @@ impl StreamMap {
         self.concurrency_control
             .update_peer_max_streams(false, tp.initial_max_streams_uni);
     }
+
+    pub fn get_highest_priority(&mut self) -> Option<u8> {
+        match self.sendable.first_entry() {
+            Some(entry) => return Some(*entry.key()),
+            _ => return None,
+        };
+    }
 }
 
 /// Various flags of QUIC stream

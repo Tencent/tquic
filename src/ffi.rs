@@ -1562,6 +1562,56 @@ pub extern "C" fn quic_stream_write(
     }
 }
 
+/// Write data to a datagram send queue.
+#[no_mangle]
+pub extern "C" fn quic_datagram_write(
+    conn: &mut Connection,
+    priority: u8,
+    buf: *const u8,
+    buf_len: size_t,
+    expiration_time: u64,
+) -> ssize_t {
+    let buf = unsafe { slice::from_raw_parts(buf, buf_len) };
+    let buf = Bytes::copy_from_slice(buf);
+    match conn.datagram_write(priority, buf, expiration_time) {
+        Ok(v) => v as ssize_t,
+        Err(e) => e.to_errno() as ssize_t,
+    }
+}
+
+/// Read data from a datagram read queue.
+#[no_mangle]
+pub extern "C" fn quic_datagram_read(
+    conn: &mut Connection,
+    out: *mut u8,
+    out_len: size_t,
+) -> ssize_t {
+    let out = unsafe { slice::from_raw_parts_mut(out, out_len) };
+    let out_len = match conn.datagram_read(out) {
+        Ok(v) => v,
+        Err(_) => return -1,
+    };
+    out_len as ssize_t
+}
+
+/// Set the `max_datagram_frame_size` transport parameter.
+#[no_mangle]
+pub extern "C" fn quic_config_set_max_datagram_frame_size(config: &mut Config, v: u64) {
+    config.set_max_datagram_frame_size(v);
+}
+
+/// Set the max datagram send queue size.
+#[no_mangle]
+pub extern "C" fn quic_config_set_max_datagram_send_queue_size(config: &mut Config, v: u64) {
+    config.set_max_datagram_send_queue_size(v);
+}
+
+/// Set the max datagram receive queue size.
+#[no_mangle]
+pub extern "C" fn quic_config_set_max_datagram_recv_queue_size(config: &mut Config, v: u64) {
+    config.set_max_datagram_recv_queue_size(v);
+}
+
 /// Create a new quic stream with the given id and priority.
 /// This is a low-level API for stream creation. It is recommended to use
 /// `quic_stream_bidi_new` for bidirectional streams or `quic_stream_uni_new`
@@ -1770,6 +1820,16 @@ pub struct TransportMethods {
     /// is optional.
     pub on_new_token:
         Option<fn(tctx: *mut c_void, conn: &mut Connection, token: *const u8, token_len: size_t)>,
+
+    /// Called when connection receives a datagram.
+    pub on_datagram_readable: Option<fn(tctx: *mut c_void, conn: &mut Connection)>,
+
+    /// Called when connection detects a datagram frame lost.
+    pub on_datagram_lost:
+        Option<fn(tctx: *mut c_void, conn: &mut Connection, length: u64, timeout_lost: bool)>,
+
+    /// Called when a datagram frame is acked.
+    pub on_datagram_acked: Option<fn(tctx: *mut c_void, conn: &mut Connection, length: u64)>,
 }
 
 #[repr(transparent)]
@@ -1845,6 +1905,28 @@ impl crate::TransportHandler for TransportHandler {
         unsafe {
             if let Some(f) = (*self.methods).on_new_token {
                 f(self.context.0, conn, token, token_len);
+            }
+        }
+    }
+
+    fn on_datagram_readable(&mut self, conn: &mut Connection) {
+        unsafe {
+            if let Some(f) = (*self.methods).on_datagram_readable {
+                f(self.context.0, conn);
+            }
+        }
+    }
+    fn on_datagram_lost(&mut self, conn: &mut Connection, length: u64, timeout_lost: bool) {
+        unsafe {
+            if let Some(f) = (*self.methods).on_datagram_lost {
+                f(self.context.0, conn, length, timeout_lost);
+            }
+        }
+    }
+    fn on_datagram_acked(&mut self, conn: &mut Connection, length: u64) {
+        unsafe {
+            if let Some(f) = (*self.methods).on_datagram_acked {
+                f(self.context.0, conn, length);
             }
         }
     }

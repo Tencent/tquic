@@ -217,6 +217,18 @@ typedef struct quic_transport_methods_t {
    * is optional.
    */
   void (*on_new_token)(void *tctx, struct quic_conn_t *conn, const uint8_t *token, size_t token_len);
+  /**
+   * Called when connection receives a datagram.
+   */
+  void (*on_datagram_readable)(void *tctx, struct quic_conn_t *conn);
+  /**
+   * Called when connection detects a datagram frame lost.
+   */
+  void (*on_datagram_lost)(void *tctx, struct quic_conn_t *conn, uint64_t length, bool timeout_lost);
+  /**
+   * Called when a datagram frame is acked.
+   */
+  void (*on_datagram_acked)(void *tctx, struct quic_conn_t *conn, uint64_t length);
 } quic_transport_methods_t;
 
 typedef void *quic_transport_context_t;
@@ -427,10 +439,7 @@ typedef struct http3_methods_t {
   /**
    * Called when the stream got headers.
    */
-  void (*on_stream_headers)(void *ctx,
-                            uint64_t stream_id,
-                            const struct http3_headers_t *headers,
-                            bool fin);
+  void (*on_stream_headers)(void *ctx, uint64_t stream_id, const struct http3_headers_t *headers, bool fin);
   /**
    * Called when the stream has buffered data to read.
    */
@@ -1196,9 +1205,9 @@ void *quic_conn_context(struct quic_conn_t *conn);
  * `cb` is a callback function that will be called for each keylog.
  * `data` is a keylog message and `argp` is user-defined data that will be passed to the callback.
  */
-void quic_conn_set_keylog(struct quic_conn_t *conn, void (*cb)(const uint8_t *data,
-                                                               size_t data_len,
-                                                               void *argp), void *argp);
+void quic_conn_set_keylog(struct quic_conn_t *conn,
+                          void (*cb)(const uint8_t *data, size_t data_len, void *argp),
+                          void *argp);
 
 /**
  * Set keylog file.
@@ -1260,6 +1269,35 @@ ssize_t quic_stream_write(struct quic_conn_t *conn,
                           const uint8_t *buf,
                           size_t buf_len,
                           bool fin);
+
+/**
+ * Write data to a datagram send queue.
+ */
+ssize_t quic_datagram_write(struct quic_conn_t *conn,
+                            uint8_t priority,
+                            const uint8_t *buf,
+                            size_t buf_len,
+                            uint64_t expiration_time);
+
+/**
+ * Read data from a datagram read queue.
+ */
+ssize_t quic_datagram_read(struct quic_conn_t *conn, uint8_t *out, size_t out_len);
+
+/**
+ * Set the `max_datagram_frame_size` transport parameter.
+ */
+void quic_config_set_max_datagram_frame_size(struct quic_config_t *config, uint64_t v);
+
+/**
+ * Set the max datagram send queue size.
+ */
+void quic_config_set_max_datagram_send_queue_size(struct quic_config_t *config, uint64_t v);
+
+/**
+ * Set the max datagram receive queue size.
+ */
+void quic_config_set_max_datagram_recv_queue_size(struct quic_config_t *config, uint64_t v);
 
 /**
  * Create a new quic stream with the given id and priority.
@@ -1392,9 +1430,9 @@ void http3_conn_set_events_handler(struct http3_conn_t *conn,
 /**
  * Process HTTP/3 settings.
  */
-int http3_for_each_setting(const struct http3_conn_t *conn, int (*cb)(uint64_t identifier,
-                                                                      uint64_t value,
-                                                                      void *argp), void *argp);
+int http3_for_each_setting(const struct http3_conn_t *conn,
+                           int (*cb)(uint64_t identifier, uint64_t value, void *argp),
+                           void *argp);
 
 /**
  * Process internal events of all streams of the specified HTTP/3 connection.
@@ -1404,11 +1442,9 @@ int http3_conn_process_streams(struct http3_conn_t *conn, struct quic_conn_t *qu
 /**
  * Process HTTP/3 headers.
  */
-int http3_for_each_header(const struct http3_headers_t *headers, int (*cb)(const uint8_t *name,
-                                                                           size_t name_len,
-                                                                           const uint8_t *value,
-                                                                           size_t value_len,
-                                                                           void *argp), void *argp);
+int http3_for_each_header(const struct http3_headers_t *headers,
+                          int (*cb)(const uint8_t *name, size_t name_len, const uint8_t *value, size_t value_len, void *argp),
+                          void *argp);
 
 /**
  * Return true if all the data has been read from the stream.
@@ -1494,9 +1530,7 @@ int http3_send_priority_update_for_request(struct http3_conn_t *conn,
  */
 int http3_take_priority_update(struct http3_conn_t *conn,
                                uint64_t prioritized_element_id,
-                               int (*cb)(const uint8_t *priority_field_value,
-                                         size_t priority_field_value_len,
-                                         void *argp),
+                               int (*cb)(const uint8_t *priority_field_value, size_t priority_field_value_len, void *argp),
                                void *argp);
 
 /**
@@ -1532,7 +1566,7 @@ void *quic_path_peer_context(struct quic_conn_t *conn,
                              socklen_t remote_len);
 
 #ifdef __cplusplus
-}  // extern "C"
-#endif  // __cplusplus
+} // extern "C"
+#endif // __cplusplus
 
-#endif  /* _TQUIC_H_ */
+#endif /* _TQUIC_H_ */
