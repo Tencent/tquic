@@ -517,12 +517,12 @@ impl PathMap {
     }
 
     /// Return an immutable iterator over all existing paths.
-    pub fn iter(&self) -> slab::Iter<Path> {
+    pub fn iter(&self) -> slab::Iter<'_, Path> {
         self.paths.iter()
     }
 
     /// Return a mutable iterator over all existing paths.
-    pub fn iter_mut(&mut self) -> slab::IterMut<Path> {
+    pub fn iter_mut(&mut self) -> slab::IterMut<'_, Path> {
         self.paths.iter_mut()
     }
 

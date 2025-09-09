@@ -48,13 +48,17 @@ pub enum Frame {
     /// increase the size of a packet.
     /// Paddings represents one or more QUIC PADDING frames and can be processed
     /// more efficiently.
-    Paddings { len: usize },
+    Paddings {
+        len: usize,
+    },
 
     /// PING frame (type=0x01) is used to verify that peers are still alive
     /// or to check reachability to the peer.
     /// The extra metadata `pmtu_probe` is solely for internal use and is not
     /// transmitted over the network.
-    Ping { pmtu_probe: Option<(usize, usize)> },
+    Ping {
+        pmtu_probe: Option<(usize, usize)>,
+    },
 
     /// ACK frame (types 0x02 and 0x03) is used to inform senders of packets
     /// they have received and processed. The ACK frame contains one or more
@@ -75,7 +79,10 @@ pub enum Frame {
 
     /// STOP_SENDING frame (type=0x05) is used to communicate that incoming data
     /// is being discarded on receipt per application request.
-    StopSending { stream_id: u64, error_code: u64 },
+    StopSending {
+        stream_id: u64,
+        error_code: u64,
+    },
 
     /// CRYPTO frame (type=0x06) is used to transmit cryptographic handshake
     /// messages.
@@ -88,7 +95,9 @@ pub enum Frame {
     /// NEW_TOKEN frame (type=0x07) sent by the server is used to provide the
     /// client with a token to send in the header of an Initial packet for a
     /// future connection.
-    NewToken { token: Vec<u8> },
+    NewToken {
+        token: Vec<u8>,
+    },
 
     /// STREAM frame implicitly creates a stream and carry stream data.
     Stream {
@@ -101,28 +110,44 @@ pub enum Frame {
 
     /// MAX_DATA frame (type=0x10) is used to inform the peer of the maximum
     /// amount of data that can be sent on the connection as a whole.
-    MaxData { max: u64 },
+    MaxData {
+        max: u64,
+    },
 
     /// MAX_STREAM_DATA frame (type=0x11) is used to inform a peer of the
     /// maximum amount of data that can be sent on a stream.
-    MaxStreamData { stream_id: u64, max: u64 },
+    MaxStreamData {
+        stream_id: u64,
+        max: u64,
+    },
 
     /// MAX_STREAMS frame with a type of 0x12 applies to bidirectional streams.
     /// MAX_STREAMS frame with a type of 0x13 applies to unidirectional streams
-    MaxStreams { bidi: bool, max: u64 },
+    MaxStreams {
+        bidi: bool,
+        max: u64,
+    },
 
     /// A sender send a DATA_BLOCKED frame (type=0x14) when it wishes to
     /// send data but is unable to do so due to connection-level flow control
-    DataBlocked { max: u64 },
+    DataBlocked {
+        max: u64,
+    },
 
     /// A sender send a STREAM_DATA_BLOCKED frame (type=0x15) when it wishes to
     /// send data but is unable to do so due to stream-level flow control.
-    StreamDataBlocked { stream_id: u64, max: u64 },
+    StreamDataBlocked {
+        stream_id: u64,
+        max: u64,
+    },
 
     /// STREAMS_BLOCKED frame of type 0x16 is used to indicate reaching the
     /// bidirectional stream limit. STREAMS_BLOCKED frame of type 0x17 is used
     /// to indicate reaching the unidirectional stream limit.
-    StreamsBlocked { bidi: bool, max: u64 },
+    StreamsBlocked {
+        bidi: bool,
+        max: u64,
+    },
 
     /// NEW_CONNECTION_ID frame (type=0x18) is used to provide the peer with
     /// alternative connection IDs that can be used to break linkability.
@@ -135,15 +160,21 @@ pub enum Frame {
 
     /// RETIRE_CONNECTION_ID frame (type=0x19) is used to indicate that the
     /// endpoint  will no longer use a connection ID that was issued by its peer.
-    RetireConnectionId { seq_num: u64 },
+    RetireConnectionId {
+        seq_num: u64,
+    },
 
     /// PATH_CHALLENGE frames (type=0x1a) is used to check reachability to the
     /// peer and for path validation during connection migration.
-    PathChallenge { data: [u8; 8] },
+    PathChallenge {
+        data: [u8; 8],
+    },
 
     /// PATH_RESPONSE frame (type=0x1b) is sent in response to a PATH_CHALLENGE
     /// frame.
-    PathResponse { data: [u8; 8] },
+    PathResponse {
+        data: [u8; 8],
+    },
 
     /// CONNECTION_CLOSE frame (type=0x1c) is used to to notify the peer that
     /// the connection is being closed due to error of QUIC layer.
@@ -155,11 +186,22 @@ pub enum Frame {
 
     /// CONNECTION_CLOSE frame (type=0x1d) is used to notify the peer that the
     /// connection is being closed due to error of application.
-    ApplicationClose { error_code: u64, reason: Vec<u8> },
+    ApplicationClose {
+        error_code: u64,
+        reason: Vec<u8>,
+    },
 
     /// HANDSHAKE_DONE frame (type=0x1e) sent by the server is used to signal
     /// confirmation of the handshake to the client.
     HandshakeDone,
+
+    AckFrequency {
+        seq_num: u64,
+        ack_eliciting_threshold: u64,
+        req_max_ack_delay: u64,
+        reordering_threshold: u64,
+    },
+    ImmediateAck,
 
     /// PATH_ABANDON frame informs the peer to abandon a path.
     /// See draft-ietf-quic-multipath-05.
@@ -347,6 +389,15 @@ impl Frame {
 
             0x1e => Frame::HandshakeDone,
 
+            0x1f => Frame::ImmediateAck,
+
+            0xaf => Frame::AckFrequency {
+                seq_num: b.read_varint()?,
+                ack_eliciting_threshold: b.read_varint()?,
+                req_max_ack_delay: b.read_varint()?,
+                reordering_threshold: b.read_varint()?,
+            },
+
             0x15228c05 => Frame::PathAbandon {
                 dcid_seq_num: b.read_varint()?,
                 error_code: b.read_varint()?,
@@ -383,6 +434,8 @@ impl Frame {
             (PacketType::ZeroRTT, Frame::PathResponse { .. }) => false,
             (PacketType::ZeroRTT, Frame::RetireConnectionId { .. }) => false,
             (PacketType::ZeroRTT, Frame::ConnectionClose { .. }) => false,
+            (PacketType::ZeroRTT, Frame::AckFrequency { .. }) => false,
+            (PacketType::ZeroRTT, Frame::ImmediateAck) => false,
 
             // ACK, CRYPTO and CONNECTION_CLOSE can be sent on all other packet
             // types.
@@ -429,7 +482,10 @@ impl Frame {
 
                 let mut it = ack_ranges.iter().rev();
 
-                let first = it.next().unwrap();
+                let first = match it.next() {
+                    Some(first) => first,
+                    None => return Ok(0),
+                };
                 let ack_range_len = (first.end - 1) - first.start;
 
                 b.write_varint(first.end - 1)?;
@@ -587,6 +643,23 @@ impl Frame {
                 b.write_varint(0x1e)?;
             }
 
+            Frame::ImmediateAck => {
+                b.write_varint(0x1f)?;
+            }
+
+            Frame::AckFrequency {
+                seq_num,
+                ack_eliciting_threshold,
+                req_max_ack_delay,
+                reordering_threshold,
+            } => {
+                b.write_varint(0xaf)?;
+                b.write_varint(*seq_num)?;
+                b.write_varint(*ack_eliciting_threshold)?;
+                b.write_varint(*req_max_ack_delay)?;
+                b.write_varint(*reordering_threshold)?;
+            }
+
             Frame::PathAbandon {
                 dcid_seq_num,
                 error_code,
@@ -627,7 +700,10 @@ impl Frame {
             } => {
                 let mut it = ack_ranges.iter().rev();
 
-                let first = it.next().unwrap();
+                let first = match it.next() {
+                    Some(first) => first,
+                    None => return 0,
+                };
                 let ack_block = (first.end - 1) - first.start;
 
                 let mut len = 1
@@ -742,6 +818,21 @@ impl Frame {
             }
 
             Frame::HandshakeDone => 1,
+
+            Frame::ImmediateAck => 1,
+
+            Frame::AckFrequency {
+                seq_num,
+                ack_eliciting_threshold,
+                req_max_ack_delay,
+                reordering_threshold,
+            } => {
+                codec::encode_varint_len(0xaf)
+                    + codec::encode_varint_len(*seq_num)
+                    + codec::encode_varint_len(*ack_eliciting_threshold)
+                    + codec::encode_varint_len(*req_max_ack_delay)
+                    + codec::encode_varint_len(*reordering_threshold)
+            }
 
             Frame::PathAbandon {
                 dcid_seq_num,
@@ -933,6 +1024,12 @@ impl Frame {
                 frame_type_value: None,
                 raw: None,
             },
+
+            _ => QuicFrame::Unknown {
+                raw_frame_type: 0,
+                frame_type_value: None,
+                raw: None,
+            },
         }
     }
 
@@ -1089,6 +1186,23 @@ impl std::fmt::Debug for Frame {
 
             Frame::HandshakeDone => {
                 write!(f, "HANDSHAKE_DONE")?;
+            }
+
+            Frame::ImmediateAck => {
+                write!(f, "IMMEDIATE_ACK")?;
+            }
+
+            Frame::AckFrequency {
+                seq_num,
+                ack_eliciting_threshold,
+                req_max_ack_delay,
+                reordering_threshold,
+            } => {
+                write!(
+                    f,
+                    "ACK_FREQUENCY seq={} threshold={} delay={} reordering={}",
+                    seq_num, ack_eliciting_threshold, req_max_ack_delay, reordering_threshold
+                )?;
             }
 
             Frame::PathAbandon {
@@ -1778,6 +1892,50 @@ mod tests {
     fn handshake_done() -> Result<()> {
         let frame = Frame::HandshakeDone;
         assert_eq!(format!("{:?}", &frame), "HANDSHAKE_DONE");
+
+        let mut buf = [0; 128];
+        let len = frame.to_bytes(&mut buf[..])?;
+        assert_eq!(len, frame.wire_len());
+        assert_eq!(len, 1);
+
+        let mut buf = Bytes::copy_from_slice(&buf);
+        assert_eq!((frame, 1), Frame::from_bytes(&mut buf, PacketType::OneRTT)?);
+        assert!(Frame::from_bytes(&mut buf, PacketType::ZeroRTT).is_err());
+        assert!(Frame::from_bytes(&mut buf, PacketType::Initial).is_err());
+        assert!(Frame::from_bytes(&mut buf, PacketType::Handshake).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn ack_frequency() -> Result<()> {
+        let frame = Frame::AckFrequency {
+            seq_num: 1,
+            ack_eliciting_threshold: 2,
+            req_max_ack_delay: 3,
+            reordering_threshold: 4,
+        };
+        assert_eq!(
+            format!("{:?}", &frame),
+            "ACK_FREQUENCY seq=1 threshold=2 delay=3 reordering=4"
+        );
+
+        let mut buf = [0; 128];
+        let len = frame.to_bytes(&mut buf[..])?;
+        assert_eq!(len, frame.wire_len());
+        assert_eq!(len, 6);
+
+        let mut buf = Bytes::copy_from_slice(&buf);
+        assert_eq!((frame, 6), Frame::from_bytes(&mut buf, PacketType::OneRTT)?);
+        assert!(Frame::from_bytes(&mut buf, PacketType::ZeroRTT).is_err());
+        assert!(Frame::from_bytes(&mut buf, PacketType::Initial).is_err());
+        assert!(Frame::from_bytes(&mut buf, PacketType::Handshake).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn immediate_ack() -> Result<()> {
+        let frame = Frame::ImmediateAck;
+        assert_eq!(format!("{:?}", &frame), "IMMEDIATE_ACK");
 
         let mut buf = [0; 128];
         let len = frame.to_bytes(&mut buf[..])?;

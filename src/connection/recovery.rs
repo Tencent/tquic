@@ -30,6 +30,7 @@ use super::space::SpaceId;
 use super::space::SpaceId::*;
 use super::Connection;
 use super::HandshakeStatus;
+use crate::ack_frequency::AckFrequencySenderState;
 use crate::congestion_control;
 use crate::congestion_control::CongestionController;
 use crate::congestion_control::Pacer;
@@ -44,6 +45,7 @@ use crate::Error;
 use crate::PathStats;
 use crate::RecoveryConfig;
 use crate::Result;
+use crate::TransportParams;
 use crate::TIMER_GRANULARITY;
 
 const INITIAL_PACKET_THRESHOLD: u64 = 3;
@@ -121,6 +123,9 @@ pub struct Recovery {
 
     /// Trace id.
     trace_id: String,
+
+    /// State for the ACK Frequency extension (sender side).
+    pub ack_sender_state: AckFrequencySenderState,
 }
 
 impl Recovery {
@@ -146,6 +151,7 @@ impl Recovery {
             #[cfg(feature = "qlog")]
             last_metrics: RecoveryMetrics::default(),
             trace_id: String::from(""),
+            ack_sender_state: AckFrequencySenderState::new(),
         }
     }
 
@@ -238,6 +244,9 @@ impl Recovery {
         #[cfg(feature = "qlog")] qlog: Option<&mut qlog::QlogWriter>,
         now: Instant,
     ) -> Result<(u64, u64)> {
+        // Update ACK frequency sender state.
+        self.ack_sender_state.on_acks_received(ranges);
+
         let space = spaces.get_mut(space_id).ok_or(Error::InternalError)?;
 
         // Update the largest packet number acknowledged in the space
@@ -708,13 +717,13 @@ impl Recovery {
     }
 
     /// Calculate the probe timeout include `max_ack_delay`.
-    fn pto_with_ack_delay(&self, duration: Duration) -> Duration {
+    fn pto_with_ack_delay(&self, duration: Duration, max_ack_delay: Duration) -> Duration {
         let backoff_factor = self
             .pto_count
             .saturating_sub(self.pto_linear_factor as usize);
 
         cmp::min(
-            duration + self.max_ack_delay * 2_u32.saturating_pow(backoff_factor as u32),
+            duration + max_ack_delay * 2_u32.saturating_pow(backoff_factor as u32),
             self.max_pto,
         )
     }
@@ -763,7 +772,13 @@ impl Recovery {
                     return (pto_timeout, pto_space);
                 }
                 // Include max_ack_delay and backoff for Application Data.
-                duration = self.pto_with_ack_delay(duration);
+                let pto_options = self
+                    .ack_sender_state
+                    .get_pto_options(self.ack_eliciting_in_flight, self.max_ack_delay);
+                if !pto_options.exclude_ack_delay {
+                    duration =
+                        self.pto_with_ack_delay(duration, pto_options.effective_max_ack_delay);
+                }
             }
 
             let new_time = space
@@ -1621,7 +1636,10 @@ mod tests {
         recovery.pto_count = count;
 
         let duration = recovery.calculate_pto();
-        (duration, recovery.pto_with_ack_delay(duration))
+        (
+            duration,
+            recovery.pto_with_ack_delay(duration, recovery.max_ack_delay),
+        )
     }
 
     #[test]

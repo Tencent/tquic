@@ -130,6 +130,9 @@ pub struct PacketNumSpace {
     /// The largest packet number acknowledged in the packet number space so far.
     pub largest_acked_pkt: u64,
 
+    /// The largest packet number sent in an ACK frame.
+    pub largest_acked_sent_in_ack: Option<u64>,
+
     /// The number of times a PTO has been sent without receiving an acknowledgment.
     pub loss_probes: usize,
 
@@ -169,6 +172,7 @@ impl PacketNumSpace {
             time_of_last_sent_ack_eliciting_pkt: None,
             loss_time: None,
             largest_acked_pkt: u64::MAX,
+            largest_acked_sent_in_ack: None,
             loss_probes: 0,
             bytes_in_flight: 0,
             ack_eliciting_in_flight: 0,

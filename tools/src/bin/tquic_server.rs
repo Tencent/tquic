@@ -207,6 +207,11 @@ pub struct ServerOpt {
     )]
     pub max_pto: u64,
 
+    /// The minimum ACK delay in microseconds. This enables the ACK
+    /// Frequency extension.
+    #[clap(long, value_name = "TIME", help_heading = "Protocol")]
+    pub min_ack_delay: Option<u64>,
+
     /// Anti amplification factor.
     #[clap(
         long,
@@ -299,6 +304,9 @@ impl Server {
         config.enable_multipath(option.enable_multipath);
         config.set_multipath_algorithm(option.multipath_algor);
         config.set_active_connection_id_limit(option.active_cid_limit);
+        if let Some(min_ack_delay) = option.min_ack_delay {
+            config.enable_ack_frequency(min_ack_delay);
+        }
         config.enable_encryption(!option.disable_encryption);
 
         if let Some(address_token_key) = &option.address_token_key {

@@ -121,6 +121,10 @@ pub struct TransportParams {
     /// completely trust the path between themselves.
     /// See draft-banks-quic-disable-encryption-00.
     pub disable_encryption: bool,
+
+    /// The minimum amount of time in microseconds by which the endpoint will
+    /// delay sending acknowledgments.
+    pub min_ack_delay: Option<u64>,
 }
 
 impl TransportParams {
@@ -266,6 +270,14 @@ impl TransportParams {
                     tp.disable_encryption = true;
                 }
 
+                0xff04de1b => {
+                    let min_ack_delay = val.read_varint()?;
+                    if min_ack_delay > tp.max_ack_delay * 1000 {
+                        return Err(Error::TransportParameterError);
+                    }
+                    tp.min_ack_delay = Some(min_ack_delay);
+                }
+
                 // Ignore unknown parameters.
                 _ => (),
             }
@@ -404,6 +416,12 @@ impl TransportParams {
             buf.write_varint(0)?;
         }
 
+        if let Some(min_ack_delay) = tp.min_ack_delay {
+            buf.write_varint(0xff04de1b)?;
+            buf.write_varint(codec::encode_varint_len(min_ack_delay) as u64)?;
+            buf.write_varint(min_ack_delay)?;
+        }
+
         Ok(len - buf.len())
     }
 
@@ -483,6 +501,7 @@ impl Default for TransportParams {
 
             enable_multipath: false,
             disable_encryption: false,
+            min_ack_delay: None,
         }
     }
 }
@@ -583,6 +602,7 @@ mod tests {
             retry_source_connection_id: None,
             enable_multipath: true,
             disable_encryption: false,
+            min_ack_delay: None,
         };
 
         // encode on the client side
@@ -627,6 +647,7 @@ mod tests {
             retry_source_connection_id: Some(ConnectionId::random()),
             enable_multipath: false,
             disable_encryption: true,
+            min_ack_delay: None,
         };
 
         // encode on the server side
@@ -675,6 +696,33 @@ mod tests {
             assert_eq!(addr, addr2);
             assert_eq!(len, len2);
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn transport_params_ack_frequency() -> Result<()> {
+        let mut tp = TransportParams::default();
+        tp.min_ack_delay = Some(100); // 100 us
+        tp.max_ack_delay = 1; // 1 ms
+
+        // encode
+        let mut raw_params = [0; 256];
+        let len = TransportParams::encode(&tp, false, &mut raw_params)?;
+
+        // decode
+        let (tp2, len2) = TransportParams::decode(&raw_params[..len], true)?;
+        assert_eq!(tp, tp2);
+        assert_eq!(len, len2);
+        assert_eq!(tp2.min_ack_delay, Some(100));
+
+        // Test validation: min_ack_delay > max_ack_delay
+        let mut tp_invalid = TransportParams::default();
+        tp_invalid.max_ack_delay = 1; // 1 ms
+        tp_invalid.min_ack_delay = Some(2000); // 2000 us = 2ms
+        let mut raw_params_invalid = [0; 256];
+        let len_invalid = TransportParams::encode(&tp_invalid, false, &mut raw_params_invalid)?;
+        assert!(TransportParams::decode(&raw_params_invalid[..len_invalid], true).is_err());
 
         Ok(())
     }
