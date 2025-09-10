@@ -133,6 +133,16 @@ impl Endpoint {
         }
     }
 
+    /// Set the default `min_ack_delay` (microseconds) that will be advertised
+    /// in QUIC transport parameters for all *future* connections created by this endpoint.
+    ///
+    /// Call this BEFORE invoking `connect()` (client) or before the server starts
+    /// accepting new connections, otherwise existing connections won't carry it.
+    /// Value must be < 2^14 milliseconds in microseconds (draft constraint).
+    pub fn set_default_min_ack_delay_us(&mut self, v: u64) {
+        self.config.set_min_ack_delay_us(v);
+    }
+
     /// Create a client connection.
     /// Note: The `config` specific to the endpoint or server is irrelevant and will be disregarded.
     ///
@@ -364,6 +374,7 @@ impl Endpoint {
             src: local,
             dst: remote,
             time: Instant::now(),
+            ecn: None,
         };
 
         trace!(
@@ -405,6 +416,7 @@ impl Endpoint {
             src: local,
             dst: remote,
             time: Instant::now(),
+            ecn: None,
         };
 
         trace!(
@@ -454,6 +466,7 @@ impl Endpoint {
             src: local,
             dst: remote,
             time: Instant::now(),
+            ecn: None,
         };
 
         trace!(
@@ -571,6 +584,8 @@ impl Endpoint {
                 Event::DcidAdvertised(token) => self.routes.insert_with_token(token, idx),
 
                 Event::DcidRetired(token) => self.routes.remove_with_token(&token),
+
+                Event::PeerAckFrequencyCapable => self.handler.on_peer_ack_frequency_capable(conn),
 
                 Event::ResetTokenAdvertised(token) => self.routes.insert_with_token(token, idx),
 
@@ -1294,8 +1309,7 @@ mod tests {
         fn process_read_event(e: &mut Endpoint, s: &TestSocket) -> Result<()> {
             let mut recv_buf = vec![0; 65535];
             loop {
-                // Read datagram from the socket.
-                let (len, remote) = match s.socket.recv_from(&mut recv_buf) {
+                let (len, remote, ecn_opt) = match s.recv_with_ecn(&mut recv_buf) {
                     Ok(v) => v,
                     Err(err) => {
                         if err.kind() == std::io::ErrorKind::WouldBlock {
@@ -1305,13 +1319,12 @@ mod tests {
                         return Err(format!("socket recv error: {:?}", err).into());
                     }
                 };
-
-                // Process the incoming packet.
                 let pkt_buf = &mut recv_buf[..len];
                 let pkt_info = PacketInfo {
                     src: remote,
                     dst: s.socket.local_addr().unwrap(),
                     time: Instant::now(),
+                    ecn: ecn_opt,
                 };
                 match e.recv(pkt_buf, &pkt_info) {
                     Ok(_) => {}
@@ -1440,6 +1453,29 @@ mod tests {
                 filter: None,
             });
 
+            #[cfg(unix)]
+            {
+                use std::os::fd::AsRawFd;
+                let fd = socket.as_raw_fd();
+                unsafe {
+                    let on: libc::c_int = 1;
+                    let _ = libc::setsockopt(
+                        fd,
+                        libc::IPPROTO_IP,
+                        libc::IP_RECVTOS,
+                        &on as *const _ as *const libc::c_void,
+                        std::mem::size_of_val(&on) as libc::socklen_t,
+                    );
+                    let _ = libc::setsockopt(
+                        fd,
+                        libc::IPPROTO_IPV6,
+                        libc::IPV6_RECVTCLASS,
+                        &on as *const _ as *const libc::c_void,
+                        std::mem::size_of_val(&on) as libc::socklen_t,
+                    );
+                }
+            }
+
             Ok(Self {
                 socket,
                 state,
@@ -1450,6 +1486,79 @@ mod tests {
                 packet_corruption: conf.packet_corruption,
                 trace_id,
             })
+        }
+
+        #[allow(dead_code)]
+        fn recv_with_ecn(
+            &self,
+            buf: &mut [u8],
+        ) -> std::io::Result<(usize, SocketAddr, Option<u8>)> {
+            #[cfg(unix)]
+            unsafe {
+                use libc::{
+                    c_void, cmsghdr, iovec, msghdr, recvmsg, sockaddr_in, sockaddr_in6,
+                    sockaddr_storage, socklen_t, AF_INET, AF_INET6, CMSG_DATA, CMSG_FIRSTHDR,
+                    CMSG_NXTHDR, IPPROTO_IP, IPPROTO_IPV6, IPV6_TCLASS, IP_TOS,
+                };
+                use std::os::fd::AsRawFd;
+                let mut name: sockaddr_storage = std::mem::zeroed();
+                let mut iov = iovec {
+                    iov_base: buf.as_mut_ptr() as *mut c_void,
+                    iov_len: buf.len(),
+                };
+                let mut control = [0u8; 64];
+                let mut hdr = msghdr {
+                    msg_name: &mut name as *mut _ as *mut c_void,
+                    msg_namelen: std::mem::size_of::<sockaddr_storage>() as socklen_t,
+                    msg_iov: &mut iov,
+                    msg_iovlen: 1,
+                    msg_control: control.as_mut_ptr() as *mut c_void,
+                    msg_controllen: control.len() as _,
+                    msg_flags: 0,
+                };
+                let fd = self.socket.as_raw_fd();
+                let n = recvmsg(fd, &mut hdr, 0);
+                if n < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                let remote = match name.ss_family as libc::c_int {
+                    AF_INET => {
+                        let sa: *const sockaddr_in = &name as *const _ as *const sockaddr_in;
+                        let sa = &*sa;
+                        let ip = std::net::Ipv4Addr::from(u32::from_be(sa.sin_addr.s_addr));
+                        let port = u16::from_be(sa.sin_port);
+                        SocketAddr::new(std::net::IpAddr::V4(ip), port)
+                    }
+                    AF_INET6 => {
+                        let sa: *const sockaddr_in6 = &name as *const _ as *const sockaddr_in6;
+                        let sa = &*sa;
+                        let ip = std::net::Ipv6Addr::from(sa.sin6_addr.s6_addr);
+                        let port = u16::from_be(sa.sin6_port);
+                        SocketAddr::new(std::net::IpAddr::V6(ip), port)
+                    }
+                    _ => SocketAddr::new("0.0.0.0".parse().unwrap(), 0),
+                };
+                let mut ecn: Option<u8> = None;
+                let mut cmsg_ptr = CMSG_FIRSTHDR(&hdr as *const msghdr as *mut msghdr);
+                while !cmsg_ptr.is_null() {
+                    let cmsg: &cmsghdr = &*cmsg_ptr;
+                    if (cmsg.cmsg_level == IPPROTO_IP && cmsg.cmsg_type == IP_TOS)
+                        || (cmsg.cmsg_level == IPPROTO_IPV6 && cmsg.cmsg_type == IPV6_TCLASS)
+                    {
+                        let data_ptr = CMSG_DATA(cmsg_ptr) as *const u8;
+                        if !data_ptr.is_null() {
+                            ecn = Some(*data_ptr & 0x03);
+                        }
+                    }
+                    cmsg_ptr = CMSG_NXTHDR(&hdr as *const msghdr as *mut msghdr, cmsg_ptr);
+                }
+                return Ok((n as usize, remote, ecn));
+            }
+            #[allow(unreachable_code)]
+            {
+                let (len, remote) = self.socket.recv_from(buf)?;
+                Ok((len, remote, None))
+            }
         }
 
         /// Set the customized packter filter

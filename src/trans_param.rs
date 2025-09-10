@@ -89,6 +89,13 @@ pub struct TransportParams {
     /// in milliseconds by which the endpoint will delay sending acknowledgments.
     pub max_ack_delay: u64,
 
+    /// The parameter is an integer value in microseconds indicating the minimum
+    /// amount of time by which the endpoint can delay sending acknowledgments.
+    /// See draft-ietf-quic-ack-frequency-11.
+    /// When None, this parameter will not be encoded in the transport parameters,
+    /// indicating no support for ACK frequency extension.
+    pub min_ack_delay: Option<u64>,
+
     /// The parameter is included if the endpoint does not support active
     /// connection migration on the address being used during the handshake.
     pub disable_active_migration: bool,
@@ -266,6 +273,15 @@ impl TransportParams {
                     tp.disable_encryption = true;
                 }
 
+                0xff04de1b => {
+                    let min_ack_delay = val.read_varint()?;
+                    // Check if min_ack_delay is greater than max_ack_delay (converting from us to ms)
+                    if min_ack_delay > tp.max_ack_delay * 1000 {
+                        return Err(Error::TransportParameterError);
+                    }
+                    tp.min_ack_delay = Some(min_ack_delay);
+                }
+
                 // Ignore unknown parameters.
                 _ => (),
             }
@@ -404,6 +420,12 @@ impl TransportParams {
             buf.write_varint(0)?;
         }
 
+        if let Some(min_ack_delay) = tp.min_ack_delay {
+            buf.write_varint(0xff04de1b)?;
+            buf.write_varint(codec::encode_varint_len(min_ack_delay) as u64)?;
+            buf.write_varint(min_ack_delay)?;
+        }
+
         Ok(len - buf.len())
     }
 
@@ -469,6 +491,9 @@ impl Default for TransportParams {
             // If max_ack_delay parameter is absent, a default of 25
             // milliseconds is assumed.
             max_ack_delay: 25,
+
+            // Default is None, indicating no support for ACK frequency extension
+            min_ack_delay: None,
 
             disable_active_migration: false,
 
@@ -563,7 +588,8 @@ mod tests {
 
     #[test]
     fn transport_params_from_client() -> Result<()> {
-        let tp = TransportParams {
+        // 1. 测试有 min_ack_delay 的情况
+        let tp_with_min_ack_delay = TransportParams {
             original_destination_connection_id: None,
             max_idle_timeout: 60,
             stateless_reset_token: None,
@@ -576,6 +602,7 @@ mod tests {
             initial_max_streams_uni: 100,
             ack_delay_exponent: 10,
             max_ack_delay: 2_u64.pow(8),
+            min_ack_delay: Some(1000), // 支持 ACK 频率扩展
             disable_active_migration: true,
             preferred_address: None,
             active_conn_id_limit: 12,
@@ -587,11 +614,54 @@ mod tests {
 
         // encode on the client side
         let mut raw_params = [0; 256];
-        let len = TransportParams::encode(&tp, false, &mut raw_params)?;
+        let len = TransportParams::encode(&tp_with_min_ack_delay, false, &mut raw_params)?;
 
         // decode on the server side
         let (tp2, len2) = TransportParams::decode(&raw_params[..len], true)?;
-        assert_eq!(tp, tp2);
+
+        // After decode on server side:
+        assert!(tp2.min_ack_delay.is_some());
+        assert_eq!(tp2.min_ack_delay, tp_with_min_ack_delay.min_ack_delay);
+        // 比较其它参数
+        assert_eq!(tp_with_min_ack_delay.max_ack_delay, tp2.max_ack_delay);
+        assert_eq!(len, len2);
+
+        // 2. 测试 min_ack_delay 为 None 的情况
+        let tp_without_min_ack_delay = TransportParams {
+            original_destination_connection_id: None,
+            max_idle_timeout: 60,
+            stateless_reset_token: None,
+            max_udp_payload_size: 1300,
+            initial_max_data: 4 * 1024 * 1024,
+            initial_max_stream_data_bidi_local: 2 * 1024 * 1024,
+            initial_max_stream_data_bidi_remote: 1024 * 1024,
+            initial_max_stream_data_uni: 3 * 1024 * 1024,
+            initial_max_streams_bidi: 200,
+            initial_max_streams_uni: 100,
+            ack_delay_exponent: 10,
+            max_ack_delay: 2_u64.pow(8),
+            min_ack_delay: None, // 不支持 ACK 频率扩展
+            disable_active_migration: true,
+            preferred_address: None,
+            active_conn_id_limit: 12,
+            initial_source_connection_id: Some(ConnectionId::random()),
+            retry_source_connection_id: None,
+            enable_multipath: true,
+            disable_encryption: false,
+        };
+
+        // encode on the client side
+        let mut raw_params = [0; 256];
+        let len = TransportParams::encode(&tp_without_min_ack_delay, false, &mut raw_params)?;
+
+        // decode on the server side
+        let (tp2, len2) = TransportParams::decode(&raw_params[..len], true)?;
+
+        // After decode on server side:
+        assert!(tp2.min_ack_delay.is_none()); // 确认 min_ack_delay 是 None
+        assert_eq!(tp2.min_ack_delay, tp_without_min_ack_delay.min_ack_delay);
+        // 比较其它参数
+        assert_eq!(tp_without_min_ack_delay.max_ack_delay, tp2.max_ack_delay);
         assert_eq!(len, len2);
 
         Ok(())
@@ -607,7 +677,9 @@ mod tests {
             connection_id: ConnectionId::random(),
             stateless_reset_token: ResetToken([0xc; crate::RESET_TOKEN_LEN]),
         });
-        let tp = TransportParams {
+
+        // 1. 测试有 min_ack_delay 的情况
+        let tp_with_min_ack_delay = TransportParams {
             original_destination_connection_id: Some(ConnectionId::random()),
             max_idle_timeout: 60,
             stateless_reset_token: Some(u128::from_be_bytes([0x1; 16])),
@@ -620,8 +692,9 @@ mod tests {
             initial_max_streams_uni: 100,
             ack_delay_exponent: 10,
             max_ack_delay: 2_u64.pow(8),
+            min_ack_delay: Some(500), // 支持 ACK 频率扩展
             disable_active_migration: true,
-            preferred_address,
+            preferred_address: preferred_address.clone(),
             active_conn_id_limit: 12,
             initial_source_connection_id: Some(ConnectionId::random()),
             retry_source_connection_id: Some(ConnectionId::random()),
@@ -631,11 +704,46 @@ mod tests {
 
         // encode on the server side
         let mut raw_params = [0; 512];
-        let len = TransportParams::encode(&tp, true, &mut raw_params)?;
+        let len = TransportParams::encode(&tp_with_min_ack_delay, true, &mut raw_params)?;
 
         // decode on the client side
         let (tp2, len2) = TransportParams::decode(&raw_params[..len], false)?;
-        assert_eq!(tp, tp2);
+        assert!(tp2.min_ack_delay.is_some());
+        assert_eq!(tp2.min_ack_delay, tp_with_min_ack_delay.min_ack_delay);
+        assert_eq!(len, len2);
+
+        // 2. 测试 min_ack_delay 为 None 的情况
+        let tp_without_min_ack_delay = TransportParams {
+            original_destination_connection_id: Some(ConnectionId::random()),
+            max_idle_timeout: 60,
+            stateless_reset_token: Some(u128::from_be_bytes([0x1; 16])),
+            max_udp_payload_size: 1300,
+            initial_max_data: 4 * 1024 * 1024,
+            initial_max_stream_data_bidi_local: 2 * 1024 * 1024,
+            initial_max_stream_data_bidi_remote: 1024 * 1024,
+            initial_max_stream_data_uni: 3 * 1024 * 1024,
+            initial_max_streams_bidi: 200,
+            initial_max_streams_uni: 100,
+            ack_delay_exponent: 10,
+            max_ack_delay: 2_u64.pow(8),
+            min_ack_delay: None, // 不支持 ACK 频率扩展
+            disable_active_migration: true,
+            preferred_address: preferred_address.clone(),
+            active_conn_id_limit: 12,
+            initial_source_connection_id: Some(ConnectionId::random()),
+            retry_source_connection_id: Some(ConnectionId::random()),
+            enable_multipath: false,
+            disable_encryption: true,
+        };
+
+        // encode on the server side
+        let mut raw_params = [0; 512];
+        let len = TransportParams::encode(&tp_without_min_ack_delay, true, &mut raw_params)?;
+
+        // decode on the client side
+        let (tp2, len2) = TransportParams::decode(&raw_params[..len], false)?;
+        assert!(tp2.min_ack_delay.is_none()); // 确认 min_ack_delay 是 None
+        assert_eq!(tp2.min_ack_delay, tp_without_min_ack_delay.min_ack_delay);
         assert_eq!(len, len2);
 
         Ok(())

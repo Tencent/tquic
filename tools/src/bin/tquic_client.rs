@@ -340,6 +340,33 @@ pub struct ClientOpt {
     /// The range of the request, like "0-1023".
     #[clap(long, value_name = "RANGE", help_heading = "Protocol")]
     pub range: Option<String>,
+
+    // ================= ACK FREQUENCY Demo (single-path only) =================
+    /// ACK_FREQUENCY: Ack-eliciting threshold N (encoded as N+1 internally). Disabled if not set.
+    #[clap(long, value_name = "NUM", help_heading = "AckFrequency")]
+    pub ack_freq_threshold: Option<u32>,
+
+    /// ACK_FREQUENCY: Requested max ack delay in microseconds (default 25000 if omitted when threshold set).
+    #[clap(long, value_name = "TIME", help_heading = "AckFrequency")]
+    pub ack_freq_max_delay: Option<u64>,
+
+    /// ACK_FREQUENCY: Reordering threshold in packets (0 disables reordering trigger, 1 = any gap, >1 = gap >= threshold).
+    #[clap(long, value_name = "NUM", help_heading = "AckFrequency")]
+    pub ack_freq_reordering: Option<u32>,
+
+    /// Interval (ms) to send an IMMEDIATE_ACK frame periodically (0 disables).
+    #[clap(
+        long,
+        default_value = "0",
+        value_name = "MS",
+        help_heading = "AckFrequency"
+    )]
+    pub immediate_ack_interval: u64,
+
+    /// Advertise min_ack_delay transport parameter (microseconds) to enable sending ACK_FREQUENCY/IMMEDIATE_ACK.
+    /// If you set ack-freq-* options but omit this, a warning is logged and ACK_FREQUENCY will not be sent.
+    #[clap(long, value_name = "US", help_heading = "AckFrequency")]
+    pub min_ack_delay_us: Option<u64>,
 }
 
 const MAX_BUF_SIZE: usize = 65536;
@@ -461,7 +488,38 @@ impl Client {
             context.conn_stats.sent_bytes,
             context.conn_stats.lost_bytes
         );
-        println!();
+        println!(
+            "ACK_FREQUENCY sent: {} (rx={} tx={} total_rx_tx={}), IMMEDIATE_ACK sent: {}",
+            context.ack_freq_sent,
+            context.ack_frequency_frames_rx,
+            context.ack_frequency_frames_tx,
+            context.ack_frequency_frames_seen,
+            context.immediate_ack_sent
+        );
+        println!(
+            "qlog parsed: ack_frames_seen={}, ack_frequency_frames_seen={} (interval samples={})",
+            context.ack_frames_seen,
+            context.ack_frequency_frames_seen,
+            context.ack_intervals_us.len()
+        );
+        if !context.ack_intervals_us.is_empty() {
+            let mut v = context.ack_intervals_us.clone();
+            v.sort_unstable();
+            let p = |pct: f64| -> f64 {
+                let idx = ((v.len() as f64 - 1.0) * pct / 100.0).round() as usize;
+                v[idx] as f64
+            };
+            let sum: u128 = v.iter().map(|x| *x as u128).sum();
+            println!(
+                "ACK interval us: min={} p50={} p90={} p99={} max={} mean={:.1}",
+                v[0],
+                p(50.0),
+                p(90.0),
+                p(99.0),
+                v[v.len() - 1],
+                sum as f64 / v.len() as f64
+            );
+        }
     }
 }
 
@@ -480,6 +538,17 @@ struct ClientContext {
     conn_finish_failed: u64,
     end_time: Option<Instant>,
     conn_stats: ConnectionStats,
+    // AckFrequency metrics
+    ack_freq_sent: u64,
+    immediate_ack_sent: u64,
+    // Realtime ACK interval metrics (aggregated across connections)
+    ack_intervals_us: Vec<u64>,
+    // Count of received ACK frames
+    ack_frames_seen: u64,
+    // AckFrequency frames (legacy total) plus directional counts
+    ack_frequency_frames_seen: u64,
+    ack_frequency_frames_rx: u64,
+    ack_frequency_frames_tx: u64,
 }
 
 fn update_conn_stats(total: &mut ConnectionStats, one: &ConnectionStats) {
@@ -528,6 +597,8 @@ struct Worker {
 
     /// If terminated by system signal.
     terminated: Arc<AtomicBool>,
+    /// Track last IMMEDIATE_ACK send time per connection.
+    last_immediate_ack: FxHashMap<u64, Instant>,
 }
 
 impl Worker {
@@ -557,6 +628,7 @@ impl Worker {
         config.set_multipath_algorithm(option.multipath_algor);
         config.set_active_connection_id_limit(option.active_cid_limit);
         config.enable_encryption(!option.disable_encryption);
+        // 不在 Config 上直接设定 min_ack_delay，改由 Endpoint::set_default_min_ack_delay_us 统一配置。
         let mut tls_config = TlsConfig::new_client_config(
             ApplicationProto::convert_to_vec(&option.alpn),
             option.enable_early_data,
@@ -618,9 +690,18 @@ impl Worker {
             senders.clone(),
         );
 
+        let mut endpoint = Endpoint::new(Box::new(config), false, Box::new(handlers), sock.clone());
+        if let Some(min_ack) = option.min_ack_delay_us {
+            endpoint.set_default_min_ack_delay_us(min_ack);
+            debug!(
+                "[client] default min_ack_delay_us set via endpoint API = {}",
+                min_ack
+            );
+        }
+
         Ok(Worker {
             option,
-            endpoint: Endpoint::new(Box::new(config), false, Box::new(handlers), sock.clone()),
+            endpoint,
             poll,
             remote,
             sock,
@@ -631,11 +712,46 @@ impl Worker {
             start_time: Instant::now(),
             end_time: None,
             terminated,
+            last_immediate_ack: FxHashMap::default(),
         })
     }
 
     /// Start the worker.
     pub fn start(&mut self) -> Result<()> {
+        // Start qlog directory watcher: spawn a tail thread for each new *.qlog file.
+        if let Some(qlog_dir) = &self.option.qlog_dir {
+            let dir = qlog_dir.clone();
+            let ctx = self.client_ctx.clone();
+            thread::spawn(move || {
+                use std::collections::HashSet;
+                use std::time::Duration as StdDuration;
+                let mut seen: HashSet<String> = HashSet::new();
+                loop {
+                    if let Ok(entries) = std::fs::read_dir(&dir) {
+                        for e in entries.flatten() {
+                            if let Ok(ft) = e.file_type() {
+                                if !ft.is_file() {
+                                    continue;
+                                }
+                            }
+                            let path = e.path();
+                            if let Some(ext) = path.extension() {
+                                if ext != "qlog" {
+                                    continue;
+                                }
+                            }
+                            let pstr = path.to_string_lossy().to_string();
+                            if seen.insert(pstr.clone()) {
+                                let ctx_clone = ctx.clone();
+                                thread::spawn(move || tail_qlog_and_collect(pstr, ctx_clone));
+                            }
+                        }
+                    }
+                    std::thread::sleep(StdDuration::from_millis(300));
+                }
+            });
+        }
+
         debug!("worker start, endpoint({:?})", self.endpoint.trace_id());
 
         self.start_time = Instant::now();
@@ -701,8 +817,37 @@ impl Worker {
     }
 
     fn process(&mut self) -> Result<bool> {
-        // Process connections.
-        self.endpoint.process_connections()?;
+    // Process connections (ACK_FREQUENCY now sent via event callbacks instead of polling here).
+    self.endpoint.process_connections()?;
+
+        // Periodic IMMEDIATE_ACK sending if enabled.
+        if self.option.immediate_ack_interval > 0 {
+            let now = Instant::now();
+            let interval = std::time::Duration::from_millis(self.option.immediate_ack_interval);
+            let indexes: Vec<u64> = self.senders.borrow().keys().cloned().collect();
+            for idx in indexes {
+                if let Some(conn) = self.endpoint.conn_get_mut(idx) {
+                    let last = self.last_immediate_ack.entry(idx).or_insert_with(|| now);
+                    if now.duration_since(*last) >= interval {
+                        match conn.send_immediate_ack_frame() {
+                            Ok(_) => {
+                                *last = now;
+                                {
+                                    let mut wc = self.worker_ctx.borrow_mut();
+                                    wc.immediate_ack_sent += 1;
+                                }
+                                info!("{} IMMEDIATE_ACK queued", conn.trace_id());
+                            }
+                            Err(e) => info!(
+                                "{} IMMEDIATE_ACK send attempt failed: {:?}",
+                                conn.trace_id(),
+                                e
+                            ),
+                        }
+                    }
+                }
+            }
+        }
 
         // Check exit.
         if self.should_exit() {
@@ -775,24 +920,25 @@ impl Worker {
         loop {
             // Read datagram from the socket.
             // TODO: support recvmmsg
-            let (len, local, remote) = match self.sock.recv_from(&mut self.recv_buf, event.token())
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    if e.kind() == std::io::ErrorKind::WouldBlock {
-                        debug!("socket recv would block");
-                        break;
+            let (len, local, remote, ecn) =
+                match self.sock.recv_from(&mut self.recv_buf, event.token()) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        if e.kind() == std::io::ErrorKind::WouldBlock {
+                            debug!("socket recv would block");
+                            break;
+                        }
+                        return Err(format!("socket recv error: {:?}", e).into());
                     }
-                    return Err(format!("socket recv error: {:?}", e).into());
-                }
-            };
-            debug!("socket recv {} bytes from {:?}", len, remote);
+                };
+            debug!("socket recv {} bytes from {:?} ecn={:?}", len, remote, ecn);
 
             let pkt_buf = &mut self.recv_buf[..len];
             let pkt_info = PacketInfo {
                 src: remote,
                 dst: local,
                 time: Instant::now(),
+                ecn,
             };
 
             // Process the incoming packet.
@@ -829,11 +975,14 @@ impl Worker {
             client_ctx.end_time = self.end_time;
         }
         update_conn_stats(&mut client_ctx.conn_stats, &worker_ctx.conn_stats);
+        client_ctx.ack_freq_sent += worker_ctx.ack_freq_sent;
+        client_ctx.immediate_ack_sent += worker_ctx.immediate_ack_sent;
     }
 }
 
 /// Context used for single thread worker.
 #[derive(Default)]
+#[allow(dead_code)] // Certain fields only accessed in specific event-driven ACK_FREQUENCY code paths.
 struct WorkerContext {
     session: Option<Vec<u8>>,
     request_sent: u64,
@@ -849,12 +998,22 @@ struct WorkerContext {
     concurrent_conns: u32,
     conn_stats: ConnectionStats,
     connected: bool,
+    // AckFrequency metrics per worker
+    ack_freq_sent: u64,
+    immediate_ack_sent: u64,
+    // Event-driven ACK_FREQUENCY capability and warning flags
+    ack_freq_capable: bool,
+    ack_freq_warned: bool,
+    handshake_established_at: Option<Instant>,
 }
 
 impl WorkerContext {
     fn with_option(option: &ClientOpt) -> Self {
         let mut worker_ctx = WorkerContext {
             max_sample: option.max_sample,
+            ack_freq_capable: false,
+            ack_freq_warned: false,
+            handshake_established_at: None,
             ..Default::default()
         };
 
@@ -1396,6 +1555,14 @@ impl TransportHandler for WorkerHandler {
     fn on_conn_created(&mut self, conn: &mut Connection) {
         debug!("{} connection is created", conn.trace_id());
 
+        // 现在由 Endpoint 层预先配置，无需逐连接调用 enable_ack_frequency。
+        if self.option.min_ack_delay_us.is_none() && self.option.ack_freq_threshold.is_some() {
+            warn!(
+                "{} ack-freq-* options set but --min-ack-delay-us missing; won't send ACK_FREQUENCY",
+                conn.trace_id()
+            );
+        }
+
         if let Some(keylog_file) = &self.option.keylog_file {
             if let Ok(file) = std::fs::OpenOptions::new()
                 .create(true)
@@ -1437,6 +1604,12 @@ impl TransportHandler for WorkerHandler {
             conn.trace_id(),
             conn.is_resumed()
         );
+        debug!(
+            "{} attempting ACK_FREQUENCY? threshold_set={} min_ack_delay_cfg={}",
+            conn.trace_id(),
+            self.option.ack_freq_threshold.is_some(),
+            self.option.min_ack_delay_us.is_some()
+        );
         {
             let mut worker_ctx = self.worker_ctx.borrow_mut();
             worker_ctx.conn_handshake_success += 1;
@@ -1465,6 +1638,34 @@ impl TransportHandler for WorkerHandler {
         }
 
         self.try_new_request_sender(conn);
+
+        // Fallback event: if capability already known (min_ack_delay parsed earlier) and user requested threshold.
+        if self.option.ack_freq_threshold.is_some()
+            && !self.option.enable_multipath
+            && self.worker_ctx.borrow().ack_freq_sent == 0
+            && conn.peer_supports_ack_frequency()
+        {
+            let threshold = self.option.ack_freq_threshold.unwrap() as u64;
+            let max_delay_us = self.option.ack_freq_max_delay.unwrap_or(25_000);
+            let reordering = self.option.ack_freq_reordering.unwrap_or(0) as u64;
+            match conn.send_ack_frequency_frame(
+                threshold,
+                std::time::Duration::from_micros(max_delay_us),
+                reordering,
+            ) {
+                Ok(_) => {
+                    self.worker_ctx.borrow_mut().ack_freq_sent += 1;
+                    info!(
+                        "{} 事件驱动发送 ACK_FREQUENCY(threshold={}, max_delay={}us, reordering={}) (on_conn_established)",
+                        conn.trace_id(), threshold, max_delay_us, reordering
+                    );
+                }
+                Err(e) => debug!(
+                    "{} 事件驱动发送 ACK_FREQUENCY 失败(on_conn_established): {:?}",
+                    conn.trace_id(), e
+                ),
+            }
+        }
     }
 
     fn on_conn_closed(&mut self, conn: &mut Connection) {
@@ -1541,6 +1742,35 @@ impl TransportHandler for WorkerHandler {
     }
 
     fn on_new_token(&mut self, _conn: &mut Connection, _token: Vec<u8>) {}
+
+    fn on_peer_ack_frequency_capable(&mut self, conn: &mut Connection) {
+        // Primary trigger: as soon as capability event arrives AND connection established.
+        if !conn.is_established() { return; }
+        if self.option.enable_multipath { return; }
+        if self.worker_ctx.borrow().ack_freq_sent > 0 { return; }
+        if let Some(thr) = self.option.ack_freq_threshold {
+            let threshold = thr as u64;
+            let max_delay_us = self.option.ack_freq_max_delay.unwrap_or(25_000);
+            let reordering = self.option.ack_freq_reordering.unwrap_or(0) as u64;
+            match conn.send_ack_frequency_frame(
+                threshold,
+                std::time::Duration::from_micros(max_delay_us),
+                reordering,
+            ) {
+                Ok(_) => {
+                    self.worker_ctx.borrow_mut().ack_freq_sent += 1;
+                    info!(
+                        "{} 事件驱动发送 ACK_FREQUENCY(threshold={}, max_delay={}us, reordering={}) (on_peer_ack_frequency_capable)",
+                        conn.trace_id(), threshold, max_delay_us, reordering
+                    );
+                }
+                Err(e) => debug!(
+                    "{} 事件驱动发送 ACK_FREQUENCY 失败(on_peer_ack_frequency_capable): {:?}",
+                    conn.trace_id(), e
+                ),
+            }
+        }
+    }
 }
 
 fn process_connect_address(option: &mut ClientOpt) {
@@ -1615,9 +1845,81 @@ fn main() -> Result<()> {
 
     // Create client.
     let mut client = Client::new(option)?;
-
-    // Start client.
     client.start();
-
     Ok(())
+}
+
+// Tail a qlog file and collect ACK / ACK_FREQUENCY statistics into shared ClientContext.
+fn tail_qlog_and_collect(path: String, shared: Arc<Mutex<ClientContext>>) {
+    use std::fs::File;
+    use std::io::{Read, Seek, SeekFrom};
+    use std::collections::HashMap as StdHashMap;
+    let sleep_dur = std::time::Duration::from_millis(200);
+    let mut f = match File::open(&path) { Ok(f) => f, Err(_) => return };
+    let mut buf = Vec::with_capacity(16 * 1024);
+    let mut pos = 0u64;
+    let mut line = String::new();
+    let mut last_ack_time_ms_per_file: StdHashMap<String, u64> = StdHashMap::new();
+    let file_key = path.clone();
+    loop {
+        if let Ok(meta) = f.metadata() {
+            if meta.len() < pos { pos = 0; }
+        }
+    if let Err(e) = f.seek(SeekFrom::Start(pos)) { debug!("qlog seek err: {:?}", e); break; }
+        buf.clear();
+        match f.read_to_end(&mut buf) { Ok(_) => {}, Err(e) => { debug!("qlog read err: {:?}", e); break; } }
+        if buf.is_empty() { thread::sleep(sleep_dur); continue; }
+        let new_bytes = buf.len() as u64;
+        let mut slice = &buf[..];
+        while let Some(idx) = slice.iter().position(|b| *b == b'\n') {
+            let (one, rest) = slice.split_at(idx);
+            slice = &rest[1..];
+            line.clear();
+            if let Ok(s) = std::str::from_utf8(one) { line.push_str(s); }
+            if line.trim().is_empty() { continue; }
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
+                if let Some(name) = json.get("name").and_then(|v| v.as_str()) {
+                    if let Some(data) = json.get("data") {
+                        let is_rx = name == "quic:packet_received";
+                        if is_rx || name == "quic:packet_sent" {
+                            if let Some(frames) = data.get("frames").and_then(|f| f.as_array()) {
+                                for fr in frames {
+                                    if let Some(ftype) = fr.get("frame_type").and_then(|v| v.as_str()) {
+                                        if is_rx {
+                                            if ftype == "ack" {
+                                                let time_val = json.get("time").and_then(|t| t.as_f64()).unwrap_or(0.0);
+                                                let mut t_ms = time_val as u64;
+                                                if t_ms > 10_000_000 { t_ms /= 1000; }
+                                                let mut guard = shared.lock().unwrap();
+                                                guard.ack_frames_seen += 1;
+                                                let entry = last_ack_time_ms_per_file.entry(file_key.clone()).or_insert(t_ms);
+                                                if t_ms >= *entry {
+                                                    let delta_ms = t_ms - *entry;
+                                                    if delta_ms > 0 {
+                                                        let delta_us = delta_ms * 1000;
+                                                        if guard.ack_intervals_us.len() < 50_000 { guard.ack_intervals_us.push(delta_us); }
+                                                    }
+                                                    *entry = t_ms;
+                                                } else { *entry = t_ms; }
+                                            } else if ftype == "ack_frequency" {
+                                                let mut guard = shared.lock().unwrap();
+                                                guard.ack_frequency_frames_seen += 1;
+                                                guard.ack_frequency_frames_rx += 1;
+                                            }
+                                        } else if ftype == "ack_frequency" {
+                                            let mut guard = shared.lock().unwrap();
+                                            guard.ack_frequency_frames_seen += 1;
+                                            guard.ack_frequency_frames_tx += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        pos += new_bytes;
+        thread::sleep(sleep_dur);
+    }
 }

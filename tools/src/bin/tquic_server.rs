@@ -257,6 +257,23 @@ pub struct ServerOpt {
     /// Disable encryption on 1-RTT packets.
     #[clap(long, help_heading = "Misc")]
     pub disable_encryption: bool,
+
+    // ================= ACK FREQUENCY Demo (single-path only) =================
+    /// ACK_FREQUENCY: Ack-eliciting threshold N (encoded as N+1 internally). Disabled if not set.
+    #[clap(long, value_name = "NUM", help_heading = "AckFrequency")]
+    pub ack_freq_threshold: Option<u32>,
+
+    /// ACK_FREQUENCY: Requested max ack delay in microseconds (default 25000 if omitted when threshold set).
+    #[clap(long, value_name = "TIME", help_heading = "AckFrequency")]
+    pub ack_freq_max_delay: Option<u64>,
+
+    /// ACK_FREQUENCY: Reordering threshold in packets (0 disables reordering trigger, 1 = any gap, >1 = gap >= threshold).
+    #[clap(long, value_name = "NUM", help_heading = "AckFrequency")]
+    pub ack_freq_reordering: Option<u32>,
+
+    /// Advertise min_ack_delay transport parameter (microseconds) to enable sending/receiving ACK_FREQUENCY/IMMEDIATE_ACK.
+    #[clap(long, value_name = "US", help_heading = "AckFrequency")]
+    pub min_ack_delay_us: Option<u64>,
 }
 
 const MAX_BUF_SIZE: usize = 65536;
@@ -274,6 +291,12 @@ struct Server {
 
     /// Packet read buffer
     recv_buf: Vec<u8>,
+
+    // ECN counters
+    ecn_cnt_ect0: u64,
+    ecn_cnt_ect1: u64,
+    ecn_cnt_ce: u64,
+    last_ecn_log: Instant,
 }
 
 impl Server {
@@ -300,6 +323,13 @@ impl Server {
         config.set_multipath_algorithm(option.multipath_algor);
         config.set_active_connection_id_limit(option.active_cid_limit);
         config.enable_encryption(!option.disable_encryption);
+        // 延迟到 Endpoint 创建后通过新接口 set_default_min_ack_delay_us 配置 min_ack_delay。
+        // 这里仅做占位日志，实际设置见后面 endpoint 初始化之后。
+        if option.min_ack_delay_us.is_some() {
+            log::debug!("[server] will configure default min_ack_delay_us via endpoint API");
+        } else {
+            log::info!("[server] min_ack_delay_us not set");
+        }
 
         if let Some(address_token_key) = &option.address_token_key {
             let address_token_key = convert_address_token_key(address_token_key);
@@ -345,11 +375,24 @@ impl Server {
         let handlers = ServerHandler::new(option)?;
         let sock = Rc::new(QuicSocket::new(&option.listen, registry)?);
 
+        let mut endpoint = Endpoint::new(Box::new(config), true, Box::new(handlers), sock.clone());
+        if let Some(min_ack) = option.min_ack_delay_us {
+            endpoint.set_default_min_ack_delay_us(min_ack);
+            info!(
+                "[server] default min_ack_delay_us set via endpoint API = {}",
+                min_ack
+            );
+        }
+
         Ok(Server {
-            endpoint: Endpoint::new(Box::new(config), true, Box::new(handlers), sock.clone()),
+            endpoint,
             poll,
             sock,
             recv_buf: vec![0u8; MAX_BUF_SIZE],
+            ecn_cnt_ect0: 0,
+            ecn_cnt_ect1: 0,
+            ecn_cnt_ce: 0,
+            last_ecn_log: Instant::now(),
         })
     }
 
@@ -357,26 +400,40 @@ impl Server {
         loop {
             // Read datagram from the socket.
             // TODO: support recvmmsg
-            let (len, local, remote) = match self.sock.recv_from(&mut self.recv_buf, event.token())
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    if e.kind() == std::io::ErrorKind::WouldBlock {
-                        debug!("socket recv would block");
-                        break;
+            let (len, local, remote, ecn) =
+                match self.sock.recv_from(&mut self.recv_buf, event.token()) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        if e.kind() == std::io::ErrorKind::WouldBlock {
+                            debug!("socket recv would block");
+                            break;
+                        }
+                        return Err(format!("socket recv error: {:?}", e).into());
                     }
-                    return Err(format!("socket recv error: {:?}", e).into());
+                };
+            debug!("socket recv {} bytes from {:?} ecn={:?}", len, remote, ecn);
+            if let Some(code) = ecn {
+                match code & 0x03 {
+                    0b10 => self.ecn_cnt_ect0 += 1,
+                    0b01 => self.ecn_cnt_ect1 += 1,
+                    0b11 => self.ecn_cnt_ce += 1,
+                    _ => {}
                 }
-            };
-            debug!("socket recv {} bytes from {:?}", len, remote);
-
+            }
+            if self.last_ecn_log.elapsed().as_secs() >= 5 {
+                info!(
+                    "[server] ECN stats: ECT0={} ECT1={} CE={}",
+                    self.ecn_cnt_ect0, self.ecn_cnt_ect1, self.ecn_cnt_ce
+                );
+                self.last_ecn_log = Instant::now();
+            }
             let pkt_buf = &mut self.recv_buf[..len];
             let pkt_info = PacketInfo {
                 src: remote,
                 dst: local,
                 time: Instant::now(),
+                ecn,
             };
-
             // Process the incoming packet.
             match self.endpoint.recv(pkt_buf, &pkt_info) {
                 Ok(_) => {}
@@ -944,18 +1001,19 @@ impl ConnectionHandler {
 struct ServerHandler {
     /// File root directory.
     root: String,
-
     /// HTTP connections
     conns: FxHashMap<u64, ConnectionHandler>,
-
     /// Read buffer
     buf: Vec<u8>,
-
     /// SSL key logger
     keylog: Option<File>,
-
     /// Qlog directory
     qlog_dir: Option<String>,
+    // AckFrequency config
+    ack_freq_threshold: Option<u32>,
+    ack_freq_max_delay: Option<u64>,
+    ack_freq_reordering: Option<u32>,
+    min_ack_delay_us: Option<u64>,
 }
 
 impl ServerHandler {
@@ -969,13 +1027,16 @@ impl ServerHandler {
             ),
             None => None,
         };
-
         Ok(Self {
             root: option.root.clone(),
             buf: vec![0; MAX_BUF_SIZE],
             conns: FxHashMap::default(),
             keylog,
             qlog_dir: option.qlog_dir.clone(),
+            ack_freq_threshold: option.ack_freq_threshold,
+            ack_freq_max_delay: option.ack_freq_max_delay,
+            ack_freq_reordering: option.ack_freq_reordering,
+            min_ack_delay_us: option.min_ack_delay_us,
         })
     }
 
@@ -1011,6 +1072,14 @@ impl TransportHandler for ServerHandler {
             }
         }
 
+        // 现在通过 Endpoint::set_default_min_ack_delay_us 预先在握手前配置，无需逐连接调用。
+        if self.min_ack_delay_us.is_none() && self.ack_freq_threshold.is_some() {
+            warn!(
+                "{} ack-freq-* options set but --min-ack-delay-us missing; won't send ACK_FREQUENCY",
+                conn.trace_id()
+            );
+        }
+
         // The qlog of each server connection is written to a different log file
         // in JSON-SEQ format.
         //
@@ -1040,6 +1109,32 @@ impl TransportHandler for ServerHandler {
     fn on_conn_established(&mut self, conn: &mut Connection) {
         debug!("{} connection is established", conn.trace_id());
         self.try_new_conn_handler(conn);
+        if let Some(threshold_cfg) = self.ack_freq_threshold {
+            if conn.is_multipath() {
+                warn!(
+                    "{} ACK_FREQUENCY demo 仅支持单路径, 已启用多路径则不发送",
+                    conn.trace_id()
+                );
+            } else {
+                let threshold = threshold_cfg as u64;
+                let max_delay_us = self.ack_freq_max_delay.unwrap_or(25_000);
+                let reordering = self.ack_freq_reordering.unwrap_or(0) as u64;
+                match conn.send_ack_frequency_frame(
+                    threshold,
+                    std::time::Duration::from_micros(max_delay_us),
+                    reordering,
+                ) {
+                    Ok(_) => info!(
+                        "{} 发送 ACK_FREQUENCY(threshold={}, max_delay={}us, reordering={})",
+                        conn.trace_id(),
+                        threshold,
+                        max_delay_us,
+                        reordering
+                    ),
+                    Err(e) => warn!("{} 发送 ACK_FREQUENCY 失败: {:?}", conn.trace_id(), e),
+                }
+            }
+        }
     }
 
     fn on_conn_closed(&mut self, conn: &mut Connection) {

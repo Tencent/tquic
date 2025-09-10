@@ -60,6 +60,22 @@ pub struct Recovery {
     /// It is used for PTO calculation.
     pub max_ack_delay: Duration,
 
+    /// The minimum amount of time in microseconds by which the peer can delay
+    /// sending acknowledgments. Used for validating ACK_FREQUENCY frames.
+    /// See draft-ietf-quic-ack-frequency-latest.
+    pub min_ack_delay: u64,
+
+    /// The maximum number of ack-eliciting packets received before sending an ACK.
+    /// This value may be updated when processing ACK_FREQUENCY frames.
+    pub ack_eliciting_threshold: u64,
+
+    /// The reordering threshold (in packets) from ACK_FREQUENCY frames.
+    /// Semantics:
+    ///   - Default (no ACK_FREQUENCY received) => 1 (any reordering gap triggers immediate ACK)
+    ///   - Value = 0 => disable reordering-triggered immediate ACK
+    ///   - Value = N (>0) => immediate ACK when a reordering gap >= N is observed
+    pub reordering_threshold: u64,
+
     /// The validated maximum size of outgoing UDP payloads in bytes.
     pub max_datagram_size: usize,
 
@@ -121,13 +137,26 @@ pub struct Recovery {
 
     /// Trace id.
     trace_id: String,
+
+    /// In-flight ACK_FREQUENCY frames' requested_max_ack_delay values (microseconds) keyed by sequence number.
+    /// Used per draft-ietf-quic-ack-frequency-11 §7 to apply the maximum of current and in-flight values
+    /// when computing PTO, avoiding spurious PTO after decreasing max_ack_delay.
+    pub inflight_ack_freq: Vec<(
+        u64, /*sequence_number*/
+        u64, /*requested_max_ack_delay_us*/
+    )>,
+    /// The highest ACK_FREQUENCY sequence number we have locally sent (for convenience when pruning lost ones).
+    pub last_sent_ack_freq_seq: u64,
 }
 
 impl Recovery {
     pub(super) fn new(conf: &RecoveryConfig) -> Self {
         Recovery {
             max_ack_delay: conf.max_ack_delay,
+            min_ack_delay: 0, // Default value, will be updated from peer's transport parameters
             max_datagram_size: crate::DEFAULT_SEND_UDP_PAYLOAD_SIZE,
+            ack_eliciting_threshold: conf.ack_eliciting_threshold,
+            reordering_threshold: 1, // Default: 1 (immediate ACK on any detected reordering gap). 0 disables reordering-triggered ACK.
             pto_linear_factor: conf.pto_linear_factor,
             max_pto: conf.max_pto,
             pto_count: 0,
@@ -146,6 +175,8 @@ impl Recovery {
             #[cfg(feature = "qlog")]
             last_metrics: RecoveryMetrics::default(),
             trace_id: String::from(""),
+            inflight_ack_freq: Vec::new(),
+            last_sent_ack_freq_seq: 0,
         }
     }
 
@@ -729,6 +760,17 @@ impl Recovery {
     ) -> (Option<Instant>, SpaceId) {
         let mut duration = self.calculate_pto();
 
+        // Effective max_ack_delay per draft §7: use max(current, all in-flight) unless we later decide to ignore it.
+        let mut effective_max_ack_delay = self.max_ack_delay;
+        if !self.inflight_ack_freq.is_empty() {
+            if let Some((_, max_us)) = self.inflight_ack_freq.iter().max_by_key(|(_, us)| *us) {
+                let candidate = Duration::from_micros(*max_us);
+                if candidate > effective_max_ack_delay {
+                    effective_max_ack_delay = candidate;
+                }
+            }
+        }
+
         // Arm PTO from now when there are no ack-eliciting packets inflight.
         if self.ack_eliciting_in_flight == 0 {
             if handshake_status.derived_handshake_keys {
@@ -762,8 +804,33 @@ impl Recovery {
                 if !handshake_status.completed {
                     return (pto_timeout, pto_space);
                 }
-                // Include max_ack_delay and backoff for Application Data.
-                duration = self.pto_with_ack_delay(duration);
+                // Ack-Eliciting Threshold optimization (draft §7): if ack-eliciting in-flight count exceeds
+                // threshold AND reordering_threshold > 0, we MAY exclude max_ack_delay from PTO.
+                // Otherwise include effective_max_ack_delay.
+                let mut include_ack_delay = true;
+                let ack_threshold = self.ack_eliciting_threshold;
+                if space.ack_eliciting_in_flight > ack_threshold && self.reordering_threshold > 0 {
+                    include_ack_delay = false;
+                }
+                // If reordering_threshold == 0 MUST include (and ensure PTO > peer max_ack_delay) per spec.
+                if self.reordering_threshold == 0 {
+                    include_ack_delay = true;
+                }
+                if include_ack_delay {
+                    // Recompute pto_with_ack_delay using effective_max_ack_delay rather than stored self.max_ack_delay.
+                    let backoff_factor = self
+                        .pto_count
+                        .saturating_sub(self.pto_linear_factor as usize);
+                    let ack_component =
+                        effective_max_ack_delay * 2_u32.saturating_pow(backoff_factor as u32);
+                    let candidate = duration + ack_component;
+                    duration = cmp::min(candidate, self.max_pto);
+                    // Ensure (for reordering_threshold==0) PTO strictly > effective_max_ack_delay to reduce premature PTO risk.
+                    if self.reordering_threshold == 0 && duration <= effective_max_ack_delay {
+                        duration =
+                            cmp::min(effective_max_ack_delay + TIMER_GRANULARITY, self.max_pto);
+                    }
+                }
             }
 
             let new_time = space
@@ -826,6 +893,30 @@ impl Recovery {
                 self.ack_eliciting_in_flight = self.ack_eliciting_in_flight.saturating_sub(1);
             }
         }
+    }
+
+    /// Update ACK frequency parameters from an ACK_FREQUENCY frame.
+    ///
+    /// This method updates the acknowledgment strategy parameters based on
+    /// the values received in an ACK_FREQUENCY frame.
+    pub fn update_ack_frequency_params(
+        &mut self,
+        ack_eliciting_threshold: u64,
+        requested_max_ack_delay: Duration,
+        reordering_threshold: u64,
+    ) {
+        // Update our acknowledgment parameters
+        self.ack_eliciting_threshold = ack_eliciting_threshold;
+        self.max_ack_delay = requested_max_ack_delay;
+        self.reordering_threshold = reordering_threshold;
+
+        trace!(
+            "{} ACK frequency parameters updated: threshold={}, max_delay={:?}, reordering={}",
+            self.trace_id,
+            ack_eliciting_threshold,
+            requested_max_ack_delay,
+            reordering_threshold
+        );
     }
 
     /// Update maximum datagram size
@@ -1063,6 +1154,33 @@ impl Recovery {
             trigger: None,
         };
         qlog.add_event_data(Instant::now(), ev_data).ok();
+    }
+
+    #[cfg(test)]
+    /// Test helper: compute (include_ack_delay, effective_max_ack_delay) decision for a given
+    /// ack-eliciting in-flight count in the Application Data space using draft §7 logic.
+    pub fn test_should_include_ack_delay(&self, data_space_ack_in_flight: u64) -> (bool, Duration) {
+        // Effective max_ack_delay = max(current, all in-flight requested values)
+        let mut effective = self.max_ack_delay;
+        if !self.inflight_ack_freq.is_empty() {
+            if let Some((_, max_us)) = self.inflight_ack_freq.iter().max_by_key(|(_, us)| *us) {
+                let cand = Duration::from_micros(*max_us);
+                if cand > effective {
+                    effective = cand;
+                }
+            }
+        }
+        // Base include rule
+        let mut include = true;
+        if data_space_ack_in_flight > self.ack_eliciting_threshold && self.reordering_threshold > 0
+        {
+            include = false; // MAY exclude
+        }
+        if self.reordering_threshold == 0 {
+            // MUST include when reordering threshold disabled
+            include = true;
+        }
+        (include, effective)
     }
 }
 
@@ -1652,6 +1770,44 @@ mod tests {
 
         // PTO reach the upper limit.
         assert_eq!(calculate_pto_with_count(100), (MAX_PTO_UT, MAX_PTO_UT));
+
+        Ok(())
+    }
+
+    #[test]
+    fn ack_frequency_thresholds_defaults_and_update() -> Result<()> {
+        // Test default values of RecoveryConfig
+        let conf = new_test_recovery_config();
+        let recovery = Recovery::new(&conf);
+
+        // Verify initial values in Recovery struct
+        // According to draft-ietf-quic-ack-frequency, ack_eliciting_threshold=1 means send ACK after receiving 2 ack-eliciting packets
+        assert_eq!(
+            recovery.ack_eliciting_threshold,
+            conf.ack_eliciting_threshold
+        );
+
+        // According to draft-ietf-quic-ack-frequency, reordering_threshold=1 means send ACK immediately when 1 reordered packet is detected
+        assert_eq!(recovery.reordering_threshold, 1);
+
+        // Test update_ack_frequency_params method updates these values
+        let mut recovery = Recovery::new(&conf);
+        let new_ack_eliciting_threshold = 5;
+        let new_max_ack_delay = Duration::from_millis(50);
+        let new_reordering_threshold = 3;
+
+        recovery.update_ack_frequency_params(
+            new_ack_eliciting_threshold,
+            new_max_ack_delay,
+            new_reordering_threshold,
+        );
+
+        assert_eq!(
+            recovery.ack_eliciting_threshold,
+            new_ack_eliciting_threshold
+        );
+        assert_eq!(recovery.max_ack_delay, new_max_ack_delay);
+        assert_eq!(recovery.reordering_threshold, new_reordering_threshold);
 
         Ok(())
     }

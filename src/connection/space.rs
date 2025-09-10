@@ -92,6 +92,13 @@ pub struct PacketNumSpace {
     /// Highest received ack-eliciting packet number.
     pub largest_rx_ack_eliciting_pkt_num: u64,
 
+    /// Largest contiguous received packet number (all packets <= this have been seen).
+    /// Used to compute the smallest unreported missing packet efficiently for
+    /// reordering threshold logic (ACK_FREQUENCY draft §6.2). Starts at u64::MAX
+    /// to indicate 'unset'. Once the first packet arrives it becomes that pkt number
+    /// and only advances while the next immediate consecutive packet numbers are present.
+    pub largest_contiguous_rx: u64,
+
     /// The packet numbers to acknowledge.
     pub recv_pkt_num_need_ack: RangeSet,
 
@@ -103,6 +110,8 @@ pub struct PacketNumSpace {
 
     /// Number of ack-eliciting packets received since last ACK was sent
     pub ack_eliciting_pkts_since_last_sent_ack: u64,
+    /// Packet number of last packet that triggered a reordering-based immediate ACK
+    pub last_reorder_immediate_ack_pn: u64,
 
     /// Timer used for sending a delayed ACK frame.
     pub ack_timer: Option<Instant>,
@@ -142,6 +151,10 @@ pub struct PacketNumSpace {
 
     /// Packet number space for application data
     pub is_data: bool,
+
+    /// Last observed ECN CE (Congestion Experienced) state for edge/level trigger logic.
+    /// false => last packet not CE or no ECN info; true => last packet CE.
+    pub last_was_ecn_ce: bool,
 }
 
 impl PacketNumSpace {
@@ -157,10 +170,12 @@ impl PacketNumSpace {
             largest_rx_pkt_time: Instant::now(),
             largest_rx_non_probing_pkt_num: 0,
             largest_rx_ack_eliciting_pkt_num: 0,
+            largest_contiguous_rx: u64::MAX,
             recv_pkt_num_need_ack: RangeSet::new(crate::MAX_ACK_RANGES),
             recv_pkt_num_win: SeqNumWindow::default(),
             need_send_ack: false,
             ack_eliciting_pkts_since_last_sent_ack: 0,
+            last_reorder_immediate_ack_pn: 0,
             ack_timer: None,
             sent: VecDeque::new(),
             lost: Vec::new(),
@@ -173,6 +188,7 @@ impl PacketNumSpace {
             bytes_in_flight: 0,
             ack_eliciting_in_flight: 0,
             is_data: id != SpaceId::Initial && id != SpaceId::Handshake,
+            last_was_ecn_ce: false,
         }
     }
 

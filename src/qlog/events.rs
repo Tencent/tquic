@@ -1107,6 +1107,8 @@ pub enum QuicFrameTypeName {
     ApplicationClose,
     HandshakeDone,
     Datagram,
+    AckFrequency,
+    ImmediateAck,
     Unknown,
 }
 
@@ -1217,6 +1219,15 @@ pub enum QuicFrame {
         length: u64,
         raw: Option<String>,
     },
+
+    AckFrequency {
+        sequence_number: u64,
+        ack_eliciting_threshold: u64,
+        requested_max_ack_delay: u64,
+        reordering_threshold: u64,
+    },
+
+    ImmediateAck,
 
     Unknown {
         raw_frame_type: u64,
@@ -1700,5 +1711,57 @@ pub mod tests {
   }
 }"#
         );
+    }
+
+    #[test]
+    fn event_importance_mapping() {
+        // Choose a few representative variants covering different importance categories
+        let ev_extra = Event::new(1.0, EventData::ConnectivitySpinBitUpdated { state: true });
+        let ev_normal = Event::new(
+            2.0,
+            EventData::ConnectivityConnectionStarted {
+                ip_version: Some("v4".into()),
+                src_ip: "127.0.0.1".into(),
+                dst_ip: "127.0.0.1".into(),
+                protocol: Some("udp".into()),
+                src_port: Some(4433),
+                dst_port: Some(4434),
+                src_cid: Some("abcd".into()),
+                dst_cid: Some("efgh".into()),
+            },
+        );
+        let ev_core = Event::new(
+            3.0,
+            EventData::QuicPacketSent {
+                header: new_test_pkt_hdr(PacketType::Initial),
+                frames: None,
+                is_coalesced: None,
+                retry_token: None,
+                stateless_reset_token: None,
+                supported_versions: None,
+                raw: None,
+                datagram_id: None,
+                is_mtu_probe_packet: None,
+                trigger: None,
+            },
+        );
+        // Importance ordering: Core(0) < Base(1) < Extra(2) numerically (lower is more important)
+        assert!(matches!(ev_extra.importance(), EventImportance::Base));
+        assert!(matches!(ev_normal.importance(), EventImportance::Base));
+        assert!(matches!(ev_core.importance(), EventImportance::Core));
+    }
+
+    #[test]
+    fn event_eq_and_new_defaults() {
+        let e1 = Event::new(10.0, EventData::ConnectivitySpinBitUpdated { state: false });
+        let mut e2 = e1.clone();
+        assert_eq!(e1, e2);
+        // Changing time changes equality
+        e2.time = 11.0;
+        assert_ne!(e1, e2);
+        // Changing group_id should also flip equality
+        let mut e3 = e1.clone();
+        e3.group_id = Some("grp".into());
+        assert_ne!(e1, e3);
     }
 }
