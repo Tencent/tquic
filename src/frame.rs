@@ -12,15 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use bytes::Bytes;
-
 use crate::codec;
 use crate::codec::Decoder;
 use crate::codec::Encoder;
 use crate::error::Error;
+use crate::frame;
 use crate::packet::PacketType;
 #[cfg(feature = "qlog")]
 use crate::qlog;
+use crate::qlog::events::DataRecipient;
 #[cfg(feature = "qlog")]
 use crate::qlog::events::ErrorSpace;
 #[cfg(feature = "qlog")]
@@ -31,6 +31,8 @@ use crate::ranges::RangeSet;
 use crate::token::ResetToken;
 use crate::ConnectionId;
 use crate::Result;
+use bytes::Bytes;
+use log::info;
 
 /// The largest offset delivered on a stream cannot exceed 2^62-1, as it is not
 /// possible to provide flow control credit for that data.
@@ -39,7 +41,8 @@ pub(crate) const MAX_STREAM_SIZE: u64 = 1 << 62;
 pub(crate) const MAX_CRYPTO_OVERHEAD: usize = 8;
 // Type (1) + Stream ID (8) + Offset (8) + Length (2)
 pub(crate) const MAX_STREAM_OVERHEAD: usize = 19;
-
+///Type (1) + length (2)
+pub(crate) const MAX_DATAGRAM_OVERHEAD: usize = 3;
 /// The QUIC frame is a unit of structured protocol information. Frames are
 /// contained in QUIC packets.
 #[derive(Clone, PartialEq, Eq)]
@@ -161,6 +164,10 @@ pub enum Frame {
     /// confirmation of the handshake to the client.
     HandshakeDone,
 
+    /// DATAGRAM frame (type=0x30 and 0x31) is used to transmit application data
+    /// in an unreliable manner.
+    Datagram { length: Option<usize>, data: Bytes },
+
     /// PATH_ABANDON frame informs the peer to abandon a path.
     /// See draft-ietf-quic-multipath-05.
     PathAbandon {
@@ -187,6 +194,7 @@ impl Frame {
         let len = b.len();
 
         let frame_type = b.read_varint()?;
+
         let frame = match frame_type {
             0x00 => {
                 let mut len = 1;
@@ -347,6 +355,25 @@ impl Frame {
 
             0x1e => Frame::HandshakeDone,
 
+            0x30..=0x31 => {
+                let first = frame_type as u8;
+                let length: Option<usize> = if first & 0x01 != 0 {
+                    Some(b.read_varint()? as usize)
+                } else {
+                    None
+                };
+                if let Some(len) = length {
+                    if len > b.len() {
+                        return Err(Error::BufferTooShort);
+                    }
+                }
+                let start = buf.len() - b.len();
+                let actual_len = length.unwrap_or(b.len());
+                let data = buf.slice(start..start + actual_len);
+                b.skip(actual_len)?;
+                Frame::Datagram { length, data }
+            }
+
             0x15228c05 => Frame::PathAbandon {
                 dcid_seq_num: b.read_varint()?,
                 error_code: b.read_varint()?,
@@ -363,6 +390,8 @@ impl Frame {
         };
 
         if !Frame::validate_frame(pkt, &frame) {
+            info!("packet type: {:?}", pkt);
+            info!("frame type: {}", frame_type);
             return Err(Error::InvalidPacket);
         }
 
@@ -587,6 +616,15 @@ impl Frame {
                 b.write_varint(0x1e)?;
             }
 
+            Frame::Datagram { length, data } => {
+                let frame_type: u8 = if length.is_some() { 0x31 } else { 0x30 };
+                b.write_varint(frame_type.into())?;
+                if let Some(l) = length {
+                    b.write_varint(*l as u64)?;
+                }
+                b.write(data.as_ref())?;
+            }
+
             Frame::PathAbandon {
                 dcid_seq_num,
                 error_code,
@@ -742,6 +780,15 @@ impl Frame {
             }
 
             Frame::HandshakeDone => 1,
+
+            Frame::Datagram { length, data } => {
+                let length_len = match length {
+                    Some(l) => codec::encode_varint_len(*l as u64),
+                    None => 0,
+                };
+
+                1 + length_len + data.len()
+            }
 
             Frame::PathAbandon {
                 dcid_seq_num,
@@ -921,6 +968,11 @@ impl Frame {
             },
 
             Frame::HandshakeDone => QuicFrame::HandshakeDone,
+
+            Frame::Datagram { length, .. } => QuicFrame::Datagram {
+                length: length.map(|l| l as u64),
+                raw: None,
+            },
 
             Frame::PathAbandon { .. } => QuicFrame::Unknown {
                 raw_frame_type: 0x15228c05,
@@ -1112,6 +1164,12 @@ impl std::fmt::Debug for Frame {
                     "PATH_STATUS dcid_seq_num={dcid_seq_num:x} seq_num={seq_num:x} status={status:x}",
                 )?;
             }
+
+            Frame::Datagram { length, data } => {
+                let frame_type = if length.is_some() { 0x31 } else { 0x30 };
+                let len = length.unwrap_or(data.len());
+                write!(f, "DATAGRAM frame_type=0x{:02x} len={}", frame_type, len)?;
+            }
         }
 
         Ok(())
@@ -1143,6 +1201,16 @@ pub fn stream_header_wire_len(stream_id: u64, offset: u64) -> usize {
     1 + codec::encode_varint_len(stream_id) + codec::encode_varint_len(offset) + 2
 }
 
+/// Return the encoded length of DATAGRAM frame header.
+pub fn datagram_header_wire_len(length: Option<usize>) -> usize {
+    // Note: datagram_header encode length field in varint bytes.
+    let length_len = match length {
+        Some(l) => codec::encode_varint_len(l as u64),
+        None => 0,
+    };
+    1 + length_len
+}
+
 /// Encode header of STREAM frame to the given buffer.
 pub fn encode_stream_header(
     stream_id: u64,
@@ -1162,6 +1230,17 @@ pub fn encode_stream_header(
     b.write_varint(offset)?;
     b.write_varint_with_len(length, 2)?;
 
+    Ok(len - b.len())
+}
+pub fn encode_datagram_header(length: Option<usize>, mut b: &mut [u8]) -> Result<usize> {
+    let len = b.len();
+    let frame_type: u8 = if length.is_some() { 0x31 } else { 0x30 };
+    if let Some(l) = length {
+        b.write_varint(u64::from(frame_type))?;
+        b.write_varint(l as u64)?;
+    } else {
+        b.write_varint(u64::from(frame_type))?;
+    }
     Ok(len - b.len())
 }
 
@@ -1254,7 +1333,7 @@ fn parse_ack_frame(frame_type: u64, mut b: &[u8]) -> Result<(Frame, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::BytesMut;
+    use bytes::{buf, BytesMut};
 
     #[test]
     fn paddings() -> Result<()> {
@@ -1793,6 +1872,55 @@ mod tests {
     }
 
     #[test]
+    fn datagram() -> Result<()> {
+        let data = Bytes::copy_from_slice(&[7; 80]);
+
+        let frame = Frame::Datagram {
+            length: Some(80),
+            data: data.clone(),
+        };
+        assert_eq!(format!("{:?}", &frame), "DATAGRAM frame_type=0x31 len=80");
+        let mut buf = [0; 128];
+        let len = frame.to_bytes(&mut buf[..])?;
+        assert_eq!(len, frame.wire_len());
+        assert_eq!(len, 83); // 1 byte for frame type + 2 bytes for length (80>63) + 80 bytes for data
+        assert_eq!(datagram_header_wire_len(Some(80)), 3);
+        let mut buf = Bytes::copy_from_slice(&buf);
+        assert_eq!(
+            (frame, 83),
+            Frame::from_bytes(&mut buf, PacketType::OneRTT)?
+        );
+        assert!(Frame::from_bytes(&mut buf, PacketType::ZeroRTT).is_ok());
+        assert!(Frame::from_bytes(&mut buf, PacketType::Initial).is_err());
+        assert!(Frame::from_bytes(&mut buf, PacketType::Handshake).is_err());
+
+        let frame_wo_len = Frame::Datagram {
+            length: None,
+            data: data.clone(),
+        };
+        assert_eq!(
+            format!("{:?}", &frame_wo_len),
+            "DATAGRAM frame_type=0x30 len=80"
+        );
+
+        let mut buf_wo_len = [0; 81];
+        let len = frame_wo_len.to_bytes(&mut buf_wo_len[..])?;
+        assert_eq!(len, frame_wo_len.wire_len());
+        assert_eq!(len, 81); // 1 byte for frame type + 80 bytes for data
+        assert_eq!(datagram_header_wire_len(None), 1);
+        let mut buf_wo_len = Bytes::copy_from_slice(&buf_wo_len);
+        assert_eq!(
+            (frame_wo_len, 81),
+            Frame::from_bytes(&mut buf_wo_len, PacketType::OneRTT)?
+        );
+        assert!(Frame::from_bytes(&mut buf_wo_len, PacketType::ZeroRTT).is_ok());
+        assert!(Frame::from_bytes(&mut buf_wo_len, PacketType::Initial).is_err());
+        assert!(Frame::from_bytes(&mut buf_wo_len, PacketType::Handshake).is_err());
+
+        Ok(())
+    }
+
+    #[test]
     fn path_abandon() -> Result<()> {
         let frame = Frame::PathAbandon {
             dcid_seq_num: 1,
@@ -1894,7 +2022,32 @@ mod tests {
         let mut buf = Bytes::from_static(&[
             0x0e, 0x00, 0x00, 0x1c, 0x80, 0x00, 0xcf, 0xff, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff,
             0xff, 0xff, 0xff, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00,
+        ]);
+        assert_eq!(
+            Frame::from_bytes(&mut buf, PacketType::OneRTT),
+            Err(Error::BufferTooShort)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn datagram_buffer_too_short() -> Result<()> {
+        let mut buf = Bytes::from_static(&[
+            0x31, 0x1c, 0x00, 0x1c, 0x80, 0x00, 0xcf, 0xff, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00,
+        ]);
+        assert_eq!(
+            Frame::from_bytes(&mut buf, PacketType::OneRTT),
+            Err(Error::BufferTooShort)
+        );
+
+        let mut buf = Bytes::from_static(&[
+            0x31, 0x40, 0x1c, 0x00, 0x1c, 0x80, 0x00, 0xcf, 0xff, 0x00, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00,
         ]);
         assert_eq!(
             Frame::from_bytes(&mut buf, PacketType::OneRTT),

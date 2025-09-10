@@ -53,6 +53,8 @@
 #![allow(unused_imports)]
 #![allow(dead_code)]
 #![allow(unexpected_cfgs)]
+#![allow(mismatched_lifetime_syntaxes)]
+#![allow(clippy::uninlined_format_args)]
 
 use std::cmp;
 use std::collections::VecDeque;
@@ -74,9 +76,11 @@ use ring::hmac;
 use rustc_hash::FxHashSet;
 
 use crate::codec::VINT_MAX;
+use crate::connection::datagram;
 use crate::connection::stream;
 use crate::tls::TlsSession;
 use crate::token::ResetToken;
+use crate::trans_param::DatagramConfig;
 use crate::trans_param::TransportParams;
 
 /// The current QUIC wire version.
@@ -356,6 +360,9 @@ pub struct Config {
 
     /// Find TLS config according to server name.
     tls_config_selector: Option<Arc<dyn tls::TlsConfigSelector>>,
+
+    // DATAGRAM extension configurations see rfc 9221.
+    datagram_config: DatagramConfig,
 }
 
 impl Config {
@@ -405,6 +412,7 @@ impl Config {
             recovery: RecoveryConfig::default(),
             multipath: MultipathConfig::default(),
             tls_config_selector: None,
+            datagram_config: DatagramConfig::default(),
         })
     }
 
@@ -779,6 +787,24 @@ impl Config {
             None => Err(Error::TlsFail("get tls config failed".into())),
         }
     }
+
+    pub fn set_local_datagram_config(
+        &mut self,
+        max_datagram_frame_size: u64,
+        send_timeout: u64,
+        priority: u8,
+        datagram_event_mask: u8,
+    ) {
+        self.local_transport_params.max_datagram_frame_size = max_datagram_frame_size;
+        // not need set max delay
+
+        self.datagram_config = DatagramConfig::new(
+            max_datagram_frame_size,
+            send_timeout,
+            priority,
+            datagram_event_mask,
+        );
+    }
 }
 
 /// Configurations about loss recovery, congestion control, and pmtu discovery.
@@ -930,6 +956,16 @@ enum Event {
 
     /// The stream is closed.
     StreamClosed(u64),
+
+    DatagramReceived(),
+
+    DatagramAcked(),
+
+    DatagramLost(),
+
+    DatagramDrop(u64),
+
+    DatagramLongtime(),
 }
 
 #[derive(Default)]
@@ -1030,6 +1066,16 @@ pub trait TransportHandler {
 
     /// Called when client receives a token in NEW_TOKEN frame.
     fn on_new_token(&mut self, conn: &mut Connection, token: Vec<u8>);
+
+    fn on_datagram_acked(&mut self, conn: &mut Connection);
+
+    fn on_datagram_lost(&mut self, conn: &mut Connection);
+
+    fn on_datagram_received(&mut self, conn: &mut Connection);
+
+    fn on_datagram_drop(&mut self, conn: &mut Connection);
+
+    fn on_datagram_longtime(&mut self, conn: &mut Connection);
 }
 
 /// The PacketSendHandler lists the callbacks used by the endpoint to

@@ -286,6 +286,15 @@ pub struct ClientOpt {
     )]
     pub cid_len: usize,
 
+    /// Maximum datAGRAM frame size in bytes (for DATAGRAM extension).
+    #[clap(
+        long,
+        default_value = "1200",
+        value_name = "SIZE",
+        help_heading = "Protocol"
+    )]
+    pub max_datagram_frame_size: usize,
+
     /// Print response header and body to stdout.
     #[clap(short, long, help_heading = "Output")]
     pub print_res: bool,
@@ -1541,6 +1550,12 @@ impl TransportHandler for WorkerHandler {
     }
 
     fn on_new_token(&mut self, _conn: &mut Connection, _token: Vec<u8>) {}
+
+    fn on_datagram_acked(&mut self, _conn: &mut Connection) {}
+    fn on_datagram_drop(&mut self, _conn: &mut Connection) {}
+    fn on_datagram_longtime(&mut self, _conn: &mut Connection) {}
+    fn on_datagram_lost(&mut self, _conn: &mut Connection) {}
+    fn on_datagram_received(&mut self, _conn: &mut Connection) {}
 }
 
 fn process_connect_address(option: &mut ClientOpt) {
