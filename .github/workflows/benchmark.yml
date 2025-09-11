@@ -1,0 +1,45 @@
+
+name: Run ACK Frequency Benchmark & Upload Results
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-benchmark:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iperf3 python3 python3-pip
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build project
+        run: cargo build --release --all
+          
+
+      - name: Run benchmark script
+        working-directory: tools/tests/ack_frequency_test
+        run: |
+          sudo python3 multi_network_latency_benchmark.py
+          sudo python3 multi_network_throughput_benchmark.py
+       
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: |
+            tools/tests/ack_frequency_test/result-latency
+            tools/tests/ack_frequency_test/result-throughput
+

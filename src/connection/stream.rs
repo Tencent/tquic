@@ -1084,19 +1084,19 @@ impl StreamMap {
 
     /// Return an iterator over streams that wish to send data but are unable to do so
     /// due to stream-level flow control and need to send STREAM_DATA_BLOCKED to the peer.
-    pub fn blocked(&self) -> hash_map::Iter<u64, u64> {
+    pub fn blocked(&self) -> hash_map::Iter<'_, u64, u64> {
         self.data_blocked.iter()
     }
 
     /// Create an iterator over streams that the send-side has been shutdown
     /// prematurely and need to send RESET_STREAM frame to the peer.
-    pub fn reset(&self) -> hash_map::Iter<u64, (u64, u64)> {
+    pub fn reset(&self) -> hash_map::Iter<'_, u64, (u64, u64)> {
         self.reset.iter()
     }
 
     /// Create an iterator over streams that the receive-side has been shutdown
     /// prematurely and need to send STOP_SENDING frame to the peer.
-    pub fn stopped(&self) -> hash_map::Iter<u64, u64> {
+    pub fn stopped(&self) -> hash_map::Iter<'_, u64, u64> {
         self.stopped.iter()
     }
 

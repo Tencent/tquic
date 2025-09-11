@@ -277,6 +277,11 @@ pub struct ClientOpt {
     )]
     pub max_pto: u64,
 
+    /// The minimum ACK delay in microseconds. This enables the ACK
+    /// Frequency extension.
+    #[clap(long, value_name = "TIME", help_heading = "Protocol")]
+    pub min_ack_delay: Option<u64>,
+
     /// Length of connection id in bytes.
     #[clap(
         long,
@@ -461,6 +466,7 @@ impl Client {
             context.conn_stats.sent_bytes,
             context.conn_stats.lost_bytes
         );
+        println!("total acks: {}", context.conn_stats.ack_count);
         println!();
     }
 }
@@ -489,6 +495,7 @@ fn update_conn_stats(total: &mut ConnectionStats, one: &ConnectionStats) {
     total.recv_bytes += one.recv_bytes;
     total.sent_bytes += one.sent_bytes;
     total.lost_bytes += one.lost_bytes;
+    total.ack_count += one.ack_count;
 }
 
 /// Client worker with single thread.
@@ -556,6 +563,9 @@ impl Worker {
         config.enable_multipath(option.enable_multipath);
         config.set_multipath_algorithm(option.multipath_algor);
         config.set_active_connection_id_limit(option.active_cid_limit);
+        if let Some(min_ack_delay) = option.min_ack_delay {
+            config.enable_ack_frequency(min_ack_delay);
+        }
         config.enable_encryption(!option.disable_encryption);
         let mut tls_config = TlsConfig::new_client_config(
             ApplicationProto::convert_to_vec(&option.alpn),

@@ -202,14 +202,14 @@ impl RangeSet {
     }
 
     /// Return an iterator over the ranges in the set.
-    pub fn iter(&self) -> Iter {
+    pub fn iter(&self) -> Iter<'_> {
         Iter {
             set: self.set.iter(),
         }
     }
 
     /// Flatten the ranges in the set into a single iterator.
-    pub fn flatten(&self) -> Flatten {
+    pub fn flatten(&self) -> Flatten<'_> {
         Flatten {
             set: self.set.iter(),
             next: 0,

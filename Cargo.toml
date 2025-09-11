@@ -43,6 +43,7 @@ h3 = ["dep:sfv"]
 
 [dependencies]
 bytes = "1"
+dyn-clone = "1.0"
 rustc-hash = "1.1"
 slab = "0.4"
 enumflags2 = "0.7.5"

@@ -22,7 +22,7 @@ set -e
 
 BIN_DIR="./"
 TEST_DIR="./test-`date +%Y%m%d%H%M%S`"
-TEST_CASES="multipath_minrtt,multipath_roundrobin,multipath_redundant,range_request"
+TEST_CASES="multipath_minrtt,multipath_roundrobin,multipath_redundant,range_request,ack_frequency"
 TEST_PID="$$"
 TEST_FILE="10M"
 PATH_NUM=4
@@ -276,6 +276,79 @@ test_range_request() {
     echo -e "Test range_request OK\n"
 }
 
+test_ack_frequency() {
+    local test_dir=$1
+    
+    echo "[-] Running ACK frequency test"
+    echo "    Test directory: $test_dir"
+    
+    # Prepare environment
+    local cert_dir="$test_dir/cert"
+    local data_dir="$test_dir/data"
+    local dump_dir="$test_dir/dump"
+    mkdir -p "$dump_dir"
+    
+    generate_cert "$test_dir"
+    generate_files "$test_dir"
+    
+    # Start TQUIC server with ACK frequency settings
+    echo "    Starting server with min-ack-delay=2000us..."
+    RUST_BACKTRACE=1 $BIN_DIR/tquic_server \
+        -l 127.0.0.1:8443 \
+        --cert "$cert_dir/cert.crt" \
+        --key "$cert_dir/cert.key" \
+        --root "$data_dir" \
+        --min-ack-delay 2000 \
+        --log-file "$test_dir/server.log" \
+        --log-level $LOG_LEVEL \
+        $SRV_OPTIONS &
+    server_pid=$!
+    
+    sleep 10  # Allow server to fully initialize
+    
+    # Start TQUIC client with ACK frequency settings
+    echo "    Starting client with min-ack-delay=1000us..."
+    RUST_BACKTRACE=1 $BIN_DIR/tquic_client \
+        -c 127.0.0.1:8443 \
+        --min-ack-delay 1000 \
+        --log-file "$test_dir/client.log" \
+        --log-level $LOG_LEVEL \
+        --dump-dir "$dump_dir" \
+        $CLI_OPTIONS \
+        https://example.org/$TEST_FILE
+    
+    # Verify file transfer
+    echo "    Verifying file integrity..."
+    if ! cmp -s "$dump_dir/$TEST_FILE" "$data_dir/$TEST_FILE"; then
+        echo "    [FAIL] Downloaded file does not match original"
+        EXIT_CODE=100
+        exit $EXIT_CODE
+    fi
+    echo "    [OK] File transfer successful"
+    
+    # Verify ACK_FREQUENCY frames in logs
+    echo "    Verifying ACK_FREQUENCY frames..."
+    
+    if ! grep "ACK_FREQUENCY" "$test_dir/client.log" > /dev/null; then
+        echo "    [FAIL] Client log missing ACK_FREQUENCY frames"
+        EXIT_CODE=101
+    else
+        echo "    [OK] Client log contains ACK_FREQUENCY frames"
+    fi
+    
+    if ! grep "ACK_FREQUENCY" "$test_dir/server.log" > /dev/null; then
+        echo "    [FAIL] Server log missing ACK_FREQUENCY frames"
+        EXIT_CODE=102
+    else
+        echo "    [OK] Server log contains ACK_FREQUENCY frames"
+    fi
+    
+    # Cleanup
+    kill $server_pid
+    server_pid=""
+    echo -e "Test ACK frequency OK\n"
+}
+
 for TEST_CASE in ${TEST_CASES//,/ }; do
     case $TEST_CASE in
         multipath_minrtt)
@@ -289,6 +362,9 @@ for TEST_CASE in ${TEST_CASES//,/ }; do
             ;;
         range_request)
             test_range_request "$TEST_DIR/range"
+            ;;
+        ack_frequency)
+            test_ack_frequency "$TEST_DIR/ack_frequency"
             ;;
         *)
             echo "[x] Unknown test case $TEST_CASE"
