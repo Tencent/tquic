@@ -89,6 +89,10 @@ pub struct TransportParams {
     /// in milliseconds by which the endpoint will delay sending acknowledgments.
     pub max_ack_delay: u64,
 
+    /// The parameter is an integer value indicating the minimum amount of time in
+    /// microseconds by which the endpoint sending this value is willing to delay an acknowledgment.
+    pub min_ack_delay: Option<u64>,
+
     /// The parameter is included if the endpoint does not support active
     /// connection migration on the address being used during the handshake.
     pub disable_active_migration: bool,
@@ -258,6 +262,14 @@ impl TransportParams {
                     tp.retry_source_connection_id = Some(ConnectionId::new(val));
                 }
 
+                0xff04de1b => {
+                    let min_ack_delay = val.read_varint()?;
+                    if min_ack_delay > tp.max_ack_delay * 1000 {
+                        return Err(Error::TransportParameterError);
+                    }
+                    tp.min_ack_delay = Some(min_ack_delay);
+                }
+
                 0x0f739bbc1b666d05 => {
                     tp.enable_multipath = true;
                 }
@@ -360,6 +372,12 @@ impl TransportParams {
             buf.write_varint(0x000b)?;
             buf.write_varint(codec::encode_varint_len(tp.max_ack_delay) as u64)?;
             buf.write_varint(tp.max_ack_delay)?;
+        }
+
+        if let Some(min_ack_delay) = tp.min_ack_delay {
+            buf.write_varint(0xff04de1b)?;
+            buf.write_varint(codec::encode_varint_len(min_ack_delay) as u64)?;
+            buf.write_varint(min_ack_delay)?;
         }
 
         if tp.disable_active_migration {
@@ -470,6 +488,8 @@ impl Default for TransportParams {
             // milliseconds is assumed.
             max_ack_delay: 25,
 
+            min_ack_delay: None,
+
             disable_active_migration: false,
 
             preferred_address: None,
@@ -576,6 +596,7 @@ mod tests {
             initial_max_streams_uni: 100,
             ack_delay_exponent: 10,
             max_ack_delay: 2_u64.pow(8),
+            min_ack_delay: None,
             disable_active_migration: true,
             preferred_address: None,
             active_conn_id_limit: 12,
@@ -620,6 +641,7 @@ mod tests {
             initial_max_streams_uni: 100,
             ack_delay_exponent: 10,
             max_ack_delay: 2_u64.pow(8),
+            min_ack_delay: None,
             disable_active_migration: true,
             preferred_address,
             active_conn_id_limit: 12,

@@ -495,6 +495,13 @@ impl Config {
         self.local_transport_params.max_ack_delay = cmp::min(v, VINT_MAX);
     }
 
+    /// Set the `min_ack_delay` transport parameter.
+    /// The default value is `None`.
+    pub fn set_min_ack_delay(&mut self, v: u64) {
+        self.local_transport_params.min_ack_delay =
+            Some(cmp::max(v, TIMER_GRANULARITY.as_micros() as u64));
+    }
+
     /// Set the maximum number of ack-eliciting packets the endpoint receives before
     /// sending an acknowledgment.
     /// The default value is `2`.

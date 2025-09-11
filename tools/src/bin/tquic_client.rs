@@ -259,6 +259,10 @@ pub struct ClientOpt {
     )]
     pub initial_rtt: u64,
 
+    /// Minimum ACK delay to enable ACK frequency control
+    #[clap(long, value_name = "TIME", help_heading = "Protocol")]
+    pub min_ack_delay: Option<u64>,
+
     /// Linear factor for calculating the probe timeout.
     #[clap(
         long,
@@ -557,6 +561,10 @@ impl Worker {
         config.set_multipath_algorithm(option.multipath_algor);
         config.set_active_connection_id_limit(option.active_cid_limit);
         config.enable_encryption(!option.disable_encryption);
+        if let Some(min_ack_delay) = option.min_ack_delay {
+            config.set_min_ack_delay(min_ack_delay);
+        }
+
         let mut tls_config = TlsConfig::new_client_config(
             ApplicationProto::convert_to_vec(&option.alpn),
             option.enable_early_data,
@@ -1472,6 +1480,24 @@ impl TransportHandler for WorkerHandler {
 
         let mut worker_ctx = self.worker_ctx.borrow_mut();
         update_conn_stats(&mut worker_ctx.conn_stats, conn.stats());
+
+        if let Ok(active_path) = conn.get_active_path() {
+            let local_addr = active_path.local_addr();
+            let remote_addr = active_path.remote_addr();
+
+            if let Ok(path_stats) = conn.get_path_stats(local_addr, remote_addr) {
+                debug!("Path stats - init_cwnd: {}, final_cwnd: {}, max_cwnd: {}，acked_bytes: {}, srtt: {}, rttvar:{}, min_rtt: {}, max_rtt: {}",
+                   path_stats.init_cwnd,
+                   path_stats.final_cwnd,
+                   path_stats.max_cwnd,
+                    path_stats.acked_bytes,
+                    path_stats.srtt,
+                    path_stats.rttvar,
+                    path_stats.min_rtt,
+                    path_stats.max_rtt,
+                );
+            }
+        }
 
         let mut senders = self.senders.borrow_mut();
         senders.remove(&conn.index().unwrap());

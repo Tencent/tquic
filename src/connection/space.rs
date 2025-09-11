@@ -101,6 +101,12 @@ pub struct PacketNumSpace {
     /// Whether an ACK frame should be generated and sent to the peer.
     pub need_send_ack: bool,
 
+    /// Whether an ACK_FREQUENCY frame should be generated and sent to the peer.
+    pub need_send_ack_frequency: bool,
+
+    /// Whether an IMMEDIATE_ACK frame should be generated and sent to the peer.
+    pub need_send_immediate_ack: bool,
+
     /// Number of ack-eliciting packets received since last ACK was sent
     pub ack_eliciting_pkts_since_last_sent_ack: u64,
 
@@ -142,6 +148,21 @@ pub struct PacketNumSpace {
 
     /// Packet number space for application data
     pub is_data: bool,
+
+    /// The sequence number assigned to the ACK_FREQUENCY frame by the sender
+    pub ack_frequency_seq: u64,
+
+    /// The ack frequency number of the next frame that will be sent
+    pub next_ack_frequency_seq: u64,
+
+    /// The recipient of this frame receives before sending an acknowledgment.
+    pub ack_eliciting_threshold: u64,
+
+    /// The maximum packet reordering before eliciting an immediate ACK
+    pub reordering_threshold: u64,
+
+    /// The used for the last ACK frame send time.
+    pub last_ack_sent_time: Option<Instant>,
 }
 
 impl PacketNumSpace {
@@ -160,6 +181,8 @@ impl PacketNumSpace {
             recv_pkt_num_need_ack: RangeSet::new(crate::MAX_ACK_RANGES),
             recv_pkt_num_win: SeqNumWindow::default(),
             need_send_ack: false,
+            need_send_ack_frequency: false,
+            need_send_immediate_ack: false,
             ack_eliciting_pkts_since_last_sent_ack: 0,
             ack_timer: None,
             sent: VecDeque::new(),
@@ -173,6 +196,11 @@ impl PacketNumSpace {
             bytes_in_flight: 0,
             ack_eliciting_in_flight: 0,
             is_data: id != SpaceId::Initial && id != SpaceId::Handshake,
+            ack_frequency_seq: 0,
+            next_ack_frequency_seq: 1,
+            ack_eliciting_threshold: 1,
+            reordering_threshold: 3,
+            last_ack_sent_time: None,
         }
     }
 

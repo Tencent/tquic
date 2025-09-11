@@ -296,6 +296,12 @@ pub extern "C" fn quic_config_set_max_ack_delay(config: &mut Config, v: u64) {
     config.set_max_ack_delay(v);
 }
 
+/// Set the `min_ack_delay` transport parameter.
+#[no_mangle]
+pub extern "C" fn quic_config_set_min_ack_delay(config: &mut Config, v: u64) {
+    config.set_min_ack_delay(v);
+}
+
 /// Set congestion control algorithm that the connection would use.
 #[no_mangle]
 pub extern "C" fn quic_config_set_congestion_control_algorithm(
