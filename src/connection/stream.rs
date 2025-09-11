@@ -748,6 +748,12 @@ impl StreamMap {
         };
     }
 
+    pub fn get_sendable_priority(&self) -> Option<u8> {
+        match self.sendable.iter().next() {
+            Some((priority, queue)) => return Some(*priority),
+            None => return None,
+        }
+    }
     /// Return the first stream ID from the sendable queue with the highest priority.
     ///
     /// Note that the caller should call `remove_sendable` to remove the stream from the

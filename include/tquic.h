@@ -83,6 +83,32 @@ typedef enum quic_congestion_control_algorithm {
 } quic_congestion_control_algorithm;
 
 /**
+ * Datagram notification flags for C API compatibility.
+ */
+typedef enum DatagramNotifyFlag {
+  /**
+   * The datagram has been acked.
+   */
+  DATAGRAM_NOTIFY_FLAG_DATAGRAM_ACKED = (1 << 0),
+  /**
+   * The datagram has been lost.
+   */
+  DATAGRAM_NOTIFY_FLAG_DATAGRAM_LOST = (1 << 1),
+  /**
+   * Datagram dropped by sender (memory limit/priority).
+   */
+  DATAGRAM_NOTIFY_FLAG_DATAGRAM_SENDER_DROP = (1 << 2),
+  /**
+   * Datagram dropped by receiver (memory limit).
+   */
+  DATAGRAM_NOTIFY_FLAG_DATAGRAM_RECEIVER_DROP = (1 << 3),
+  /**
+   * Datagram dropped due to expiration.
+   */
+  DATAGRAM_NOTIFY_FLAG_DATAGRAM_TIME_EXPIRED_DROP = (1 << 4),
+} DatagramNotifyFlag;
+
+/**
  * Available multipath scheduling algorithms.
  */
 typedef enum quic_multipath_algorithm {
@@ -217,6 +243,12 @@ typedef struct quic_transport_methods_t {
    * is optional.
    */
   void (*on_new_token)(void *tctx, struct quic_conn_t *conn, const uint8_t *token, size_t token_len);
+  void (*on_datagram_received)(struct quic_conn_t *conn, uint64_t len);
+  void (*on_datagram_acked)(struct quic_conn_t *conn, uint64_t datagram_id);
+  void (*on_datagram_lost)(struct quic_conn_t *conn, uint64_t datagram_id);
+  void (*on_datagram_receiver_drop)(struct quic_conn_t *conn, uint64_t datagram_id);
+  void (*on_datagram_sender_drop)(struct quic_conn_t *conn, uint64_t datagram_id);
+  void (*on_datagram_time_expired_drop)(struct quic_conn_t *conn, uint64_t datagram_id);
 } quic_transport_methods_t;
 
 typedef void *quic_transport_context_t;
@@ -469,6 +501,47 @@ typedef struct http3_header_t {
   uint8_t *value;
   uintptr_t value_len;
 } http3_header_t;
+
+/**
+ * Get statistics about datagram usage for this connection.
+ *
+ * This function fills a DatagramStats structure with information about
+ * datagram transmission and reception for this connection.
+ *
+ * # Arguments
+ * * `conn` - The QUIC connection
+ * * `stats` - Pointer to a DatagramStats structure to be filled
+ *
+ * # Returns
+ *
+ * 0 on success, -116 if stats pointer is null.
+ */
+typedef struct DatagramStats {
+  /**
+   * Total number of datagrams sent.
+   */
+  uint64_t sent_count;
+  /**
+   * Total number of datagrams received.
+   */
+  uint64_t received_count;
+  /**
+   * Total bytes sent in datagram frames.
+   */
+  uint64_t sent_bytes;
+  /**
+   * Total bytes received in datagram frames.
+   */
+  uint64_t received_bytes;
+  /**
+   * Number of datagrams in outgoing queue.
+   */
+  uintptr_t outgoing_queue_size;
+  /**
+   * Number of datagrams in incoming queue.
+   */
+  uintptr_t incoming_queue_size;
+} DatagramStats;
 
 #ifdef __cplusplus
 extern "C" {
@@ -1530,6 +1603,332 @@ void *quic_path_peer_context(struct quic_conn_t *conn,
                              socklen_t local_len,
                              const struct sockaddr *remote,
                              socklen_t remote_len);
+
+/**
+ * Send a datagram over the connection.
+ *
+ * This method queues a datagram for transmission with default parameters
+ * (priority 127, no expiration). The datagram will be sent as soon as
+ * possible based on the connection's congestion control and available
+ * bandwidth.
+ *
+ * # Returns
+ *
+ * On success, returns the unique ID assigned to the datagram (>= 1).
+ * On error, returns one of the following negative values:
+ * * -113: DATAGRAM extension is disabled
+ * * -114: Datagram is too large for peer's advertised limit
+ * * -115: Datagram exceeds memory limits
+ * * Other negative values for other errors
+ */
+int64_t quic_conn_send_datagram(struct quic_conn_t *conn, const uint8_t *data, size_t data_len);
+
+/**
+ * Send a datagram over the connection with specified priority.
+ *
+ * This method queues a datagram for transmission with the specified priority
+ * level but no expiration time. Lower priority values have higher precedence
+ * (0 is highest priority, 255 is lowest).
+ *
+ * # Arguments
+ * * `conn` - The QUIC connection
+ * * `data` - Pointer to the datagram payload
+ * * `data_len` - Length of the datagram payload in bytes
+ * * `priority` - Priority level (0-255, where 0 is highest priority)
+ *
+ * # Returns
+ *
+ * On success, returns the unique ID assigned to the datagram (>= 1).
+ * On error, returns one of the following negative values:
+ * * -113: DATAGRAM extension is disabled
+ * * -114: Datagram is too large for peer's advertised limit
+ * * -115: Datagram exceeds memory limits
+ * * Other negative values for other errors
+ */
+int64_t quic_conn_send_datagram_with_priority(struct quic_conn_t *conn,
+                                              const uint8_t *data,
+                                              size_t data_len,
+                                              uint8_t priority);
+
+/**
+ * Send a datagram over the connection with full parameter control.
+ *
+ * This method queues a datagram for transmission with both priority and
+ * optional expiration time. This provides the most control over datagram
+ * transmission behavior.
+ *
+ * # Arguments
+ * * `conn` - The QUIC connection
+ * * `data` - Pointer to the datagram payload
+ * * `data_len` - Length of the datagram payload in bytes
+ * * `priority` - Priority level (0-255, where 0 is highest priority)
+ * * `expiration_ms` - Expiration time in milliseconds from now (0 = no expiration)
+ *
+ * # Returns
+ *
+ * On success, returns the unique ID assigned to the datagram (>= 1).
+ * On error, returns one of the following negative values:
+ * * -113: DATAGRAM extension is disabled
+ * * -114: Datagram is too large for peer's advertised limit
+ * * -115: Datagram exceeds memory limits
+ * * Other negative values for other errors
+ * For now, to simplify the export function, direct calls using the SendDatagramParams structure are not provided.
+ */
+int64_t quic_conn_send_datagram_with_param(struct quic_conn_t *conn,
+                                           const uint8_t *data,
+                                           size_t data_len,
+                                           uint8_t priority,
+                                           uint64_t expiration_ms);
+
+/**
+ * Receive the next available datagram from the connection.
+ *
+ * This method retrieves the oldest datagram that has been received from the peer.
+ * Datagrams are delivered in the order they were received.
+ *
+ * # Arguments
+ * * `conn` - The QUIC connection
+ * * `out` - Buffer to store the received datagram data
+ * * `out_len` - Size of the output buffer in bytes
+ *
+ * # Returns
+ *
+ * On success, returns the number of bytes copied to the output buffer.
+ * Returns 0 if no datagrams are available.
+ * Returns -101 if the output buffer is too small for the available datagram.
+ */
+int64_t quic_conn_recv_datagram(struct quic_conn_t *conn, uint8_t *out, uintptr_t out_len);
+
+/**
+ * Same as quic_conn_recv_datagram,but does not check the output buffer size.
+ * This means if buffer is short than the data,then lose the data.
+ */
+int64_t quic_conn_recv_datagram_without_check(struct quic_conn_t *conn,
+                                              uint8_t *out,
+                                              uintptr_t out_len);
+
+/**
+ * Before write data to user's buffer,get the len of data.
+ */
+int64_t quic_conn_peek_recv_datagram_len(struct quic_conn_t *conn);
+
+/**
+ * Sets the outgoing datagram buffer size. The size is specified in Kilobytes (KB).
+ *
+ * Returns a u8 status code:
+ * - 0 (Success): The buffer size was successfully increased.
+ * - 1 (Normal):  The size was adjusted but is smaller than the previous maximum.
+ * - 2 (TooSmall): The new size is smaller than the data currently in the buffer; the operation failed.
+ */
+uint8_t quic_conn_set_datagram_out_buffer_size(struct quic_conn_t *conn,
+                                               uintptr_t new_max_bytes);
+
+/**
+ * Sets the incoming datagram buffer size. The size is specified in Kilobytes (KB).
+ *
+ * Returns a u8 status code:
+ * - 0 (Success): The buffer size was successfully increased.
+ * - 1 (Normal):  The size was adjusted but is smaller than the previous maximum.
+ * - 2 (TooSmall): The new size is smaller than the data currently in the buffer; the operation failed.
+ */
+uint8_t quic_conn_set_datagram_in_buffer_size(struct quic_conn_t *conn,
+                                              uintptr_t new_max_bytes);
+
+/**
+ * Check if the QUIC DATAGRAM extension is enabled for this connection.
+ *
+ * The DATAGRAM extension is considered enabled if the peer has negotiated
+ * support for it during the handshake process and its max_datagram_size
+ * is greater than 0.
+ *
+ * # Returns
+ *
+ * * `true` - The peer supports the DATAGRAM extension and max_datagram_size > 0
+ * * `false` - The DATAGRAM extension is not supported or max_datagram_size is 0
+ */
+bool quic_conn_is_datagram_enabled(const struct quic_conn_t *conn);
+
+/**
+ * Check if there are datagrams queued for transmission.
+ *
+ * # Returns
+ *
+ * * `true` - One or more datagrams are waiting to be sent
+ * * `false` - No datagrams are currently queued for sending
+ */
+bool quic_conn_has_sendable_datagrams(const struct quic_conn_t *conn);
+
+/**
+ * Check if there are datagrams queued for processing.
+ *
+ * # Returns
+ *
+ * * `true` - One or more datagrams are waiting to be processed
+ * * `false` - No datagrams are currently queued for processing
+ */
+bool quic_conn_has_readable_datagrams(const struct quic_conn_t *conn);
+
+/**
+ * Get the peer's maximum datagram frame size.
+ *
+ * This is the maximum size of datagram payload that the peer is willing
+ * to receive, as advertised in their transport parameters during the
+ * handshake process.
+ *
+ * # Returns
+ *
+ * The maximum datagram frame size in bytes, or 0 if the DATAGRAM extension
+ * is not enabled.
+ */
+uint64_t quic_conn_peer_max_datagram_frame_size(const struct quic_conn_t *conn);
+
+/**
+ * Get the local maximum datagram frame size.
+ *
+ * This is the maximum size of datagram payload that this endpoint is
+ * willing to receive, as configured in the transport parameters.
+ *
+ * # Returns
+ *
+ * The maximum datagram frame size in bytes.
+ */
+uint64_t quic_conn_local_max_datagram_frame_size(const struct quic_conn_t *conn);
+
+int quic_conn_datagram_stats(const struct quic_conn_t *conn, struct DatagramStats *stats);
+
+/**
+ * Get the number of datagrams waiting to be sent.
+ *
+ * # Returns
+ *
+ * The number of datagrams currently in the outgoing queue.
+ */
+uintptr_t quic_conn_outgoing_datagram_count(const struct quic_conn_t *conn);
+
+/**
+ * Get the number of datagrams waiting to be read.
+ *
+ * # Returns
+ *
+ * The number of datagrams currently in the incoming queue.
+ */
+uintptr_t quic_conn_incoming_datagram_count(const struct quic_conn_t *conn);
+
+/**
+ * Clear all datagrams in a specific priority queue.
+ *
+ * This function removes all datagrams from the specified priority level
+ * and generates drop events for each removed datagram.
+ *
+ * # Arguments
+ * * `conn` - The QUIC connection
+ * * `priority` - The priority level to clear (0-255)
+ *
+ * # Returns
+ *
+ * The number of datagrams that were cleared from the specified priority level.
+ */
+uintptr_t quic_conn_clear_datagram_priority_queue(struct quic_conn_t *conn, uint8_t priority);
+
+/**
+ * Clear all datagram buffers (both sender and receiver).
+ *
+ * This function removes all queued datagrams from both the outgoing
+ * and incoming queues.
+ */
+void quic_conn_clear_datagram_all_buffer(struct quic_conn_t *conn);
+
+/**
+ * Clear the outgoing datagram buffer.
+ *
+ * This function removes all datagrams waiting to be sent.
+ */
+void quic_conn_clear_datagram_sender_buffer(struct quic_conn_t *conn);
+
+/**
+ * Clear the incoming datagram buffer.
+ *
+ * This function removes all received datagrams waiting to be read.
+ */
+void quic_conn_clear_datagram_receiver_buffer(struct quic_conn_t *conn);
+
+/**
+ * Set the `max_datagram_frame_size` transport parameter in Config.
+ *
+ * This enables the DATAGRAM extension (RFC 9221) and specifies the maximum
+ * size of datagram frames this endpoint is willing to receive.
+ * Setting this to 0 disables the DATAGRAM extension.
+ *
+ * # Arguments
+ * * `config` - The QUIC configuration
+ * * `v` - Maximum datagram frame size in bytes (0 to disable)
+ */
+void quic_config_set_max_datagram_frame_size(struct quic_config_t *config, uint64_t v);
+
+/**
+ * Enable all datagram notifications for the connection.
+ *
+ * This enables all types of datagram event notifications including
+ * acknowledgments, losses, and drops.
+ */
+void quic_conn_enable_all_datagram_notifications(struct quic_conn_t *conn);
+
+/**
+ * Disable all datagram notifications for the connection.
+ *
+ * This disables all types of datagram event notifications.
+ */
+void quic_conn_disable_all_datagram_notifications(struct quic_conn_t *conn);
+
+/**
+ * Enable specific datagram notifications.
+ *
+ * # Arguments
+ * * `conn` - The QUIC connection
+ * * `flags` - Bitwise OR of DatagramNotifyFlag values to enable
+ */
+void quic_conn_enable_datagram_notifications(struct quic_conn_t *conn, uint16_t flags);
+
+/**
+ * Disable specific datagram notifications.
+ *
+ * # Arguments
+ * * `conn` - The QUIC connection
+ * * `flags` - Bitwise OR of DatagramNotifyFlag values to disable
+ */
+void quic_conn_disable_datagram_notifications(struct quic_conn_t *conn, uint16_t flags);
+
+/**
+ * Set specific datagram notifications (replaces current settings).
+ *
+ * # Arguments
+ * * `conn` - The QUIC connection
+ * * `flags` - Bitwise OR of DatagramNotifyFlag values to set
+ */
+void quic_conn_set_datagram_notifications(struct quic_conn_t *conn, uint16_t flags);
+
+/**
+ * Check if a specific datagram notification is enabled.
+ *
+ * # Arguments
+ * * `conn` - The QUIC connection
+ * * `flag` - DatagramNotifyFlag value to check
+ *
+ * # Returns
+ * * `true` - The notification is enabled
+ * * `false` - The notification is disabled
+ */
+bool quic_conn_is_datagram_notification_enabled(const struct quic_conn_t *conn,
+                                                enum DatagramNotifyFlag flag);
+
+/**
+ * Get the current datagram notification flags.
+ *
+ * # Returns
+ *
+ * A bitwise OR of enabled DatagramNotifyFlag values.
+ */
+uint16_t quic_conn_datagram_notification_flags(const struct quic_conn_t *conn);
 
 #ifdef __cplusplus
 }  // extern "C"

@@ -1051,6 +1051,10 @@ impl RequestSender {
         _ = conn.stream_want_read(stream_id, true);
 
         match self.app_proto {
+            ApplicationProto::ECHO => {
+                // ECHO protocol does not have responses.
+                println!("{} ECHO protocol, no response to receive", conn.trace_id());
+            }
             ApplicationProto::Interop | ApplicationProto::Http09 => {
                 self.recv_http09_responses(conn, stream_id)
             }
@@ -1070,6 +1074,10 @@ impl RequestSender {
         );
 
         let s = match self.app_proto {
+            ApplicationProto::ECHO => {
+                println!("just ignore datagram now");
+                0
+            }
             ApplicationProto::Interop | ApplicationProto::Http09 => {
                 self.send_http09_request(conn, &request)?
             }

@@ -34,7 +34,9 @@ use rustc_hash::FxHashMap;
 use rustc_hash::FxHashSet;
 use slab::Slab;
 
+use crate::connection::datagram;
 use crate::connection::Connection;
+use crate::connection::DatagramNotifyFlags;
 use crate::error::Error;
 use crate::packet;
 use crate::packet::PacketHeader;
@@ -579,6 +581,49 @@ impl Endpoint {
                 Event::StreamClosed(stream_id) => {
                     self.handler.on_stream_closed(conn, stream_id);
                     conn.stream_destroy(stream_id);
+                }
+
+                Event::DatagramReceived(len) => {
+                    // Datagram received event - applications can check for available datagrams
+                    // This is just a notification; the application needs to call recv_datagram()
+                    // to actually read the datagram data
+                    self.handler.on_datagram_received(conn, len);
+                }
+                Event::DatagramAcked(datagram_id) => {
+                    // Datagram acked event - applications can check for acked datagrams
+                    // This is just a notification
+                    if conn.is_datagram_notification_enabled(DatagramNotifyFlags::DatagramAcked) {
+                        self.handler.on_datagram_acked(conn, datagram_id);
+                    }
+                }
+                Event::DatagramLost(datagram_id) => {
+                    // Datagram lost event - applications can check for lost datagrams
+                    // This is just a notification
+                    if conn.is_datagram_notification_enabled(DatagramNotifyFlags::DatagramLost) {
+                        self.handler.on_datagram_lost(conn, datagram_id);
+                    }
+                }
+                Event::DatagramReceiverDrop(datagram_id) => {
+                    if conn
+                        .is_datagram_notification_enabled(DatagramNotifyFlags::DatagramReceiverDrop)
+                    {
+                        self.handler.on_datagram_receiver_drop(conn, datagram_id);
+                    }
+                }
+                Event::DatagramSenderDrop(datagram_id) => {
+                    if conn
+                        .is_datagram_notification_enabled(DatagramNotifyFlags::DatagramSenderDrop)
+                    {
+                        self.handler.on_datagram_sender_drop(conn, datagram_id);
+                    }
+                }
+                Event::DatagramTimeExpiredDrop(datagram_id) => {
+                    if conn.is_datagram_notification_enabled(
+                        DatagramNotifyFlags::DatagramTimeExpiredDrop,
+                    ) {
+                        self.handler
+                            .on_datagram_time_expired_drop(conn, datagram_id);
+                    }
                 }
             }
             if conn.is_closed() {

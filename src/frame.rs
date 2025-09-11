@@ -178,6 +178,18 @@ pub enum Frame {
         seq_num: u64,
         status: u64,
     },
+
+    /// DATAGRAM frame (type=0x30 or 0x31) is used to carry application data in an
+    /// unreliable and unordered manner. The least significant bit of the Type
+    /// field is the LEN bit (0x01): if set, a Length field is present; if not,
+    /// the Datagram Data extends to the end of the packet. This frame is only
+    /// sent when the peer has advertised a non-zero `max_datagram_frame_size`.
+    /// Lost DATAGRAM frames are not retransmitted by QUIC.
+    Datagram {
+        len: Option<u64>,
+        data: Bytes,
+        id: u64,
+    },
 }
 
 impl Frame {
@@ -346,7 +358,32 @@ impl Frame {
             },
 
             0x1e => Frame::HandshakeDone,
+            0x30..=0x31 => {
+                let first = frame_type as u8;
+                let has_len = (first & 0x01) == 1;
 
+                let length = if has_len {
+                    b.read_varint()? as usize
+                } else {
+                    b.len()
+                };
+
+                if length > b.len() {
+                    return Err(Error::BufferTooShort);
+                }
+                let start = buf.len() - b.len();
+                let data = buf.slice(start..(start + length));
+
+                b.skip(length)?;
+
+                let len_field = if has_len { Some(length as u64) } else { None };
+
+                Frame::Datagram {
+                    len: len_field,
+                    data,
+                    id: 0, //the id is used only to notify the user,not in the wire.
+                }
+            }
             0x15228c05 => Frame::PathAbandon {
                 dcid_seq_num: b.read_varint()?,
                 error_code: b.read_varint()?,
@@ -609,6 +646,18 @@ impl Frame {
                 b.write_varint(*seq_num)?;
                 b.write_varint(*status)?;
             }
+
+            Frame::Datagram { len, data, id: _ } => {
+                if len.is_some() {
+                    b.write_varint(0x31)?;
+                    b.write_varint(data.len() as u64)?;
+                } else {
+                    // It's hard to write this type datagram,now that we can't determine whether this
+                    // frame is the last frame in the packet.
+                    b.write_varint(0x30)?;
+                }
+                b.write(data.as_ref())?;
+            }
         }
 
         Ok(len - b.len())
@@ -766,6 +815,14 @@ impl Frame {
                 4 + codec::encode_varint_len(*dcid_seq_num)
                     + codec::encode_varint_len(*seq_num)
                     + codec::encode_varint_len(*status)
+            }
+
+            Frame::Datagram { len, data, id: _ } => {
+                if let Some(len) = len {
+                    1 + codec::encode_varint_len(*len as u64) + data.len()
+                } else {
+                    1 + data.len()
+                }
             }
         }
     }
@@ -932,6 +989,16 @@ impl Frame {
                 raw_frame_type: 0x15228c06,
                 frame_type_value: None,
                 raw: None,
+            },
+            // May change the define of QuicFrame::Datagram
+            // Here,debug used.
+            Frame::Datagram {
+                len: _,
+                data,
+                id: _,
+            } => QuicFrame::Datagram {
+                length: data.len() as u64,
+                raw: Some(String::from_utf8_lossy(data.as_ref()).to_string()),
             },
         }
     }
@@ -1111,6 +1178,13 @@ impl std::fmt::Debug for Frame {
                     f,
                     "PATH_STATUS dcid_seq_num={dcid_seq_num:x} seq_num={seq_num:x} status={status:x}",
                 )?;
+            }
+            Frame::Datagram { len, data, id } => {
+                if let Some(len) = len {
+                    write!(f, "DATAGRAM len={len} data={data:02x?} id={id:?}")?;
+                } else {
+                    write!(f, "DATAGRAM data={data:02x?} id={id:?}")?;
+                }
             }
         }
 
