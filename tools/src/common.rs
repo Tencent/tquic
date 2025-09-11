@@ -128,6 +128,45 @@ impl QuicSocket {
         let mut addrs = FxHashMap::default();
 
         let socket = UdpSocket::bind(*local)?;
+        // Enable receiving ECN bits where supported (best effort).
+        #[cfg(unix)]
+        {
+            use libc::{c_int, setsockopt, IPPROTO_IP, IP_RECVTOS};
+            use std::os::fd::AsRawFd;
+            let fd = socket.as_raw_fd();
+            unsafe {
+                let on: c_int = 1;
+                // IPv4: enable receiving TOS so we can extract ECN bits.
+                let _ = setsockopt(
+                    fd,
+                    IPPROTO_IP,
+                    IP_RECVTOS,
+                    &on as *const _ as *const _,
+                    std::mem::size_of_val(&on) as u32,
+                );
+            }
+            // IPv6: enable receiving traffic class for ECN (apply on all Unix where constant exists).
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "dragonfly",
+                target_os = "netbsd",
+                target_os = "openbsd"
+            ))]
+            unsafe {
+                use libc::{IPPROTO_IPV6, IPV6_RECVTCLASS};
+                let fd = socket.as_raw_fd();
+                let on: c_int = 1;
+                let _ = setsockopt(
+                    fd,
+                    IPPROTO_IPV6,
+                    IPV6_RECVTCLASS,
+                    &on as *const _ as *const _,
+                    std::mem::size_of_val(&on) as u32,
+                );
+            }
+        }
         let local_addr = socket.local_addr()?;
         let sid = socks.insert(socket);
         addrs.insert(local_addr, sid);
@@ -181,15 +220,94 @@ impl QuicSocket {
         &self,
         buf: &mut [u8],
         token: mio::Token,
-    ) -> std::io::Result<(usize, SocketAddr, SocketAddr)> {
+    ) -> std::io::Result<(usize, SocketAddr, SocketAddr, Option<u8>)> {
         let socket = match self.socks.get(token.0) {
             Some(socket) => socket,
             None => return Err(std::io::Error::new(ErrorKind::Other, "invalid token")),
         };
+        // Default path without ancillary parsing.
+        #[cfg(not(unix))]
+        {
+            match socket.recv_from(buf) {
+                Ok((len, remote)) => Ok((len, socket.local_addr()?, remote, None)),
+                Err(e) => Err(e),
+            }
+        }
+        #[cfg(unix)]
+        {
+            use libc::{
+                c_void, cmsghdr, iovec, msghdr, recvmsg, sockaddr_in, sockaddr_in6,
+                sockaddr_storage, socklen_t, AF_INET, AF_INET6, CMSG_DATA, CMSG_FIRSTHDR,
+                CMSG_NXTHDR, IPPROTO_IP, IPPROTO_IPV6, IPV6_TCLASS, IP_TOS, MSG_DONTWAIT,
+            };
+            use std::os::fd::AsRawFd;
+            let fd = socket.as_raw_fd();
+            let mut name: sockaddr_storage = unsafe { std::mem::zeroed() };
+            let name_len: socklen_t = std::mem::size_of::<sockaddr_storage>() as socklen_t;
+            let mut cmsg_space = [0u8; 64];
+            let mut iov = iovec {
+                iov_base: buf.as_mut_ptr() as *mut c_void,
+                iov_len: buf.len(),
+            };
+            let mut hdr = msghdr {
+                msg_name: &mut name as *mut _ as *mut c_void,
+                msg_namelen: name_len,
+                msg_iov: &mut iov,
+                msg_iovlen: 1,
+                msg_control: cmsg_space.as_mut_ptr() as *mut c_void,
+                msg_controllen: cmsg_space.len() as _,
+                msg_flags: 0,
+            };
+            let n = unsafe { recvmsg(fd, &mut hdr, MSG_DONTWAIT) };
+            if n < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // Derive remote address from sockaddr_storage
+            let remote = unsafe {
+                match name.ss_family as libc::c_int {
+                    AF_INET => {
+                        let sa: *const sockaddr_in = &name as *const _ as *const sockaddr_in;
+                        let sa = &*sa;
+                        let ip = std::net::Ipv4Addr::from(u32::from_be(sa.sin_addr.s_addr));
+                        let port = u16::from_be(sa.sin_port);
+                        SocketAddr::new(std::net::IpAddr::V4(ip), port)
+                    }
+                    AF_INET6 => {
+                        let sa: *const sockaddr_in6 = &name as *const _ as *const sockaddr_in6;
+                        let sa = &*sa;
+                        let ip = std::net::Ipv6Addr::from(sa.sin6_addr.s6_addr);
+                        let port = u16::from_be(sa.sin6_port);
+                        SocketAddr::new(std::net::IpAddr::V6(ip), port)
+                    }
+                    _ => {
+                        // Fallback: use secondary zero-length recv_from to fetch remote
+                        match socket.recv_from(&mut [0u8; 0]) {
+                            Ok((_, r)) => r,
+                            Err(e) => return Err(e),
+                        }
+                    }
+                }
+            };
 
-        match socket.recv_from(buf) {
-            Ok((len, remote)) => Ok((len, socket.local_addr()?, remote)),
-            Err(e) => Err(e),
+            // Parse control messages for ECN bits.
+            let mut ecn: Option<u8> = None;
+            unsafe {
+                let mut cmsg_ptr = CMSG_FIRSTHDR(&hdr as *const msghdr as *mut msghdr);
+                while !cmsg_ptr.is_null() {
+                    let cmsg: &cmsghdr = &*cmsg_ptr;
+                    if (cmsg.cmsg_level == IPPROTO_IP && cmsg.cmsg_type == IP_TOS)
+                        || (cmsg.cmsg_level == IPPROTO_IPV6 && cmsg.cmsg_type == IPV6_TCLASS)
+                    {
+                        let data_ptr = CMSG_DATA(cmsg_ptr) as *const u8;
+                        if !data_ptr.is_null() {
+                            let val = *data_ptr;
+                            ecn = Some(val & 0x03); // low 2 bits are ECN field
+                        }
+                    }
+                    cmsg_ptr = CMSG_NXTHDR(&hdr as *const msghdr as *mut msghdr, cmsg_ptr);
+                }
+            }
+            Ok((n as usize, socket.local_addr()?, remote, ecn))
         }
     }
 

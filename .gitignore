@@ -20,3 +20,12 @@ Cargo.lock
 .DS_Store
 
 dist
+# Demo logs
+demo/ack_frequency/logs/*
+
+out/
+# 仅跟踪 scripts 目录下的 .py 与 .sh 文件
+scripts/*
+!scripts/**/
+!scripts/**/*.py
+!scripts/**/*.sh

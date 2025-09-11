@@ -4621,9 +4621,11 @@ mod tests {
     fn client_send_priority_update_request_on_closed_stream() {
         let h3_conf = Http3Config::new().unwrap();
         let mut cli_conf = Session::new_test_config(false).unwrap();
-        cli_conf.set_ack_eliciting_threshold(1);
+        // threshold=0 => immediate ACK after semantics change
+        cli_conf.set_ack_eliciting_threshold(0);
         let mut srv_conf = Session::new_test_config(true).unwrap();
-        srv_conf.set_ack_eliciting_threshold(1);
+        // threshold=0 => immediate ACK after semantics change
+        srv_conf.set_ack_eliciting_threshold(0);
         let mut s = Session::new_with_test_config(&mut cli_conf, &mut srv_conf, &h3_conf).unwrap();
 
         // Client send a request with FIN flag.

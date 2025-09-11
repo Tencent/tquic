@@ -53,6 +53,8 @@
 #![allow(unused_imports)]
 #![allow(dead_code)]
 #![allow(unexpected_cfgs)]
+#![allow(mismatched_lifetime_syntaxes)]
+#![allow(clippy::uninlined_format_args)]
 
 use std::cmp;
 use std::collections::VecDeque;
@@ -260,6 +262,15 @@ pub struct PacketInfo {
 
     /// The time when the packet arrived or the time to send the packet
     pub time: time::Instant,
+
+    /// (Optional) ECN codepoint observed on receive. `None` if not available or if the
+    /// platform / socket does not expose ECN bits.
+    /// Values follow the two low bits of the IP ECN field: ECT(0)=0b10, ECT(1)=0b01, CE=0b11.
+    ///
+    /// NOTE: Runtime ECN-driven accelerated ACK logic is currently DISABLED; this field is
+    /// parsed and carried for future ECN statistics / ACK ecn_counts / congestion response.
+    /// No scheduling decision depends on it at present.
+    pub ecn: Option<u8>,
 }
 
 /// Address tuple.
@@ -412,6 +423,14 @@ impl Config {
     /// Idle timeout is disabled by default.
     pub fn set_max_idle_timeout(&mut self, v: u64) {
         self.local_transport_params.max_idle_timeout = cmp::min(v, VINT_MAX);
+    }
+
+    /// Advertise `min_ack_delay` (in microseconds) to enable ACK_FREQUENCY/IMMEDIATE_ACK support.
+    /// Must be less than 2^14 milliseconds (expressed here as microseconds) per draft constraint.
+    pub fn set_min_ack_delay_us(&mut self, v: u64) {
+        if v < (1u64 << 14) * 1000 {
+            self.local_transport_params.min_ack_delay = Some(v);
+        }
     }
 
     /// Set handshake timeout in milliseconds. Zero turns the timeout off.
@@ -797,6 +816,8 @@ pub struct RecoveryConfig {
 
     /// The maximum number of ack-eliciting packets the endpoint receives before
     /// sending an acknowledgment.
+    /// According to draft-ietf-quic-ack-frequency-latest, a value of N means ACK
+    /// should be sent after receiving N+1 ack-eliciting packets (unless set to 0).
     ack_eliciting_threshold: u64,
 
     /// The congestion control algorithm used for a path.
@@ -863,7 +884,8 @@ impl Default for RecoveryConfig {
             enable_dplpmtud: true,
             max_datagram_size: DEFAULT_SEND_UDP_PAYLOAD_SIZE, // The upper limit is determined by DPLPMTUD
             max_ack_delay: time::Duration::from_millis(0),
-            ack_eliciting_threshold: 2,
+            // ACK_FREQUENCY semantics: threshold N => ACK after N+1 ack-eliciting packets (0 => every packet)
+            ack_eliciting_threshold: 1, // Default: ACK every 2 packets (RFC9000 typical behavior)
             congestion_control_algorithm: CongestionControlAlgorithm::Bbr,
             min_congestion_window: 2_u64,
             initial_congestion_window: 10_u64,
@@ -920,6 +942,9 @@ enum Event {
 
     /// The connection has send a RETIRE_CONNECTION_ID frame.
     DcidRetired(ResetToken),
+
+    /// Peer advertised min_ack_delay enabling ACK_FREQUENCY send.
+    PeerAckFrequencyCapable,
 
     /// The client connection has received a stateless reset token from transport
     /// parameters extension.
@@ -1030,6 +1055,9 @@ pub trait TransportHandler {
 
     /// Called when client receives a token in NEW_TOKEN frame.
     fn on_new_token(&mut self, conn: &mut Connection, token: Vec<u8>);
+
+    /// Called when peer advertised min_ack_delay making ACK_FREQUENCY/IMMEDIATE_ACK send permissible.
+    fn on_peer_ack_frequency_capable(&mut self, _conn: &mut Connection) {}
 }
 
 /// The PacketSendHandler lists the callbacks used by the endpoint to
@@ -1139,6 +1167,13 @@ pub struct PathStats {
 
     /// Record the total number of times the PTO is triggered on this path
     pub pto_count: u64,
+
+    /// The last processed ACK_FREQUENCY frame sequence number.
+    /// Used to ignore old or out-of-order frames.
+    pub last_processed_ack_frequency_sequence: u64,
+
+    /// The next sequence number to use when sending an ACK_FREQUENCY frame.
+    pub next_ack_frequency_sequence: u64,
 }
 
 #[cfg(test)]
@@ -1218,6 +1253,73 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn min_ack_delay_us() -> Result<()> {
+        let mut config = Config::new()?;
+        // 默认 None
+        assert!(config.local_transport_params.min_ack_delay.is_none());
+
+        // 设置一个有效值 (< 2^14 ms)
+        config.set_min_ack_delay_us(1000);
+        assert_eq!(config.local_transport_params.min_ack_delay, Some(1000));
+
+        // 设置一个无效值 (>= 2^14 ms) 不应覆盖原值
+        config.set_min_ack_delay_us((1u64 << 14) * 1000); // 边界等于阈值应被忽略
+        assert_eq!(config.local_transport_params.min_ack_delay, Some(1000));
+        config.set_min_ack_delay_us(((1u64 << 14) * 1000) + 1); // 超过阈值也忽略
+        assert_eq!(config.local_transport_params.min_ack_delay, Some(1000));
+        Ok(())
+    }
+
+    #[test]
+    fn max_idle_timeout_cap() -> Result<()> {
+        let mut config = Config::new()?;
+        config.set_max_idle_timeout(VINT_MAX + 10); // 超过应被截断
+        assert_eq!(config.local_transport_params.max_idle_timeout, VINT_MAX);
+        Ok(())
+    }
+
+    #[test]
+    fn initial_max_data_cap() -> Result<()> {
+        let mut config = Config::new()?;
+        // 将 connection window 调得很小，测试限制
+        config.set_max_connection_window(10_000);
+        config.set_initial_max_data(50_000);
+        assert_eq!(config.local_transport_params.initial_max_data, 10_000);
+        Ok(())
+    }
+
+    #[test]
+    fn active_connection_id_limit_enforce_min() -> Result<()> {
+        let mut config = Config::new()?;
+        // 默认是 2
+        assert_eq!(config.local_transport_params.active_conn_id_limit, 2);
+        config.set_active_connection_id_limit(1); // 小于2应忽略
+        assert_eq!(config.local_transport_params.active_conn_id_limit, 2);
+        config.set_active_connection_id_limit(5);
+        assert_eq!(config.local_transport_params.active_conn_id_limit, 5);
+        Ok(())
+    }
+
+    #[test]
+    fn enable_encryption_toggle() -> Result<()> {
+        let mut config = Config::new()?;
+        // 默认启用加密 => disable_encryption = false
+        assert_eq!(config.local_transport_params.disable_encryption, false);
+        config.enable_encryption(false);
+        assert_eq!(config.local_transport_params.disable_encryption, true);
+        config.enable_encryption(true);
+        assert_eq!(config.local_transport_params.disable_encryption, false);
+        Ok(())
+    }
+
+    #[test]
+    fn connection_id_new_truncation() {
+        let long = vec![0u8; MAX_CID_LEN + 10];
+        let cid = ConnectionId::new(&long);
+        assert_eq!(cid.len(), MAX_CID_LEN);
     }
 }
 
