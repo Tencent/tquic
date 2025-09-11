@@ -337,6 +337,26 @@ pub struct ClientOpt {
     )]
     pub max_sample: usize,
 
+    /// Enable ACK Frequency extension by setting min_ack_delay (in microseconds).
+    #[clap(long, value_name = "MICROSECONDS", help_heading = "Protocol")]
+    pub min_ack_delay: Option<u64>,
+
+    /// ACK eliciting threshold for ACK_FREQUENCY frame.
+    #[clap(long, value_name = "NUM", help_heading = "Protocol")]
+    pub ack_eliciting_threshold: Option<u64>,
+
+    /// Requested max ACK delay for ACK_FREQUENCY frame (in microseconds).
+    #[clap(long, value_name = "MICROSECONDS", help_heading = "Protocol")]
+    pub requested_max_ack_delay: Option<u64>,
+
+    /// Reordering threshold for ACK_FREQUENCY frame.
+    #[clap(long, value_name = "NUM", help_heading = "Protocol")]
+    pub reordering_threshold: Option<u64>,
+
+    /// Send ACK_FREQUENCY frame after connection establishment.
+    #[clap(long, help_heading = "Protocol")]
+    pub send_ack_frequency: bool,
+
     /// The range of the request, like "0-1023".
     #[clap(long, value_name = "RANGE", help_heading = "Protocol")]
     pub range: Option<String>,
@@ -461,6 +481,16 @@ impl Client {
             context.conn_stats.sent_bytes,
             context.conn_stats.lost_bytes
         );
+        
+        // ACK Frequency extension statistics
+        if context.ack_frequency_frames_sent > 0 || context.ack_frequency_enabled_conns > 0 {
+            println!(
+                "ACK Frequency: frames sent {}, enabled connections {}",
+                context.ack_frequency_frames_sent,
+                context.ack_frequency_enabled_conns
+            );
+        }
+        
         println!();
     }
 }
@@ -480,6 +510,9 @@ struct ClientContext {
     conn_finish_failed: u64,
     end_time: Option<Instant>,
     conn_stats: ConnectionStats,
+    // ACK Frequency extension statistics
+    ack_frequency_frames_sent: u64,
+    ack_frequency_enabled_conns: u64,
 }
 
 fn update_conn_stats(total: &mut ConnectionStats, one: &ConnectionStats) {
@@ -556,6 +589,13 @@ impl Worker {
         config.enable_multipath(option.enable_multipath);
         config.set_multipath_algorithm(option.multipath_algor);
         config.set_active_connection_id_limit(option.active_cid_limit);
+        
+        // Configure ACK Frequency extension if min_ack_delay is specified
+        if let Some(min_ack_delay) = option.min_ack_delay {
+            config.set_min_ack_delay(Some(min_ack_delay));
+            info!("ACK Frequency extension enabled with min_ack_delay: {} microseconds", min_ack_delay);
+        }
+        
         config.enable_encryption(!option.disable_encryption);
         let mut tls_config = TlsConfig::new_client_config(
             ApplicationProto::convert_to_vec(&option.alpn),
@@ -822,6 +862,8 @@ impl Worker {
         client_ctx.conn_finish += worker_ctx.conn_finish;
         client_ctx.conn_finish_success += worker_ctx.conn_finish_success;
         client_ctx.conn_finish_failed += worker_ctx.conn_finish_failed;
+        client_ctx.ack_frequency_frames_sent += worker_ctx.ack_frequency_frames_sent;
+        client_ctx.ack_frequency_enabled_conns += worker_ctx.ack_frequency_enabled_conns;
         client_ctx
             .request_time_samples
             .append(&mut worker_ctx.request_time_samples);
@@ -849,6 +891,9 @@ struct WorkerContext {
     concurrent_conns: u32,
     conn_stats: ConnectionStats,
     connected: bool,
+    // ACK Frequency extension statistics
+    ack_frequency_frames_sent: u64,
+    ack_frequency_enabled_conns: u64,
 }
 
 impl WorkerContext {
@@ -1441,6 +1486,38 @@ impl TransportHandler for WorkerHandler {
             let mut worker_ctx = self.worker_ctx.borrow_mut();
             worker_ctx.conn_handshake_success += 1;
             worker_ctx.connected = true;
+        }
+
+        // Send ACK_FREQUENCY frame if enabled
+        if self.option.send_ack_frequency {
+            let ack_eliciting_threshold = self.option.ack_eliciting_threshold.unwrap_or(2);
+            let requested_max_ack_delay = self.option.requested_max_ack_delay.unwrap_or(16000); // 25ms in microseconds
+            let reordering_threshold = self.option.reordering_threshold.unwrap_or(3);
+            
+            match conn.update_ack_frequency(
+                ack_eliciting_threshold,
+                requested_max_ack_delay,
+                reordering_threshold,
+            ) {
+                Ok(_) => {
+                    info!(
+                        "{} sent ACK_FREQUENCY frame: threshold={}, max_delay={}μs, reordering={}",
+                        conn.trace_id(),
+                        ack_eliciting_threshold,
+                        requested_max_ack_delay,
+                        reordering_threshold
+                    );
+                    // Update statistics
+                    let mut worker_ctx = self.worker_ctx.borrow_mut();
+                    worker_ctx.ack_frequency_frames_sent += 1;
+                    worker_ctx.ack_frequency_enabled_conns += 1;
+                },
+                Err(e) => warn!(
+                    "{} failed to send ACK_FREQUENCY frame: {}",
+                    conn.trace_id(),
+                    e
+                ),
+            }
         }
 
         // Try to add additional paths

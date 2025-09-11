@@ -1106,6 +1106,7 @@ pub enum QuicFrameTypeName {
     ConnectionClose,
     ApplicationClose,
     HandshakeDone,
+    ImmediateAck,
     Datagram,
     Unknown,
 }
@@ -1212,6 +1213,8 @@ pub enum QuicFrame {
     },
 
     HandshakeDone,
+
+    ImmediateAck,
 
     Datagram {
         length: u64,

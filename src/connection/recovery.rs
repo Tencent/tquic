@@ -60,6 +60,19 @@ pub struct Recovery {
     /// It is used for PTO calculation.
     pub max_ack_delay: Duration,
 
+    /// The number of ack-eliciting packets that the receiver is willing to
+    /// receive before sending an acknowledgement.
+    /// See draft-ietf-quic-ack-frequency-11.
+    pub peer_ack_eliciting_threshold: u64,
+
+    /// The sequence number of the last ACK_FREQUENCY frame received from the peer.
+    pub peer_ack_frequency_sequence_number: u64,
+
+    /// The maximum number of reordered packets that the receiver is willing to
+    /// wait before sending an acknowledgement.
+    /// See draft-ietf-quic-ack-frequency-11.
+    pub peer_reordering_threshold: u64,
+
     /// The validated maximum size of outgoing UDP payloads in bytes.
     pub max_datagram_size: usize,
 
@@ -127,6 +140,9 @@ impl Recovery {
     pub(super) fn new(conf: &RecoveryConfig) -> Self {
         Recovery {
             max_ack_delay: conf.max_ack_delay,
+            peer_ack_eliciting_threshold: conf.ack_eliciting_threshold,
+            peer_ack_frequency_sequence_number: 0,
+            peer_reordering_threshold: 0,
             max_datagram_size: crate::DEFAULT_SEND_UDP_PAYLOAD_SIZE,
             pto_linear_factor: conf.pto_linear_factor,
             max_pto: conf.max_pto,
@@ -268,7 +284,7 @@ impl Recovery {
         }
 
         // Update RTT estimation
-        // TODO: check ack_delay against amx_ack_delay
+        // TODO: check ack_delay against max_ack_delay
         if let Some(rtt) = rtt_sample {
             // When adjusting an RTT sample using peer-reported acknowledgment
             // delays, an endpoint:
@@ -592,6 +608,8 @@ impl Recovery {
     /// When the loss detection timer expires, the timer's mode determines the
     /// action to be performed.
     /// See RFC 9002 Section A.10. On Timeout
+    ///
+    /// The return value is (lost_packets, lost_bytes, pto_fired).
     pub(super) fn on_loss_detection_timeout(
         &mut self,
         space_id: SpaceId,
@@ -599,11 +617,11 @@ impl Recovery {
         handshake_status: HandshakeStatus,
         #[cfg(feature = "qlog")] qlog: Option<&mut qlog::QlogWriter>,
         now: Instant,
-    ) -> (u64, u64) {
+    ) -> (u64, u64, bool) {
         let (earliest_loss_time, sid) = self.get_loss_time_and_space(space_id, spaces);
         let space = match spaces.get_mut(sid) {
             Some(space) => space,
-            None => return (0, 0),
+            None => return (0, 0, false),
         };
 
         // Loss timer mode
@@ -617,7 +635,7 @@ impl Recovery {
             );
             self.drain_sent_packets(space, now, self.rtt.smoothed_rtt());
             self.set_loss_detection_timer(space_id, spaces, handshake_status, now);
-            return (lost_packets, lost_bytes);
+            return (lost_packets, lost_bytes, false);
         }
 
         // PTO timer mode
@@ -638,7 +656,7 @@ impl Recovery {
         };
         let space = match spaces.get_mut(sid) {
             Some(space) => space,
-            None => return (0, 0),
+            None => return (0, 0, false),
         };
         self.pto_count += 1;
 
@@ -663,7 +681,8 @@ impl Recovery {
         }
 
         self.set_loss_detection_timer(space_id, spaces, handshake_status, now);
-        (0, 0)
+        // pto triggered
+        (0, 0, true)
     }
 
     /// Return the min loss time and the corresponding space
@@ -1190,7 +1209,7 @@ mod tests {
 
         // Advance ticks until loss timeout
         now = recovery.loss_detection_timer().unwrap();
-        let (lost_pkts, lost_bytes) = recovery.on_loss_detection_timeout(
+        let (lost_pkts, lost_bytes, pto_fired) = recovery.on_loss_detection_timeout(
             SpaceId::Handshake,
             &mut spaces,
             status,
@@ -1198,6 +1217,7 @@ mod tests {
             None,
             now,
         );
+        assert!(!pto_fired);
         assert_eq!(lost_pkts, 1);
         assert_eq!(lost_bytes, 1001);
         assert_eq!(spaces.get(space_id).unwrap().ack_eliciting_in_flight, 0);
@@ -1341,7 +1361,7 @@ mod tests {
 
         // Advance ticks until pto timeout
         now = recovery.loss_detection_timer().unwrap();
-        let (lost_pkts, lost_bytes) = recovery.on_loss_detection_timeout(
+        let (lost_pkts, lost_bytes, pto_fired) = recovery.on_loss_detection_timeout(
             SpaceId::Handshake,
             &mut spaces,
             status,
@@ -1349,6 +1369,7 @@ mod tests {
             None,
             now,
         );
+        assert!(pto_fired);
         assert_eq!(recovery.pto_count, 1);
         assert_eq!(lost_pkts, 0);
         assert_eq!(lost_bytes, 0);

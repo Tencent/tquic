@@ -92,8 +92,17 @@ pub struct PacketNumSpace {
     /// Highest received ack-eliciting packet number.
     pub largest_rx_ack_eliciting_pkt_num: u64,
 
+    /// Largest Acknowledged value sent in an ACK frame packed number.
+    pub largest_acked_pkt_num: u64,
+
+    /// Largest reported Missing packet number.
+    pub largest_reported_pkt_num: u64,
+
     /// The packet numbers to acknowledge.
     pub recv_pkt_num_need_ack: RangeSet,
+
+    /// The packet numbers to unreported missing.
+    pub unrecv_pkt_num_need_report: RangeSet,
 
     /// The packet number window for deduplicate detection.
     pub recv_pkt_num_win: SeqNumWindow,
@@ -157,7 +166,10 @@ impl PacketNumSpace {
             largest_rx_pkt_time: Instant::now(),
             largest_rx_non_probing_pkt_num: 0,
             largest_rx_ack_eliciting_pkt_num: 0,
+            largest_acked_pkt_num: 0,
+            largest_reported_pkt_num: 0,
             recv_pkt_num_need_ack: RangeSet::new(crate::MAX_ACK_RANGES),
+            unrecv_pkt_num_need_report: RangeSet::new(crate::MAX_ACK_RANGES),
             recv_pkt_num_win: SeqNumWindow::default(),
             need_send_ack: false,
             ack_eliciting_pkts_since_last_sent_ack: 0,

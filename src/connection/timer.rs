@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::fmt;
 use std::time::Instant;
 
 use strum::EnumCount;
@@ -52,6 +53,29 @@ pub(crate) enum Timer {
 #[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct TimerTable {
     expires: [Option<Instant>; Timer::COUNT],
+}
+
+impl fmt::Display for TimerTable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, timer_expires) in self.expires.iter().enumerate() {
+            if let Some(expires) = timer_expires {
+                let timer_type = match i {
+                    0 => "LossDetection",
+                    1 => "Ack",
+                    2 => "Pacer",
+                    3 => "Idle",
+                    4 => "Handshake",
+                    5 => "Draining",
+                    6 => "KeyDiscard",
+                    7 => "KeepAlive",
+                    8 => "PathChallenge",
+                    _ => "Unknown",
+                };
+                writeln!(f, "Timer::{}: {:?}", timer_type, expires)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 impl TimerTable {

@@ -254,6 +254,10 @@ pub struct ServerOpt {
     )]
     pub zerortt_buffer_size: usize,
 
+    /// Minimum ACK delay in microseconds for ACK Frequency extension.
+    #[clap(long, value_name = "MICROSECONDS", help_heading = "Protocol")]
+    pub min_ack_delay: Option<u64>,
+
     /// Disable encryption on 1-RTT packets.
     #[clap(long, help_heading = "Misc")]
     pub disable_encryption: bool,
@@ -299,6 +303,13 @@ impl Server {
         config.enable_multipath(option.enable_multipath);
         config.set_multipath_algorithm(option.multipath_algor);
         config.set_active_connection_id_limit(option.active_cid_limit);
+        
+        // Configure ACK Frequency extension if min_ack_delay is specified
+        if let Some(min_ack_delay) = option.min_ack_delay {
+            config.set_min_ack_delay(Some(min_ack_delay));
+            info!("ACK Frequency extension enabled with min_ack_delay: {}μs", min_ack_delay);
+        }
+        
         config.enable_encryption(!option.disable_encryption);
 
         if let Some(address_token_key) = &option.address_token_key {

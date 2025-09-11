@@ -1181,6 +1181,71 @@ pub extern "C" fn quic_conn_ping_path(
     }
 }
 
+/// Request the peer to send an acknowledgement immediately.
+///
+/// This sends an IMMEDIATE_ACK frame on all active paths to request an immediate
+/// acknowledgement from the peer. This is useful in scenarios like recovering from
+/// idle or before entering an idle period to get timely feedback.
+#[no_mangle]
+pub extern "C" fn quic_conn_immediate_ack(conn: &mut Connection) -> c_int {
+    match conn.immediate_ack(None) {
+        Ok(_) => 0,
+        Err(e) => e.to_errno() as c_int,
+    }
+}
+
+/// Request the peer to send an acknowledgement immediately on a specific path.
+///
+/// This sends an IMMEDIATE_ACK frame on the specified path. This function is
+/// mainly useful for multipath QUIC connections.
+#[no_mangle]
+pub extern "C" fn quic_conn_immediate_ack_path(
+    conn: &mut Connection,
+    local: &sockaddr,
+    local_len: socklen_t,
+    remote: &sockaddr,
+    remote_len: socklen_t,
+) -> c_int {
+    let addr = FourTuple {
+        local: sock_addr_from_c(local, local_len),
+        remote: sock_addr_from_c(remote, remote_len),
+    };
+    match conn.immediate_ack(Some(addr)) {
+        Ok(_) => 0,
+        Err(e) => e.to_errno() as c_int,
+    }
+}
+
+///Set the `min_ack_delay` transmission parameter in microseconds.
+///
+/// `min_ack_delay` is a transmission parameter used to inform the peer that the peer expects it to send ACK before sending ACK
+///at least how long. Setting this parameter enables ACK_FREQUENCY and IMMEDIATE_ACK frame functionality.
+#[no_mangle]
+pub extern "C" fn quic_config_set_min_ack_delay(config: &mut Config, val: u64) {
+    config.set_min_ack_delay(Some(val));
+}
+
+/// Request the peer to update its ACK frequency
+///
+/// This function creates an ACK_FREQUENCY frame and places it in the pending queue.
+/// The protocol stack will send the frame in a 1-RTT packet at the right time.
+#[no_mangle]
+pub extern "C" fn quic_conn_update_ack_frequency(
+    conn: &mut Connection,
+    ack_eliciting_threshold: u64,
+    requested_max_ack_delay: u64,
+    reordering_threshold: u64,
+) -> c_int {
+    match conn.update_ack_frequency(
+        ack_eliciting_threshold,
+        requested_max_ack_delay,
+        reordering_threshold,
+    ) {
+        Ok(_) => 0,
+        Err(e) => e.to_errno() as c_int,
+    }
+}
+
 /// Add a new path on the client connection.
 #[no_mangle]
 pub extern "C" fn quic_conn_add_path(
