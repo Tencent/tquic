@@ -53,6 +53,8 @@
 #![allow(unused_imports)]
 #![allow(dead_code)]
 #![allow(unexpected_cfgs)]
+#![allow(mismatched_lifetime_syntaxes)]
+#![allow(clippy::uninlined_format_args)]
 
 use std::cmp;
 use std::collections::VecDeque;
@@ -356,6 +358,12 @@ pub struct Config {
 
     /// Find TLS config according to server name.
     tls_config_selector: Option<Arc<dyn tls::TlsConfigSelector>>,
+
+    /// Max datagram send queue size
+    max_datagram_send_queue_size: u64,
+
+    /// Max datagram recv queue size
+    max_datagram_recv_queue_size: u64,
 }
 
 impl Config {
@@ -405,6 +413,8 @@ impl Config {
             recovery: RecoveryConfig::default(),
             multipath: MultipathConfig::default(),
             tls_config_selector: None,
+            max_datagram_send_queue_size: 64,
+            max_datagram_recv_queue_size: 128,
         })
     }
 
@@ -745,6 +755,24 @@ impl Config {
         self.local_transport_params.disable_encryption = !v;
     }
 
+    /// Set max datagram frame size.
+    /// Setting the value to a number greater than 0 enables datagram transportation.
+    /// For most uses of DATAGRAM frames, it is recommended to set value to 65535.
+    /// It indicates that this endpoint will accept any DATAGRAM frame that fits inside a QUIC packet.
+    pub fn set_max_datagram_frame_size(&mut self, v: u64) {
+        self.local_transport_params.max_datagram_frame_size = v;
+    }
+
+    /// Set max datagram send queue size. Default size is 64.
+    pub fn set_max_datagram_send_queue_size(&mut self, v: u64) {
+        self.max_datagram_send_queue_size = v;
+    }
+
+    /// Set max datagram recv queue size. Default size is 128.
+    pub fn set_max_datagram_recv_queue_size(&mut self, v: u64) {
+        self.max_datagram_recv_queue_size = v;
+    }
+
     /// Set TLS config.
     pub fn set_tls_config(&mut self, tls_config: tls::TlsConfig) {
         self.set_tls_config_selector(Arc::new(tls::DefaultTlsConfigSelector {
@@ -930,6 +958,14 @@ enum Event {
 
     /// The stream is closed.
     StreamClosed(u64),
+
+    /// Datagram frame is lost.
+    /// If second parameter is true, the lost reason is timeout.
+    /// Otherwise, frame is dropped due to size too large.
+    DatagramFrameLost(u64, bool),
+
+    /// Datagram frame is acked.
+    DatagramFrameAcked(u64),
 }
 
 #[derive(Default)]
@@ -1030,6 +1066,15 @@ pub trait TransportHandler {
 
     /// Called when client receives a token in NEW_TOKEN frame.
     fn on_new_token(&mut self, conn: &mut Connection, token: Vec<u8>);
+
+    /// Called when connection receives a datagram.
+    fn on_datagram_readable(&mut self, conn: &mut Connection);
+
+    /// Called when connection detects a datagram frame lost.
+    fn on_datagram_lost(&mut self, conn: &mut Connection, length: u64, timeout_lost: bool);
+
+    /// Called when a datagram frame is acked.
+    fn on_datagram_acked(&mut self, conn: &mut Connection, length: u64);
 }
 
 /// The PacketSendHandler lists the callbacks used by the endpoint to

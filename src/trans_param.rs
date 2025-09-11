@@ -121,6 +121,12 @@ pub struct TransportParams {
     /// completely trust the path between themselves.
     /// See draft-banks-quic-disable-encryption-00.
     pub disable_encryption: bool,
+
+    /// The max_datagram_frame_size transport parameter is an integer value
+    /// (represented as a variable-length integer) that represents the maximum size of
+    /// a DATAGRAM frame (including the frame type, length, and payload)
+    /// the endpoint is willing to receive, in bytes.
+    pub max_datagram_frame_size: u64,
 }
 
 impl TransportParams {
@@ -256,6 +262,10 @@ impl TransportParams {
                         return Err(Error::TransportParameterError);
                     }
                     tp.retry_source_connection_id = Some(ConnectionId::new(val));
+                }
+
+                0x0020 => {
+                    tp.max_datagram_frame_size = val.read_varint()?;
                 }
 
                 0x0f739bbc1b666d05 => {
@@ -394,6 +404,12 @@ impl TransportParams {
             }
         }
 
+        if tp.max_datagram_frame_size != 0 {
+            buf.write_varint(0x0020)?;
+            buf.write_varint(codec::encode_varint_len(tp.max_datagram_frame_size) as u64)?;
+            buf.write_varint(tp.max_datagram_frame_size)?;
+        }
+
         if tp.enable_multipath {
             buf.write_varint(0x0f739bbc1b666d05)?;
             buf.write_varint(0)?;
@@ -483,6 +499,7 @@ impl Default for TransportParams {
 
             enable_multipath: false,
             disable_encryption: false,
+            max_datagram_frame_size: 0,
         }
     }
 }
@@ -583,6 +600,7 @@ mod tests {
             retry_source_connection_id: None,
             enable_multipath: true,
             disable_encryption: false,
+            max_datagram_frame_size: 0,
         };
 
         // encode on the client side
@@ -627,6 +645,7 @@ mod tests {
             retry_source_connection_id: Some(ConnectionId::random()),
             enable_multipath: false,
             disable_encryption: true,
+            max_datagram_frame_size: 0,
         };
 
         // encode on the server side

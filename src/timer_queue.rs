@@ -51,12 +51,12 @@ impl TimerQueue {
 
     /// Add a timer into the queue, replacing any existing timer if one exists.
     pub fn add(&mut self, idx: u64, duration: Duration, now: Instant) {
-        _ = self.timers.push(idx, now + duration);
+        let _ = self.timers.push(idx, now + duration);
     }
 
     /// Delete a timer by id.
     pub fn del(&mut self, idx: &u64) {
-        _ = self.timers.remove(idx);
+        let _ = self.timers.remove(idx);
     }
 
     /// Return the amount of time remaining for the earliest expiring timer.

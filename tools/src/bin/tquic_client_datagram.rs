@@ -31,6 +31,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
+use std::time::Duration;
 use std::time::Instant;
 
 use bytes::Bytes;
@@ -42,6 +43,7 @@ use log::error;
 use log::info;
 use log::warn;
 use mio::event::Event;
+use rand;
 use rand::Rng;
 use rustc_hash::FxHashMap;
 use statrs::statistics::Data;
@@ -200,6 +202,31 @@ pub struct ClientOpt {
     /// Enable multipath transport.
     #[clap(long, help_heading = "Protocol")]
     pub enable_multipath: bool,
+
+    /// Maximum datagram size in packets.
+    #[clap(
+        long,
+        default_value = "0",
+        value_name = "NUM",
+        help_heading = "Protocol"
+    )]
+    pub max_datagram_frame_size: u64,
+
+    #[clap(
+        long,
+        default_value = "0",
+        value_name = "NUM",
+        help_heading = "Protocol"
+    )]
+    pub total_datagram_msg_per_thread: u64,
+
+    #[clap(
+        long,
+        default_value = "0",
+        value_name = "NUM",
+        help_heading = "Protocol"
+    )]
+    pub datagram_expiration_time: u64,
 
     /// Multipath scheduling algorithm.
     #[clap(long, default_value = "MINRTT", help_heading = "Protocol")]
@@ -418,7 +445,9 @@ impl Client {
         println!(
             "finished in {:?}, {:.2} req/s",
             d,
-            context.request_success as f64 / d.as_millis() as f64 * 1000.0
+            (context.request_success as f64 + context.datagram_msg_acked as f64)
+                / d.as_millis() as f64
+                * 1000.0
         );
         println!(
             "conns: total {}, finish {}, success {}, failure {}",
@@ -426,6 +455,13 @@ impl Client {
             context.conn_finish,
             context.conn_finish_success,
             context.conn_finish_failed,
+        );
+        println!(
+            "conns: total {}, datagram message finish {}, acked {}, lost {}",
+            context.conn_total,
+            context.datagram_msg_sent,
+            context.datagram_msg_acked,
+            context.datagram_msg_lost,
         );
         println!(
             "requests: sent {}, finish {}, success {}",
@@ -480,6 +516,9 @@ struct ClientContext {
     conn_finish_failed: u64,
     end_time: Option<Instant>,
     conn_stats: ConnectionStats,
+    datagram_msg_sent: u64,
+    datagram_msg_acked: u64,
+    datagram_msg_lost: u64,
 }
 
 fn update_conn_stats(total: &mut ConnectionStats, one: &ConnectionStats) {
@@ -528,6 +567,9 @@ struct Worker {
 
     /// If terminated by system signal.
     terminated: Arc<AtomicBool>,
+
+    /// Time that Datagram msg expire, if datagram_expiration_time is not 0.
+    datagram_expire_time: Option<Instant>,
 }
 
 impl Worker {
@@ -557,6 +599,7 @@ impl Worker {
         config.set_multipath_algorithm(option.multipath_algor);
         config.set_active_connection_id_limit(option.active_cid_limit);
         config.enable_encryption(!option.disable_encryption);
+        config.set_max_datagram_frame_size(option.max_datagram_frame_size);
         let mut tls_config = TlsConfig::new_client_config(
             ApplicationProto::convert_to_vec(&option.alpn),
             option.enable_early_data,
@@ -618,6 +661,12 @@ impl Worker {
             senders.clone(),
         );
 
+        let mut datagram_expire_at: Option<Instant> = None;
+        if option.max_datagram_frame_size != 0 && option.datagram_expiration_time != 0 {
+            datagram_expire_at =
+                Some(Instant::now() + Duration::from_millis(option.datagram_expiration_time + 10));
+        }
+
         Ok(Worker {
             option,
             endpoint: Endpoint::new(Box::new(config), false, Box::new(handlers), sock.clone()),
@@ -631,6 +680,7 @@ impl Worker {
             start_time: Instant::now(),
             end_time: None,
             terminated,
+            datagram_expire_time: datagram_expire_at,
         })
     }
 
@@ -672,7 +722,7 @@ impl Worker {
             return true;
         }
 
-        let worker_ctx = self.worker_ctx.borrow();
+        let mut worker_ctx = self.worker_ctx.borrow_mut();
         debug!("worker concurrent conns {}", worker_ctx.concurrent_conns);
 
         if !worker_ctx.connected
@@ -685,10 +735,19 @@ impl Worker {
             return true;
         }
 
+        if self
+            .datagram_expire_time
+            .map(|expire_time| Instant::now() > expire_time)
+            .unwrap_or(false)
+        {
+            worker_ctx.datagram_msg_finished = true;
+        }
+
         if (self.option.duration > 0
             && (Instant::now() - self.start_time).as_secs() > self.option.duration)
             || (self.option.total_requests_per_thread > 0
-                && worker_ctx.request_done >= self.option.total_requests_per_thread)
+                && worker_ctx.request_done >= self.option.total_requests_per_thread
+                && worker_ctx.datagram_msg_finished)
         {
             debug!(
                 "worker should exit, concurrent conns {}, request sent {}, request done {}",
@@ -742,6 +801,12 @@ impl Worker {
     fn create_new_conns(&mut self) -> Result<()> {
         let mut worker_ctx = self.worker_ctx.borrow_mut();
         while worker_ctx.concurrent_conns < self.option.max_concurrent_conns {
+            if self.option.total_requests_per_thread > 0
+                && worker_ctx.request_done >= self.option.total_requests_per_thread
+            {
+                println!("do not create conn");
+                break;
+            }
             match self.endpoint.connect(
                 self.sock.local_addr(),
                 self.remote,
@@ -815,6 +880,9 @@ impl Worker {
         let mut client_ctx = self.client_ctx.lock().unwrap();
         client_ctx.session.clone_from(&worker_ctx.session);
         client_ctx.request_sent += worker_ctx.request_sent;
+        client_ctx.datagram_msg_acked += worker_ctx.datagram_msg_acked;
+        client_ctx.datagram_msg_lost += worker_ctx.datagram_msg_lost;
+        client_ctx.datagram_msg_sent += worker_ctx.datagram_msg_sent;
         client_ctx.request_done += worker_ctx.request_done;
         client_ctx.request_success += worker_ctx.request_success;
         client_ctx.conn_total += worker_ctx.conn_total;
@@ -849,6 +917,10 @@ struct WorkerContext {
     concurrent_conns: u32,
     conn_stats: ConnectionStats,
     connected: bool,
+    datagram_msg_sent: u64,
+    datagram_msg_acked: u64,
+    datagram_msg_lost: u64,
+    datagram_msg_finished: bool,
 }
 
 impl WorkerContext {
@@ -987,6 +1059,12 @@ struct RequestSender {
 
     /// H3 connection, used in h3 mode.
     h3_conn: Option<Http3Connection>,
+
+    /// Datagram msg already done of this sender.
+    datagram_msg_done: u64,
+
+    /// Datagram msg already sent.
+    sent_datagram_msg: u64,
 }
 
 impl RequestSender {
@@ -1008,6 +1086,8 @@ impl RequestSender {
             app_proto: ApplicationProto::from_slice(conn.application_proto()),
             next_stream_id: 0,
             h3_conn: None,
+            datagram_msg_done: 0,
+            sent_datagram_msg: 0,
         };
 
         if sender.app_proto == ApplicationProto::H3 {
@@ -1029,6 +1109,11 @@ impl RequestSender {
             self.request_sent,
             self.option.max_requests_per_conn
         );
+
+        if self.sent_datagram_msg < self.option.total_datagram_msg_per_thread {
+            self.send_datagram_msg(conn);
+            self.sent_datagram_msg += 1;
+        }
 
         while self.concurrent_requests < self.option.max_concurrent_requests
             && (self.option.max_requests_per_conn == 0
@@ -1142,6 +1227,32 @@ impl RequestSender {
         };
 
         Ok(s)
+    }
+
+    fn send_datagram_msg(&mut self, conn: &mut Connection) {
+        const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ\
+                            abcdefghijklmnopqrstuvwxyz\
+                            0123456789)(*&^%$#@!~";
+        let mut rng = rand::thread_rng();
+        let p: u8 = rng.gen_range(127..=128);
+        let cnt = rng.gen_range(1100..=1600);
+
+        let mut data: String = (0..cnt)
+            .map(|_| {
+                let idx = rng.gen_range(0..CHARSET.len());
+                CHARSET[idx] as char
+            })
+            .collect();
+        data.push_str(" Priority = ");
+        data.push_str(&p.to_string());
+
+        let _ = conn.datagram_write(
+            p,
+            Bytes::copy_from_slice(data.as_bytes()),
+            self.option.datagram_expiration_time,
+        );
+        let mut worker_ctx = self.worker_ctx.borrow_mut();
+        worker_ctx.datagram_msg_sent += 1;
     }
 
     fn sample_request_time(request: &Request, worker_ctx: &mut RefMut<WorkerContext>) {
@@ -1278,6 +1389,10 @@ impl RequestSender {
                         self.request_done,
                         self.option.max_requests_per_conn
                     );
+                    if self.datagram_msg_done != self.option.total_datagram_msg_per_thread {
+                        error!("datagram not finished yet, close conn later");
+                        return;
+                    }
 
                     self.request_done += 1;
                     self.concurrent_requests -= 1;
@@ -1310,6 +1425,37 @@ impl RequestSender {
                 }
             }
         }
+    }
+
+    fn recv_datagram_ack(&mut self, conn: &mut Connection, length: u64) {
+        debug!(
+            "{} has datagram frame acked, length {}",
+            conn.trace_id(),
+            length
+        );
+        self.datagram_msg_done += 1;
+        let mut worker_ctx = self.worker_ctx.borrow_mut();
+        worker_ctx.datagram_msg_acked += 1;
+    }
+
+    fn recv_datagram_lost(&mut self, conn: &mut Connection, length: u64, timeout_lost: bool) {
+        debug!(
+            "{} has datagram frame lost, length {}, caused by timeout {}",
+            conn.trace_id(),
+            length,
+            timeout_lost,
+        );
+        self.datagram_msg_done += 1;
+        let mut worker_ctx = self.worker_ctx.borrow_mut();
+        worker_ctx.datagram_msg_lost += 1;
+    }
+
+    fn recv_datagram_data(&mut self, conn: &mut Connection) {
+        debug!("{} has datagram to read", conn.trace_id());
+        let mut out: Vec<u8> = vec![0; 2000];
+        let read = conn.datagram_read(&mut out);
+        let data = std::str::from_utf8(&out[..read.unwrap_or(0)]).unwrap();
+        debug!("Received datagram message: {}", data);
     }
 }
 
@@ -1365,9 +1511,11 @@ impl WorkerHandler {
         if let Some(s) = sender {
             if s.request_done == s.option.max_requests_per_conn
                 && !(conn.is_closing() || conn.is_closed())
+                && s.datagram_msg_done == s.option.total_datagram_msg_per_thread
             {
                 let mut worker_ctx = self.worker_ctx.borrow_mut();
                 worker_ctx.concurrent_conns -= 1;
+                worker_ctx.datagram_msg_finished = true;
                 debug!(
                     "{} all requests finished, close connection",
                     conn.trace_id()
@@ -1428,6 +1576,11 @@ impl TransportHandler for WorkerHandler {
 
         if conn.is_in_early_data() {
             self.try_new_request_sender(conn);
+            let _ = conn.datagram_write(
+                0,
+                Bytes::copy_from_slice(String::from("Early Datagram data test.").as_bytes()),
+                self.option.datagram_expiration_time,
+            );
         }
     }
 
@@ -1463,7 +1616,6 @@ impl TransportHandler for WorkerHandler {
                 }
             }
         }
-
         self.try_new_request_sender(conn);
     }
 
@@ -1542,11 +1694,48 @@ impl TransportHandler for WorkerHandler {
 
     fn on_new_token(&mut self, _conn: &mut Connection, _token: Vec<u8>) {}
 
-    fn on_datagram_readable(&mut self, _conn: &mut Connection) {}
+    fn on_datagram_readable(&mut self, conn: &mut Connection) {
+        {
+            let index = conn.index().unwrap();
+            let mut senders = self.senders.borrow_mut();
+            let sender = senders.get_mut(&index);
+            if let Some(s) = sender {
+                s.recv_datagram_data(conn);
+            } else {
+                debug!("{} sender not exist", conn.trace_id());
+            }
+        }
+    }
 
-    fn on_datagram_lost(&mut self, _conn: &mut Connection, _length: u64, _timeout_lost: bool) {}
+    fn on_datagram_lost(&mut self, conn: &mut Connection, length: u64, timeout_lost: bool) {
+        {
+            let index = conn.index().unwrap();
+            let mut senders = self.senders.borrow_mut();
+            let sender = senders.get_mut(&index);
+            if let Some(s) = sender {
+                s.recv_datagram_lost(conn, length, timeout_lost);
+            } else {
+                debug!("{} sender not exist", conn.trace_id());
+            }
+        }
+        self.try_send_request(conn);
+        self.try_close_conn(conn);
+    }
 
-    fn on_datagram_acked(&mut self, _conn: &mut Connection, _length: u64) {}
+    fn on_datagram_acked(&mut self, conn: &mut Connection, length: u64) {
+        {
+            let index = conn.index().unwrap();
+            let mut senders = self.senders.borrow_mut();
+            let sender = senders.get_mut(&index);
+            if let Some(s) = sender {
+                s.recv_datagram_ack(conn, length);
+            } else {
+                debug!("{} sender not exist", conn.trace_id());
+            }
+        }
+        self.try_send_request(conn);
+        self.try_close_conn(conn);
+    }
 }
 
 fn process_connect_address(option: &mut ClientOpt) {

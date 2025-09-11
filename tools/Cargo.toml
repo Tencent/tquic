@@ -39,3 +39,11 @@ path="src/bin/tquic_client.rs"
 [[bin]]
 name="tquic_server"
 path="src/bin/tquic_server.rs"
+
+[[bin]]
+name="tquic_client_datagram_test"
+path="src/bin/tquic_client_datagram.rs"
+
+[[bin]]
+name="tquic_server_datagram_test"
+path="src/bin/tquic_server_datagram.rs"

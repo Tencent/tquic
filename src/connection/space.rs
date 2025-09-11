@@ -381,6 +381,9 @@ pub struct SentPacket {
 
     /// Status about buffered frames written into the packet.
     pub buffer_flags: BufferFlags,
+
+    /// Whether the packet contains Datagram frame.
+    pub has_datagram: bool,
 }
 
 impl Default for SentPacket {
@@ -400,6 +403,7 @@ impl Default for SentPacket {
             sent_size: 0,
             rate_sample_state: RateSamplePacketState::default(),
             buffer_flags: BufferFlags::default(),
+            has_datagram: false,
         }
     }
 }
