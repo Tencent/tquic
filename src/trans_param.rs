@@ -12,12 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashSet;
-use std::net::Ipv4Addr;
-use std::net::Ipv6Addr;
-use std::net::SocketAddrV4;
-use std::net::SocketAddrV6;
-
 use crate::codec;
 use crate::codec::Decoder;
 use crate::codec::Encoder;
@@ -31,6 +25,12 @@ use crate::token::ResetToken;
 use crate::ConnectionId;
 use crate::Result;
 use crate::MAX_STREAMS_PER_TYPE;
+use log::info;
+use std::collections::HashSet;
+use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
+use std::net::SocketAddrV4;
+use std::net::SocketAddrV6;
 
 /// TransportParams is a sequence of transport parameters.
 ///
@@ -121,6 +121,12 @@ pub struct TransportParams {
     /// completely trust the path between themselves.
     /// See draft-banks-quic-disable-encryption-00.
     pub disable_encryption: bool,
+
+    /// max_data_frame_size is used to inform the peer of the maximum length of
+    /// datagram frames that can be sent. The default value is 65535. When this
+    /// parameter is 0, it indicates that datagram frames are not supported.
+    /// See RFC 9221.
+    pub max_datagram_frame_size: u64,
 }
 
 impl TransportParams {
@@ -133,6 +139,7 @@ impl TransportParams {
         while !buf.is_empty() {
             let id = buf.read_varint()?;
             if found_params.contains(&id) {
+                info!("if found_params.contains(&id)");
                 return Err(Error::TransportParameterError);
             }
             found_params.insert(id);
@@ -256,6 +263,15 @@ impl TransportParams {
                         return Err(Error::TransportParameterError);
                     }
                     tp.retry_source_connection_id = Some(ConnectionId::new(val));
+                }
+
+                0x0020 => {
+                    let max_datagram_frame_size = val.read_varint()?;
+                    /*if max_datagram_frame_size < 0 /*|| max_datagram_frame_size > 65535*/{
+
+                        return Err(Error::TransportParameterError);
+                    }*/
+                    tp.max_datagram_frame_size = max_datagram_frame_size;
                 }
 
                 0x0f739bbc1b666d05 => {
@@ -394,6 +410,12 @@ impl TransportParams {
             }
         }
 
+        if tp.max_datagram_frame_size != 0 {
+            buf.write_varint(0x0020)?;
+            buf.write_varint(codec::encode_varint_len(tp.max_datagram_frame_size) as u64)?;
+            buf.write_varint(tp.max_datagram_frame_size)?;
+        }
+
         if tp.enable_multipath {
             buf.write_varint(0x0f739bbc1b666d05)?;
             buf.write_varint(0)?;
@@ -403,6 +425,17 @@ impl TransportParams {
             buf.write_varint(0xbaad)?;
             buf.write_varint(0)?;
         }
+
+        // no matter what, always encode max_datagram_frame_size
+        //buf.write_varint(0x0020)?;
+        //buf.write_varint(codec::encode_varint_len(tp.max_datagram_frame_size) as u64)?;
+        //buf.write_varint(tp.max_datagram_frame_size)?;
+        /*  if tp.max_datagram_frame_size!=0
+        {
+            buf.write_varint(0x0020)?;
+            buf.write_varint(codec::encode_varint_len(tp.max_datagram_frame_size) as u64)?;
+            buf.write_varint(tp.max_datagram_frame_size)?;
+        }*/
 
         Ok(len - buf.len())
     }
@@ -438,7 +471,7 @@ impl TransportParams {
             initial_max_streams_bidi: Some(self.initial_max_streams_bidi),
             initial_max_streams_uni: Some(self.initial_max_streams_uni),
             preferred_address: None,
-            max_datagram_frame_size: None,
+            max_datagram_frame_size: Some(self.max_datagram_frame_size),
             grease_quic_bit: None,
         }
     }
@@ -483,6 +516,10 @@ impl Default for TransportParams {
 
             enable_multipath: false,
             disable_encryption: false,
+
+            // The default for this parameter is 0, which indicates that
+            // the endpoint does not support DATAGRAM frames.
+            max_datagram_frame_size: 0,
         }
     }
 }
@@ -556,6 +593,40 @@ impl PreferredAddress {
     }
 }
 
+#[derive(Clone)]
+pub struct DatagramConfig {
+    pub local_max_datagram_frame_size: u64,
+
+    pub send_timeout: u64,
+
+    pub priority: u8,
+
+    pub datagram_event_mask: u8,
+}
+
+impl DatagramConfig {
+    pub fn new(
+        local_max_datagram_frame_size: u64,
+        send_timeout: u64,
+        priority: u8,
+        datagram_event_mask: u8,
+    ) -> Self {
+        Self {
+            local_max_datagram_frame_size: local_max_datagram_frame_size,
+            send_timeout: send_timeout,
+            priority,
+            datagram_event_mask: datagram_event_mask,
+        }
+    }
+    pub fn default() -> Self {
+        Self {
+            local_max_datagram_frame_size: 0,
+            send_timeout: 0,
+            priority: 0,
+            datagram_event_mask: 0,
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,6 +654,7 @@ mod tests {
             retry_source_connection_id: None,
             enable_multipath: true,
             disable_encryption: false,
+            max_datagram_frame_size: 65535,
         };
 
         // encode on the client side
@@ -627,6 +699,7 @@ mod tests {
             retry_source_connection_id: Some(ConnectionId::random()),
             enable_multipath: false,
             disable_encryption: true,
+            max_datagram_frame_size: 0,
         };
 
         // encode on the server side

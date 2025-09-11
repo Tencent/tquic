@@ -225,6 +225,15 @@ pub struct ServerOpt {
     )]
     pub cid_len: usize,
 
+    /// Maximum datAGRAM frame size in bytes (for DATAGRAM extension).
+    #[clap(
+        long,
+        default_value = "1200",
+        value_name = "SIZE",
+        help_heading = "Protocol"
+    )]
+    pub max_datagram_frame_size: usize,
+
     /// Log level, support OFF/ERROR/WARN/INFO/DEBUG/TRACE.
     #[clap(long, default_value = "INFO", help_heading = "Output")]
     pub log_level: log::LevelFilter,
@@ -1094,6 +1103,12 @@ impl TransportHandler for ServerHandler {
     }
 
     fn on_new_token(&mut self, _conn: &mut Connection, _token: Vec<u8>) {}
+
+    fn on_datagram_acked(&mut self, _conn: &mut Connection) {}
+    fn on_datagram_drop(&mut self, _conn: &mut Connection) {}
+    fn on_datagram_longtime(&mut self, _conn: &mut Connection) {}
+    fn on_datagram_lost(&mut self, _conn: &mut Connection) {}
+    fn on_datagram_received(&mut self, _conn: &mut Connection) {}
 }
 
 fn process_option(option: &mut ServerOpt) -> Result<()> {

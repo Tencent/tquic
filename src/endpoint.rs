@@ -34,6 +34,7 @@ use rustc_hash::FxHashMap;
 use rustc_hash::FxHashSet;
 use slab::Slab;
 
+use crate::connection::datagram;
 use crate::connection::Connection;
 use crate::error::Error;
 use crate::packet;
@@ -579,6 +580,31 @@ impl Endpoint {
                 Event::StreamClosed(stream_id) => {
                     self.handler.on_stream_closed(conn, stream_id);
                     conn.stream_destroy(stream_id);
+                }
+                Event::DatagramAcked() => {
+                    if conn.datagram_mask() & 0b00000100 != 0 {
+                        self.handler.on_datagram_acked(conn);
+                    }
+                }
+                Event::DatagramLost() => {
+                    if conn.datagram_mask() & 0b00000010 != 0 {
+                        self.handler.on_datagram_lost(conn);
+                    }
+                }
+                Event::DatagramDrop(drop_num) => {
+                    if conn.datagram_mask() & 0b00010000 != 0 {
+                        self.handler.on_datagram_drop(conn);
+                    }
+                }
+                Event::DatagramReceived() => {
+                    if conn.datagram_mask() & 0b00000001 != 0 {
+                        self.handler.on_datagram_received(conn);
+                    }
+                }
+                Event::DatagramLongtime() => {
+                    if conn.datagram_mask() & 0b00001000 != 0 {
+                        self.handler.on_datagram_longtime(conn);
+                    }
                 }
             }
             if conn.is_closed() {
@@ -1831,6 +1857,12 @@ mod tests {
         fn on_new_token(&mut self, conn: &mut Connection, token: Vec<u8>) {
             self.token = Some(token);
         }
+
+        fn on_datagram_acked(&mut self, conn: &mut Connection) {}
+        fn on_datagram_drop(&mut self, conn: &mut Connection) {}
+        fn on_datagram_longtime(&mut self, conn: &mut Connection) {}
+        fn on_datagram_lost(&mut self, conn: &mut Connection) {}
+        fn on_datagram_received(&mut self, conn: &mut Connection) {}
     }
 
     struct ServerStreamContext {
@@ -1912,6 +1944,12 @@ mod tests {
         }
 
         fn on_new_token(&mut self, conn: &mut Connection, token: Vec<u8>) {}
+        fn on_datagram_acked(&mut self, conn: &mut Connection) {}
+        fn on_datagram_drop(&mut self, conn: &mut Connection) {}
+        fn on_datagram_longtime(&mut self, conn: &mut Connection) {}
+        fn on_datagram_lost(&mut self, conn: &mut Connection) {}
+
+        fn on_datagram_received(&mut self, conn: &mut Connection) {}
     }
 
     // Test Initial packet

@@ -1214,8 +1214,8 @@ pub enum QuicFrame {
     HandshakeDone,
 
     Datagram {
-        length: u64,
-        raw: Option<String>,
+        length: Option<u64>,
+        raw: Option<RawInfo>,
     },
 
     Unknown {

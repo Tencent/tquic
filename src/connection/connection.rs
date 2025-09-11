@@ -23,15 +23,18 @@ use std::cmp;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::rc::Rc;
+use std::str;
 use std::time;
 
 use bytes::Bytes;
 use enumflags2::bitflags;
 use enumflags2::BitFlags;
 use log::*;
+use serde::de;
 use strum::IntoEnumIterator;
 
 use self::cid::ConnectionIdItem;
+use self::datagram::DatagramMap;
 use self::space::BufferFlags;
 use self::space::BufferType;
 use self::space::PacketNumSpace;
@@ -78,7 +81,6 @@ use crate::PathStats;
 use crate::RecoveryConfig;
 use crate::Result;
 use crate::Shutdown;
-
 /// A QUIC connection.
 pub struct Connection {
     /// QUIC version used for the connection.
@@ -104,6 +106,9 @@ pub struct Connection {
 
     /// The stream manager.
     streams: stream::StreamMap,
+
+    //  The datagram manager.
+    datagram_map: datagram::DatagramMap,
 
     /// TLS session.
     tls_session: TlsSession,
@@ -242,6 +247,15 @@ impl Connection {
         );
         streams.set_trace_id(&trace_id);
 
+        let peer_transport_params = TransportParams::default();
+        let datagram_map = datagram::DatagramMap::new(
+            peer_transport_params.max_datagram_frame_size,
+            conf.datagram_config.local_max_datagram_frame_size,
+            conf.datagram_config.send_timeout,
+            conf.datagram_config.priority,
+            conf.datagram_config.datagram_event_mask,
+        );
+        //set datagram_map
         let mut tls_session = conf.new_tls_session(server_name, is_server)?;
         if let Some(tls_config_selector) = &conf.tls_config_selector {
             tls_session.set_config_selector(tls_config_selector.clone());
@@ -257,10 +271,11 @@ impl Connection {
             multipath_scheduler: None,
             multipath_conf: conf.multipath.clone(),
             streams,
+            datagram_map,
             tls_session,
             crypto_streams: Rc::new(RefCell::new(CryptoStreams::new())),
             undecryptable_packets: UndecryptablePackets::new(conf.max_undecryptable_packets),
-            peer_transport_params: TransportParams::default(),
+            peer_transport_params: peer_transport_params.clone(),
             local_transport_params: conf.local_transport_params.clone(),
             recovery_conf: conf.recovery.clone(),
             local_error: None,
@@ -613,6 +628,7 @@ impl Connection {
 
         while !payload.is_empty() {
             let (frame, len) = Frame::from_bytes(&mut payload, hdr.pkt_type)?;
+
             if frame.ack_eliciting() {
                 ack_eliciting_pkt = true;
             }
@@ -983,8 +999,46 @@ impl Connection {
             Frame::StreamsBlocked { bidi, max } => {
                 self.streams.on_streams_blocked_frame_received(max, bidi)?;
             }
+            Frame::Datagram { length, data } => {
+                match self.datagram_map.incoming_datagram(length, data) {
+                    Ok(datagram_id) => {
+                        //if put success
+                        self.events.add(Event::DatagramReceived());
+                    }
+                    Err(e @ Error::ProtocolViolation) => {
+                        error!(
+                            "{} Datagram frame that recevived beyond the local limited",
+                            self.trace_id
+                        );
+                        let _ = self.close(
+                            false,
+                            e.to_wire(),
+                            b"DATAGRAM frame beyond the local limited",
+                        );
+                        return Err(e);
+                    }
+                    Err(e @ Error::DatagramFrameBeyondMemory) => {
+                        error!(
+                            "{} Datagram frame that recevived beyond the local memory",
+                            self.trace_id
+                        );
+                        let _ = self.close(
+                            false,
+                            e.to_wire(),
+                            b"DATAGRAM frame beyond the local memory",
+                        );
+                        return Err(e);
+                    }
+                    Err(e) => {
+                        warn!(
+                            "{}  unknown error of DATAGRAM frame processing : {:?}",
+                            self.trace_id, e
+                        );
+                        return Err(e);
+                    }
+                }
+            }
         }
-
         Ok(())
     }
 
@@ -1150,8 +1204,6 @@ impl Connection {
                 self.flags.insert(HandshakeConfirmed);
                 self.flags.insert(NeedSendHandshakeDone);
 
-                // An endpoint MUST discard its Handshake keys when the TLS
-                // handshake is confirmed.
                 self.drop_space_state(SpaceId::Handshake, time::Instant::now());
             }
 
@@ -1178,7 +1230,7 @@ impl Connection {
 
         Ok(())
     }
-
+    //这里可能需要处理max_datagram_frame_size
     /// Validate and apply transport parameters advertised by the peer.
     fn process_peer_trans_params(&mut self, peer_params: TransportParams) -> Result<()> {
         // Validate cid related transport parameters
@@ -1193,6 +1245,8 @@ impl Connection {
                 return Err(Error::TransportParameterError);
             }
         }
+
+        // here process the transmission args e.g.max_datagram_flame_size
 
         // The remote server can issue a stateless_reset_token transport parameter
         // that applies to the connection ID that it selected during the handshake.
@@ -1210,6 +1264,7 @@ impl Connection {
             );
         }
 
+        // here updata the peer_max_datagram_frame_size
         self.set_peer_trans_params(peer_params)?;
         self.flags.insert(AppliedPeerTransportParams);
 
@@ -1246,6 +1301,26 @@ impl Connection {
         active_path
             .recovery
             .update_max_datagram_size(max_datagram_size, true);
+
+        // setting peer_max_datagram_flame_size
+        if peer_params.max_datagram_frame_size >= self.peer_transport_params.max_datagram_frame_size
+        {
+            self.peer_transport_params.max_datagram_frame_size =
+                peer_params.max_datagram_frame_size;
+            self.datagram_map
+                .change_peer(peer_params.max_datagram_frame_size);
+            debug!(
+                "{} update peer max frame size: {} bytes",
+                self.trace_id, peer_params.max_datagram_frame_size
+            );
+        } else {
+            // error
+            error!(
+                "{} peer's max_datagram_frame_size lower then old_size",
+                self.trace_id
+            );
+            return Err(Error::ProtocolViolation);
+        }
 
         self.cids.set_scid_limit(peer_params.active_conn_id_limit);
 
@@ -1490,7 +1565,18 @@ impl Connection {
                             debug!("{} path {:?} MTU is {} now", self.trace_id, path, current);
                         }
                     }
-
+                    Frame::Datagram { length, data } => {
+                        debug!(
+                            "{} the datagram has been acked, len: {:?}, data: {:?}",
+                            self.trace_id,
+                            data.len(),
+                            data,
+                        );
+                        self.events.add(Event::DatagramAcked());
+                        // 1.inform application layer datagram has been ack
+                        // 2.datagram statistic
+                        // 3.qlog recorder
+                    }
                     _ => (),
                 }
             }
@@ -1517,6 +1603,7 @@ impl Connection {
     }
 
     /// Get the maximum datagram size of the given path.
+    /// calculate max UDP payload
     pub(crate) fn max_datagram_size(&self, pid: usize) -> usize {
         // The peer's `max_udp_payload_size` transport parameter limits the
         // size of UDP payloads that it is willing to receive. Therefore,
@@ -1758,7 +1845,7 @@ impl Connection {
             overhead: total_overhead,
             ..FrameWriteStatus::default()
         };
-
+        // send packet with different frames
         match self.send_frames(
             &mut out[payload_offset..],
             left,
@@ -2006,8 +2093,27 @@ impl Connection {
         // Write buffered frames
         self.try_write_buffered_frames(out, st, pkt_type, path_id)?;
 
+        // it is risk
+
+        self.try_write_stream_frames(
+            out,
+            st,
+            pkt_type,
+            path_id,
+            self.datagram_map.get_priority(),
+            false,
+        )?;
+        // Write DATAGRAM frames
+        self.try_write_datagram_frames(out, st, pkt_type, path_id)?;
         // Write STREAM frames
-        self.try_write_stream_frames(out, st, pkt_type, path_id)?;
+        self.try_write_stream_frames(
+            out,
+            st,
+            pkt_type,
+            path_id,
+            self.datagram_map.get_priority(),
+            true,
+        )?;
 
         // Write a NEW_TOKEN frame
         self.try_write_new_token_frame(out, st, pkt_type, path_id)?;
@@ -2533,6 +2639,8 @@ impl Connection {
         st: &mut FrameWriteStatus,
         pkt_type: PacketType,
         path_id: usize,
+        datagram_priotrity: u8,
+        is_lower: bool,
     ) -> Result<()> {
         let out = &mut out[st.written..];
         if (pkt_type != PacketType::OneRTT && pkt_type != PacketType::ZeroRTT)
@@ -2546,7 +2654,15 @@ impl Connection {
         let mut len = 0;
         let mut cap: usize = out.len();
 
-        while let Some(stream_id) = self.streams.peek_sendable() {
+        while let Some((frame_priority, stream_id)) = self.streams.peek_sendable() {
+            // 1. datagram_map 为非空
+            // 2. 当前 stream frame 的优先级 低于 datagram frame 的优先级，值越大优先级越低
+            // 3. is_lower = false,表示当前发送截断为发送 高优先级的 stream frame
+            if !self.datagram_map.if_out_empty() && frame_priority > datagram_priotrity && !is_lower {
+                // next run try_write_datagram_frame
+                info!("the {} stream frame priority higher than datagram, so all datagram delay",stream_id);
+                return Ok(());
+            }
             let stream = match self.streams.get_mut(stream_id) {
                 // We should not send frames for streams that were already stopped.
                 Some(s) if !s.send.is_stopped() => s,
@@ -2612,6 +2728,70 @@ impl Connection {
 
             // If the buffer is too short, we won't attempt to write any more stream frames into it.
             if cap <= frame::MAX_STREAM_OVERHEAD {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn try_write_datagram_frames(
+        &mut self,
+        out: &mut [u8],
+        st: &mut FrameWriteStatus,
+        pkt_type: PacketType,
+        path_id: usize,
+    ) -> Result<()> {
+        let out = &mut out[st.written..];
+        if self.is_closing()
+            || out.len() <= frame::MAX_DATAGRAM_OVERHEAD
+            || !self.paths.get(path_id)?.active()
+            || self.peer_transport_params.max_datagram_frame_size == 0
+        {
+            return Ok(());
+        }
+        let mut len = 0;
+        let mut cap = out.len();
+        let datagram_header = frame::MAX_DATAGRAM_OVERHEAD;
+        while let Some(datagram) = self.datagram_map.outcome_datagram(cap - datagram_header) {
+            let length = datagram.0;
+            let data = datagram.1;
+            let data_copy = Bytes::from(data.to_vec());
+            let frame_hdr_len = frame::datagram_header_wire_len(length);
+            let frame_len = frame_hdr_len + data.len();
+            let _ = frame::encode_datagram_header(length, &mut out[len..len + frame_hdr_len]);
+            out[len + frame_hdr_len..len + frame_len].copy_from_slice(&data_copy);
+            st.written += frame_len;
+            len += frame_len;
+            cap -= frame_len;
+            st.ack_eliciting = true;
+            st.in_flight = true; //it need research
+            st.has_data = true;
+            st.frames.push(Frame::Datagram {
+                length: length,
+                data: data,
+            });
+
+            //get a datagram ready to send
+            /*let length = & datagram.0;
+            let data = datagram.1;
+            let data_copy=Bytes::from(data.to_vec());
+            info!("try_write_datagram_frames test for data:{:?}", data);
+            let frame_hdr_len = frame::datagram_header_wire_len(*length);
+            let frame_len = frame_hdr_len + data.len();
+            let frame=Frame::Datagram { length: *length, data: data };
+            Connection::write_frame_to_packet(frame, out, st)?;
+            len += frame_len;
+            cap -= frame_len;
+            /*let _ = frame::encode_datagram(length, data_copy,&mut out[len..len + frame_hdr_len]);*/
+            st.ack_eliciting = true;
+            st.in_flight = true; //it need research
+            st.has_data = true;
+            /*st.frames.push(Frame::Datagram {
+                length: *length,
+                data: data,
+            });*/*/
+            if cap <= frame::MAX_DATAGRAM_OVERHEAD {
                 break;
             }
         }
@@ -2871,7 +3051,12 @@ impl Connection {
                         self.streams
                             .on_stream_frame_lost(stream_id, offset, length, fin);
                     }
+                    Frame::Datagram { length, data } => {
+                        debug!("{} datagram lost  size={:?}", self.trace_id, data.len());
+                        self.events.add(Event::DatagramLost());
 
+                        //datagram not need to retry but need to event application
+                    }
                     // Cancellation of stream transmission, as carried in a
                     // RESET_STREAM frame, is sent until acknowledged or until
                     // all stream data is acknowledged by the peer.
@@ -3111,7 +3296,9 @@ impl Connection {
                 || path.need_send_ping
                 || self.cids.need_send_cid_control_frames()
                 || self.streams.need_send_stream_frames()
-                || self.spaces.need_send_buffered_frames())
+                || self.spaces.need_send_buffered_frames()
+                || self.datagram_map.need_send_datagram_frames())
+        // add
         {
             if !self.is_server && self.tls_session.is_in_early_data() {
                 return Ok(PacketType::ZeroRTT);
@@ -3129,6 +3316,7 @@ impl Connection {
             || self.local_error.as_ref().is_some_and(|e| e.is_app)
             || self.cids.need_send_cid_control_frames()
             || self.streams.need_send_stream_frames()
+            || self.datagram_map.need_send_datagram_frames() //add
     }
 
     /// Find space id for the specified packet type and path id.
@@ -4008,6 +4196,50 @@ impl Connection {
         self.streams.stream_destroy(stream_id);
     }
 
+    //if datagram can read a datagram
+    pub fn datagram_readable(&mut self) -> bool {
+        !self.datagram_map.if_in_empty()
+    }
+    // the space to send
+    pub fn send_available_space(&mut self) -> usize {
+        self.datagram_map.send_available_space()
+    }
+    // push data to send
+    pub fn datagram_send(
+        &mut self,
+        data: Bytes,
+        length: Option<usize>,
+        drop_if: bool,
+    ) -> Result<()> {
+        match self.datagram_map.send_datagram(data, length, drop_if) {
+            Ok(drop_num) => {
+                if drop_num > 0 {
+                    debug!(
+                        "{} datagram drop {} due to full queue",
+                        self.trace_id, drop_num
+                    );
+                    self.events.add(Event::DatagramDrop(drop_num));
+                }
+                Ok(())
+            }
+            Err(e) => {
+                error!("{} failed to send datagram: {}", self.trace_id, e);
+                Err(e)
+            }
+        }
+    }
+    //get a datagram that recv
+    pub fn datagram_recv(&mut self) -> Option<Bytes> {
+        if let Some((length, data)) = self.datagram_map.get_datagram() {
+            return Some(data);
+        } else {
+            return None;
+        }
+    }
+
+    pub fn datagram_mask(&self) -> u8 {
+        self.datagram_map.get_mask()
+    }
     /// Return the internal identifier of the connection on the Endpoint. The
     /// internal identifier is not the same as the Connection ID as described
     /// in RFC 9000.
@@ -4863,6 +5095,7 @@ pub(crate) mod tests {
                 tls_config
             };
             conf.set_tls_config(tls_config);
+            conf.set_local_datagram_config(1024, 5000, 0, 31);
 
             Ok(conf)
         }
@@ -4890,6 +5123,12 @@ pub(crate) mod tests {
             }
         }
 
+        pub fn new_test_datagram_frame(content: &[u8]) -> frame::Frame {
+            frame::Frame::Datagram {
+                length: Some(content.len()),
+                data: Bytes::copy_from_slice(content),
+            }
+        }
         /// Assemble new version negotiation packet.
         fn new_test_version_negotiation_packet(
             dcid: &ConnectionId,
@@ -6700,6 +6939,33 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn recv_packet_datagram_frame() -> Result<()> {
+        let mut test_pair = TestPair::new_with_test_config()?;
+        assert_eq!(test_pair.handshake(), Ok(()));
+
+        // Client send OneRTT packet
+        let content = "client one rtt data";
+        let frame = TestPair::new_test_datagram_frame(content.as_bytes());
+        let packet =
+            TestPair::conn_build_packet(&mut test_pair.client, PacketType::OneRTT, &[frame])?;
+        let info = TestPair::new_test_packet_info(false);
+
+        // Server recv OneRTT packet
+        TestPair::conn_packets_in(&mut test_pair.server, vec![(packet, info)])?;
+
+        let (_, datagram) = test_pair.server.datagram_map.get_datagram().unwrap();
+        assert_eq!(datagram, Bytes::from(content));
+        Ok(())
+
+        /*let stream = test_pair.server.streams.get_mut(0).unwrap();
+        assert!(stream.is_readable());
+
+        let mut buf = vec![0; 128];
+        assert_eq!(stream.recv.read(&mut buf)?, (content.len(), false));
+        assert_eq!(content.as_bytes(), &buf[..content.len()]);
+        Ok(())*/
+    }
+    #[test]
     fn recv_packet_skipped_packet_number() -> Result<()> {
         let mut client_config = TestPair::new_test_config(false)?;
         client_config.enable_dplpmtud(false);
@@ -7947,9 +8213,258 @@ pub(crate) mod tests {
 
         Ok(())
     }
+    #[test]
+    fn datagram_multiple_send_and_receive() -> Result<()> {
+        // 1. Initialize test pair and complete handshake
+        let mut test_pair = TestPair::new_with_test_config()?;
+        assert_eq!(test_pair.handshake(), Ok(()));
+        // 2. Define test data: multiple datagram payloads
+        //    Note: Datagrams are unordered in theory, but will be received in order in this test environment
+        let test_data = vec![
+            Bytes::from_static(b"First datagram payload"),
+            Bytes::from_static(b"Second datagram with longer content"),
+            Bytes::from_static(b"Final datagram"),
+        ];
+        // 3. Loop through sending datagrams and verify reception
+        for data in test_data {
+            // Client sends datagram
+            let send_result =
+                test_pair
+                    .client
+                    .datagram_map
+                    .send_datagram(data.clone(), None, false);
+            assert!(
+                send_result.is_ok(),
+                "Failed to send datagram: {:?}",
+                send_result
+            );
+            let drop_num = send_result.unwrap();
+            assert_eq!(
+                drop_num, 0,
+                "No datagrams should be dropped during normal operation"
+            );
+
+            // Get outgoing packets from client and pass to server (simulate network transmission)
+            let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+            TestPair::conn_packets_in(&mut test_pair.server, packets)?;
+
+            // Server reads datagram from its incoming queue
+            let recv_result = test_pair.server.datagram_map.get_datagram();
+            assert!(
+                recv_result.is_some(),
+                "Server should receive the sent datagram"
+            );
+
+            let (recv_len, recv_data) = recv_result.unwrap();
+            // Verify length matches original data
+            assert_eq!(
+                recv_len,
+                Some(data.len()),
+                "Received datagram length mismatch"
+            );
+            // Verify content matches original data
+            assert_eq!(
+                recv_data, data,
+                "Received datagram content does not match sent data"
+            );
+        }
+
+        // 4. Verify incoming queue is empty after all datagrams are processed
+        assert!(
+            test_pair.server.datagram_map.if_in_empty(),
+            "Server datagram queue should be empty after all receives"
+        );
+        Ok(())
+    }
+    #[test]
+    fn datagram_operations() -> Result<()> {
+        // Initialize test environment and complete handshake
+        let mut test_pair = TestPair::new_with_test_config()?;
+        assert_eq!(
+            test_pair.handshake(),
+            Ok(()),
+            "Handshake must complete successfully"
+        );
+
+        // Configure test parameters
+        let test_data = Bytes::from_static(b"Datagram payload over QUIC");
+        let send_timeout = 500; // 500ms timeout for testing
+        let priority = 2; // Medium priority (0-7 scale)
+
+        // 1. Verify initial datagram configuration
+        assert!(
+            test_pair.client.datagram_map.peer_is_enable(),
+            "Peer should support datagrams"
+        );
+        assert!(
+            test_pair.client.datagram_map.local_is_enable(),
+            "Local should support datagrams"
+        );
+        assert_eq!(
+            test_pair.client.datagram_map.get_priority(),
+            0,
+            "Default priority should be 0"
+        );
+
+        // 2. Configure datagram parameters
+        test_pair.client.datagram_map.set_send_timeout(send_timeout);
+        // Note: Assuming we add a setter for priority (as in original DatagramMap struct)
+        // test_pair.client.datagram_map.set_priority(priority);
+        assert_eq!(
+            test_pair.client.datagram_map.get_send_timeout(),
+            send_timeout,
+            "Send timeout configuration failed"
+        );
+        // assert_eq!(test_pair.client.datagram_map.get_priority(), priority,
+        //         "Priority configuration failed");
+
+        // 3. Check available space before sending
+        let initial_space = test_pair.client.datagram_map.send_available_space();
+        assert!(initial_space > 0, "Initial send space should be available");
+
+        // 4. Send datagram from client
+        let send_result =
+            test_pair
+                .client
+                .datagram_map
+                .send_datagram(test_data.clone(), None, false);
+        assert!(
+            send_result.is_ok(),
+            "Failed to send datagram: {:?}",
+            send_result
+        );
+        assert_eq!(
+            send_result.unwrap(),
+            0,
+            "No datagrams should be dropped initially"
+        );
+
+        // 5. Verify client state after sending
+        assert_eq!(
+            test_pair.client.datagram_map.send_available_space(),
+            initial_space - test_data.len(),
+            "Available space should decrease after sending"
+        );
+        assert!(
+            !test_pair.client.datagram_map.if_out_empty(),
+            "Outgoing queue should not be empty after sending"
+        );
+
+        // 6. Transmit packets to server and process
+        let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+        TestPair::conn_packets_in(&mut test_pair.server, packets)?;
+
+        // 7. Verify server received the datagram
+        assert!(
+            !test_pair.server.datagram_map.if_in_empty(),
+            "Server should have received datagram"
+        );
+        assert_eq!(
+            test_pair.server.datagram_map.recv_available_space(),
+            test_pair.server.datagram_map.get_in_max_size() as usize - test_data.len(),
+            "Server available space should decrease after receiving"
+        );
+
+        // 8. Read datagram from server and verify content
+        let recv_result = test_pair.server.datagram_map.get_datagram();
+        assert!(
+            recv_result.is_some(),
+            "Server should be able to read datagram"
+        );
+
+        let (recv_len, recv_data) = recv_result.unwrap();
+        assert_eq!(recv_len, Some(test_data.len()), "Datagram length mismatch");
+        assert_eq!(recv_data, test_data, "Datagram content mismatch");
+
+        // 9. Verify server state after reading
+        assert!(
+            test_pair.server.datagram_map.if_in_empty(),
+            "Server queue should be empty after reading"
+        );
+        assert_eq!(
+            test_pair.server.datagram_map.recv_available_space(),
+            test_pair.server.datagram_map.get_in_max_size() as usize,
+            "Server available space should reset after reading"
+        );
+
+        // 10. Test timeout behavior (simulate expired datagram)
+        let timeout_data = Bytes::from_static(b"Timeout test datagram");
+        test_pair
+            .client
+            .datagram_map
+            .send_datagram(timeout_data.clone(), None, false)?;
+
+        // Fast-forward time beyond timeout (using test timer control if available)
+        // Note: In real implementation, you'd need timer manipulation or longer sleep
+        std::thread::sleep(std::time::Duration::from_millis(send_timeout + 100));
+
+        // Trigger timeout check and verify datagram was dropped
+        let _ = test_pair.client.datagram_map.check_timeout();
+        assert!(
+            test_pair.client.datagram_map.if_out_empty(),
+            "Timed-out datagram should be removed from queue"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn datagram_queue_overflow() -> Result<()> {
+        // Initialize test environment and complete handshake
+        let mut test_pair = TestPair::new_with_test_config()?;
+        assert_eq!(
+            test_pair.handshake(),
+            Ok(()),
+            "Handshake should complete successfully"
+        );
+
+        // 1. Configure small send queue capacity (20 bytes total)
+        test_pair.client.datagram_map.set_out_max_size(20); // Set maximum queue capacity
+        let small_data = Bytes::from_static(b"12345"); // 5-byte payload
+        let drop_if = true; // Drop oldest datagrams when queue is full
+
+        // 2. Send 5 datagrams (total 25 bytes, exceeding 20-byte limit)
+        for i in 0..5 {
+            let send_result =
+                test_pair
+                    .client
+                    .datagram_map
+                    .send_datagram(small_data.clone(), None, drop_if);
+
+            assert!(send_result.is_ok(), "Failed to send datagram {}", i);
+
+            // First 4 datagrams should send normally (4*5=20 bytes)
+            if i < 4 {
+                assert_eq!(send_result.unwrap(), 0, "Should not drop datagram {}", i);
+            } else {
+                // 5th datagram should cause 1 oldest datagram to be dropped
+                assert_eq!(
+                    send_result.unwrap(),
+                    1,
+                    "Should drop 1 datagram when queue overflows"
+                );
+            }
+        }
+
+        // 3. Verify queue contains exactly 4 most recent datagrams (20 bytes total)
+        assert_eq!(test_pair.client.datagram_map.get_out_total_size(), 20);
+
+        // 4. Verify actual count of datagrams in queue
+        let mut count = 0;
+        while let Some(_) = test_pair.client.datagram_map.outcome_datagram(100) {
+            count += 1;
+        }
+        assert_eq!(
+            count, 4,
+            "Queue should contain 4 most recent datagrams after overflow"
+        );
+
+        Ok(())
+    }
 }
 
 mod cid;
+pub(crate) mod datagram;
 mod flowcontrol;
 pub mod path;
 mod pmtu;

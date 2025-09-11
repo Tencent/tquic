@@ -752,15 +752,15 @@ impl StreamMap {
     ///
     /// Note that the caller should call `remove_sendable` to remove the stream from the
     /// queue if it is no longer sendable after sending some of its outstanding data.
-    pub fn peek_sendable(&mut self) -> Option<u64> {
-        let queue = match self.sendable.iter_mut().next() {
-            Some((_, queue)) => queue,
+    pub fn peek_sendable(&mut self) -> Option<(u8, u64)> {
+        let (priority, queue) = match self.sendable.iter_mut().next() {
+            Some((prio, q)) => (prio, q), // get prio and q
             None => return None,
         };
 
         // 1.Try to get the non-incremental stream with the lowest stream ID.
         match queue.non_incremental.peek().map(|x| x.0) {
-            Some(stream_id) => Some(stream_id),
+            Some(stream_id) => Some((*priority, stream_id)),
             None => {
                 // 2.Try to get the incremental stream from the front of the queue.
                 // Incremental streams are scheduled in a round-robin fashion, So
@@ -769,7 +769,7 @@ impl StreamMap {
                 match queue.incremental.pop_front() {
                     Some(stream_id) => {
                         queue.incremental.push_back(stream_id);
-                        Some(stream_id)
+                        Some((*priority, stream_id))
                     }
                     // Should never happen.
                     None => None,
@@ -4157,51 +4157,51 @@ mod tests {
         // 1.Peek multiple times consecutively, the result should be the same.
         map.push_sendable(4, 7, false);
         assert!(map.has_sendable_streams());
-        assert_eq!(map.peek_sendable(), Some(4));
-        assert_eq!(map.peek_sendable(), Some(4));
+        assert_eq!(map.peek_sendable(), Some((7, 4)));
+        assert_eq!(map.peek_sendable(), Some((7, 4)));
         map.remove_sendable();
 
         // 2.Streams with lower urgency level are scheduled first.
         map.push_sendable(4, 2, false);
         map.push_sendable(8, 3, false);
         map.push_sendable(12, 1, false);
-        assert_eq!(map.peek_sendable(), Some(12));
+        assert_eq!(map.peek_sendable(), Some((1, 12)));
         map.remove_sendable();
-        assert_eq!(map.peek_sendable(), Some(4));
+        assert_eq!(map.peek_sendable(), Some((2, 4)));
         map.remove_sendable();
-        assert_eq!(map.peek_sendable(), Some(8));
+        assert_eq!(map.peek_sendable(), Some((3, 8)));
         map.remove_sendable();
 
         // 3.Within the same urgency level non-incremental streams are scheduled
         // before incremental streams.
         map.push_sendable(4, 7, true);
         map.push_sendable(8, 7, false);
-        assert_eq!(map.peek_sendable(), Some(8));
+        assert_eq!(map.peek_sendable(), Some((7, 8)));
         map.remove_sendable();
-        assert_eq!(map.peek_sendable(), Some(4));
+        assert_eq!(map.peek_sendable(), Some((7, 4)));
         map.remove_sendable();
 
         // 4.Non-incremental streams are scheduled in the order of their stream IDs.
         map.push_sendable(12, 7, false);
         map.push_sendable(4, 7, false);
         map.push_sendable(8, 7, false);
-        assert_eq!(map.peek_sendable(), Some(4));
+        assert_eq!(map.peek_sendable(), Some((7, 4)));
         map.remove_sendable();
-        assert_eq!(map.peek_sendable(), Some(8));
+        assert_eq!(map.peek_sendable(), Some((7, 8)));
         map.remove_sendable();
-        assert_eq!(map.peek_sendable(), Some(12));
+        assert_eq!(map.peek_sendable(), Some((7, 12)));
         map.remove_sendable();
 
         // 5.Incremental streams are scheduled in a round-robin fashion.
         map.push_sendable(12, 7, true);
         map.push_sendable(8, 7, true);
         map.push_sendable(4, 7, true);
-        assert_eq!(map.peek_sendable(), Some(12));
-        assert_eq!(map.peek_sendable(), Some(8));
-        assert_eq!(map.peek_sendable(), Some(4));
-        assert_eq!(map.peek_sendable(), Some(12));
-        assert_eq!(map.peek_sendable(), Some(8));
-        assert_eq!(map.peek_sendable(), Some(4));
+        assert_eq!(map.peek_sendable(), Some((7, 12)));
+        assert_eq!(map.peek_sendable(), Some((7, 8)));
+        assert_eq!(map.peek_sendable(), Some((7, 4)));
+        assert_eq!(map.peek_sendable(), Some((7, 12)));
+        assert_eq!(map.peek_sendable(), Some((7, 8)));
+        assert_eq!(map.peek_sendable(), Some((7, 4)));
         map.remove_sendable();
         map.remove_sendable();
         map.remove_sendable();
@@ -5536,7 +5536,7 @@ mod tests {
         map.on_stream_frame_lost(0, 0, 10, false);
         let stream = map.get(0).unwrap();
         assert!(stream.is_sendable());
-        assert_eq!(map.peek_sendable(), Some(0));
+        assert_eq!(map.peek_sendable().unwrap().1, 0);
         map.on_stream_frame_lost(0, 14, 4, true);
 
         // Retransmit the first block of data of stream 0
@@ -5552,7 +5552,7 @@ mod tests {
         // Lost empty data with fin
         assert!(map.peek_sendable().is_none());
         map.on_stream_frame_lost(0, 18, 0, true);
-        assert_eq!(map.peek_sendable(), Some(0));
+        assert_eq!(map.peek_sendable().unwrap().1, 0);
 
         // Retransmit empty data with fin
         let stream = map.get_mut(0).unwrap();
