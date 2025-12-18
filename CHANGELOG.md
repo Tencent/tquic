@@ -41,7 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Fix checking packet header under disable_1rtt_encryption mode
-- Fix the length of trancated packet number
+- Fix the length of truncated packet number
 - Some fixes for tquic_tools_test.sh
 
 
@@ -142,7 +142,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [v0.12.0] - 2024-05-27
 ### Added
 - Buffer disordered zero rtt packets on the server endpoint
-- Add dummy congestion controller for testing and expriments
+- Add dummy congestion controller for testing and experiments
 - Tweak configurations and initialization of flow control
 - Improve comments of bbr congestion control algorithm
 - Add workflow and plot tools for benchmarking
