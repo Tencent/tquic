@@ -135,7 +135,7 @@ impl RangeSet {
         let ranges: Vec<Range<u64>> = self
             .set
             .range((Unbounded, Included(&elem)))
-            .map(|(&s, &e)| (s..e))
+            .map(|(&s, &e)| s..e)
             .collect();
 
         for r in ranges {
@@ -221,7 +221,7 @@ impl RangeSet {
     fn prev_to(&self, elem: u64) -> Option<Range<u64>> {
         self.set
             .range((Unbounded, Included(elem)))
-            .map(|(&s, &e)| (s..e))
+            .map(|(&s, &e)| s..e)
             .next_back()
     }
 
@@ -229,7 +229,7 @@ impl RangeSet {
     fn next_to(&self, elem: u64) -> Option<Range<u64>> {
         self.set
             .range((Included(elem), Unbounded))
-            .map(|(&s, &e)| (s..e))
+            .map(|(&s, &e)| s..e)
             .next()
     }
 
@@ -237,7 +237,7 @@ impl RangeSet {
     fn next_after(&self, elem: u64) -> Option<Range<u64>> {
         self.set
             .range((Excluded(elem), Unbounded))
-            .map(|(&s, &e)| (s..e))
+            .map(|(&s, &e)| s..e)
             .next()
     }
 

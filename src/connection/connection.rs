@@ -498,7 +498,7 @@ impl Connection {
             self.paths.get_active_path_id()?
         };
 
-        // Get length of pakcet number field and packet payload
+        // Get length of packet number field and packet payload
         let length = if hdr.pkt_type == PacketType::OneRTT {
             // A packet with a short header does not include a length field, so it
             // can only be the last packet included in a UDP datagram.
@@ -5297,7 +5297,7 @@ pub(crate) mod tests {
         assert!(test_pair.client.is_in_early_data());
         assert!(!packets.is_empty());
 
-        // Client send ZeorRTT packet
+        // Client send ZeroRTT packet
         let content = "client zero rtt data";
         let frame = TestPair::new_test_stream_frame(content.as_bytes());
         let packet =
