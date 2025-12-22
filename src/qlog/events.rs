@@ -513,7 +513,7 @@ pub enum EventData {
     },
 
     /// When using QUIC 0-RTT, HTTP/3 clients are expected to remember and reuse the
-    /// server's SETTINGs from the previous connection. This event is used to
+    /// server's SETTINGS from the previous connection. This event is used to
     /// indicate which HTTP/3 settings were restored and to which values when
     /// utilizing 0-RTT.
     #[serde(rename = "h3:parameters_restored")]
