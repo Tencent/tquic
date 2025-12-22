@@ -8,6 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.70.0"
 
 jobs:
   build_linux:
@@ -17,8 +18,8 @@ jobs:
     - uses: actions/checkout@v4
       with:
         submodules: 'recursive'
-    - name: Update rust
-      run: rustup update
+    - name: Install rust ${{ env.RUST_VERSION }}
+      run: rustup toolchain install ${{ env.RUST_VERSION }} && rustup default ${{ env.RUST_VERSION }}
     - name: Build TQUIC library and tools
       run: cargo build --all -F ffi --verbose
 
@@ -29,8 +30,8 @@ jobs:
     - uses: actions/checkout@v4
       with:
         submodules: 'recursive'
-    - name: Update rust
-      run: rustup update
+    - name: Install rust ${{ env.RUST_VERSION }}
+      run: rustup toolchain install ${{ env.RUST_VERSION }} && rustup default ${{ env.RUST_VERSION }}
     - name: Build TQUIC library and tools
       run: cargo build --all -F ffi --verbose && cargo test
 
@@ -51,6 +52,7 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
         run: |
           . "$HOME/.cargo/env"
+          rustup toolchain install ${{ env.RUST_VERSION }} && rustup default ${{ env.RUST_VERSION }}
           cargo build --all -F ffi --verbose && cargo test
 
   build_windows:
@@ -65,7 +67,7 @@ jobs:
       - name: Install rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ env.TARGET }}
       - name: Install dependencies
         uses: crazy-max/ghaction-chocolatey@v3
@@ -84,7 +86,7 @@ jobs:
         with:
           submodules: 'recursive'
       - name: Install rust toolchain
-        run: rustup target add ${{ env.TARGET }}
+        run: rustup toolchain install ${{ env.RUST_VERSION }} && rustup default ${{ env.RUST_VERSION }} && rustup target add ${{ env.TARGET }}
       - name: Remove cdylib from iOS build
         run: sed -i -e 's/, "cdylib"//g' Cargo.toml
       - name: Run cargo build
@@ -106,7 +108,7 @@ jobs:
         with:
           submodules: 'recursive'
       - name: Install rust toolchain
-        run: rustup target add ${{ env.TARGET }}
+        run: rustup toolchain install ${{ env.RUST_VERSION }} && rustup default ${{ env.RUST_VERSION }} && rustup target add ${{ env.TARGET }}
       - name: Download Android NDK
         run: |
           curl --http1.1 -O https://dl.google.com/android/repository/android-ndk-r${{ env.NDK_LTS_VER }}-linux.zip
@@ -142,7 +144,7 @@ jobs:
       - name: Setup Rust environment
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
+          toolchain: ${{ env.RUST_VERSION }}
           target: 'aarch64-unknown-linux-ohos,armv7-unknown-linux-ohos,x86_64-unknown-linux-ohos'
 
       - name: Install ohrs
@@ -158,8 +160,8 @@ jobs:
     - uses: actions/checkout@v4
       with:
         submodules: 'recursive'
-    - name: Update rust
-      run: rustup update
+    - name: Install rust ${{ env.RUST_VERSION }}
+      run: rustup toolchain install ${{ env.RUST_VERSION }} && rustup default ${{ env.RUST_VERSION }}
     - name: Code format check
       run: cargo fmt --check
     - name: Code spell check
@@ -178,8 +180,8 @@ jobs:
     - uses: actions/checkout@v4
       with:
         submodules: 'recursive'
-    - name: Update rust
-      run: rustup update
+    - name: Install rust ${{ env.RUST_VERSION }}
+      run: rustup toolchain install ${{ env.RUST_VERSION }} && rustup default ${{ env.RUST_VERSION }}
     - name: Install cargo-llvm-cov
       uses: taiki-e/install-action@cargo-llvm-cov  
     - name: Unit testing
@@ -202,8 +204,8 @@ jobs:
         submodules: 'recursive'
     - name: Fuzz testing
       run: |
-        rustup install nightly
-        rustup default nightly
+        rustup toolchain install ${{ env.RUST_VERSION }}
+        rustup default ${{ env.RUST_VERSION }}
         cargo install cargo-fuzz
         cargo fuzz run client_conn -- -max_total_time=30
         cargo fuzz run server_conn -- -max_total_time=30
