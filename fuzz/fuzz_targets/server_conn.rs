@@ -28,8 +28,8 @@ use tquic::TlsConfig;
 lazy_static! {
     static ref CONFIG: Mutex<tquic::Config> = {
         let mut conf = Config::new().unwrap();
-        let crt_file = "fuzz/conf/cert.crt";
-        let key_file = "fuzz/conf/cert.key";
+        let crt_file = "conf/cert.crt";
+        let key_file = "conf/cert.key";
         let protos = vec![b"h3".to_vec()];
         let tls_conf = TlsConfig::new_server_config(crt_file, key_file, protos, false).unwrap();
         conf.set_tls_config(tls_conf);
