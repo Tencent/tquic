@@ -2701,7 +2701,7 @@ impl SendBuf {
         }
     }
 
-    /// Queue a range of sent but unacknowledged data(deemed lost) to the retranmission
+    /// Queue a range of sent but unacknowledged data(deemed lost) to the retransmission
     /// range set.
     pub fn retransmit(&mut self, off: u64, len: usize) {
         let mut start = off;
@@ -6054,7 +6054,7 @@ mod tests {
         );
     }
 
-    // Test Stream::is_sendable, takes retranmission into account.
+    // Test Stream::is_sendable, takes retransmission into account.
     #[test]
     fn stream_is_sendable() {
         // Create a local initiated bidi stream
