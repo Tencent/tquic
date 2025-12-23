@@ -55,7 +55,7 @@ use tquic_tools::Result;
 #[global_allocator]
 static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[clap(name = "server", version=env!("CARGO_PKG_VERSION"))]
 pub struct ServerOpt {
     /// Address to listen.
@@ -74,6 +74,18 @@ pub struct ServerOpt {
     /// TLS private key in PEM format.
     #[clap(short, long = "key", default_value = "./cert.key", value_name = "FILE")]
     pub key_file: String,
+
+    /// CA certificate file for client verification (mutual authentication).
+    #[clap(long, value_name = "FILE", help_heading = "TLS")]
+    pub ca_cert: Option<String>,
+
+    /// Enable client certificate verification.
+    #[clap(long, help_heading = "TLS")]
+    pub require_client_cert: bool,
+
+    /// Enable 0RTT data acceptance.
+    #[clap(long, help_heading = "Protocol")]
+    pub enable_0rtt: bool,
 
     /// Document root directory.
     #[clap(short, long, default_value = "./", value_name = "DIR")]
@@ -311,11 +323,22 @@ impl Server {
             &option.cert_file,
             &option.key_file,
             application_protos,
-            true,
+            option.enable_0rtt,
         )?;
         let mut ticket_key = option.ticket_key.clone().into_bytes();
         ticket_key.resize(48, 0);
         tls_config.set_ticket_key(&ticket_key)?;
+
+        // Configure mutual authentication if CA certificate is provided
+        if let Some(ca_cert) = &option.ca_cert {
+            tls_config.set_ca_certs(ca_cert)?;
+            if option.require_client_cert {
+                tls_config.set_verify(true);
+                info!("Enabled client certificate verification (mutual authentication)");
+            } else {
+                info!("Enabled CA certificate verification (optional client cert)");
+            }
+        }
 
         // Configure certificate compression if specified
         if !option.certificate_compression.is_empty() {
@@ -945,6 +968,9 @@ struct ServerHandler {
     /// File root directory.
     root: String,
 
+    /// Server options
+    option: ServerOpt,
+
     /// HTTP connections
     conns: FxHashMap<u64, ConnectionHandler>,
 
@@ -972,6 +998,7 @@ impl ServerHandler {
 
         Ok(Self {
             root: option.root.clone(),
+            option: option.clone(),
             buf: vec![0; MAX_BUF_SIZE],
             conns: FxHashMap::default(),
             keylog,
@@ -1034,6 +1061,15 @@ impl TransportHandler for ServerHandler {
             } else {
                 error!("{} set qlog {:?} failed", conn.trace_id(), qlog_file);
             }
+        }
+
+        // If 0RTT is enabled and connection is in early data state, process requests immediately
+        if self.option.enable_0rtt && conn.is_in_early_data() {
+            debug!(
+                "{} 0RTT enabled, processing requests in early data",
+                conn.trace_id()
+            );
+            self.try_new_conn_handler(conn);
         }
     }
 
