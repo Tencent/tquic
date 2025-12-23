@@ -67,6 +67,8 @@ jobs:
         with:
           toolchain: stable
           targets: ${{ env.TARGET }}
+      - name: Install rust toolchain
+        run: rustup target add ${{ env.TARGET }}
       - name: Install dependencies
         uses: crazy-max/ghaction-chocolatey@v3
         with:
@@ -106,7 +108,7 @@ jobs:
         with:
           submodules: 'recursive'
       - name: Install rust toolchain
-        run: rustup target add ${{ env.TARGET }}
+        run: rustup target add ${{ env.TARGET }} 
       - name: Download Android NDK
         run: |
           curl --http1.1 -O https://dl.google.com/android/repository/android-ndk-r${{ env.NDK_LTS_VER }}-linux.zip
@@ -144,6 +146,12 @@ jobs:
         with:
           toolchain: stable
           target: 'aarch64-unknown-linux-ohos,armv7-unknown-linux-ohos,x86_64-unknown-linux-ohos'
+      
+      - name: Install OpenHarmony Rust targets
+        run: |
+          rustup target add aarch64-unknown-linux-ohos
+          rustup target add armv7-unknown-linux-ohos
+          rustup target add x86_64-unknown-linux-ohos
 
       - name: Install ohrs
         run: cargo install ohrs
@@ -181,7 +189,7 @@ jobs:
     - name: Update rust
       run: rustup update
     - name: Install cargo-llvm-cov
-      uses: taiki-e/install-action@cargo-llvm-cov  
+      uses: taiki-e/install-action@cargo-llvm-cov
     - name: Unit testing
       run: cargo test --verbose
     - name: Generate code coverage
@@ -202,9 +210,7 @@ jobs:
         submodules: 'recursive'
     - name: Fuzz testing
       run: |
-        rustup install nightly
-        rustup default nightly
+        cd fuzz
         cargo install cargo-fuzz
         cargo fuzz run client_conn -- -max_total_time=30
         cargo fuzz run server_conn -- -max_total_time=30
- 
