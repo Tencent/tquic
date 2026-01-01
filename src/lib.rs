@@ -629,6 +629,15 @@ impl Config {
         self.local_transport_params.enable_multipath = v;
     }
 
+    /// Set the `grease_quic_bit` transport parameter.
+    /// When enabled, the endpoint will accept packets with the QUIC bit set to 0
+    /// and will randomize the QUIC bit in outgoing packets.
+    /// The default value is false.
+    /// See RFC 9287.
+    pub fn enable_grease_quic_bit(&mut self, v: bool) {
+        self.local_transport_params.grease_quic_bit = v;
+    }
+
     /// Set the multipath scheduling algorithm
     /// The default value is MultipathAlgorithm::MinRtt
     pub fn set_multipath_algorithm(&mut self, v: MultipathAlgorithm) {
@@ -1218,6 +1227,24 @@ mod tests {
             config.local_transport_params.initial_max_streams_bidi,
             VINT_MAX
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn grease_quic_bit_config() -> Result<()> {
+        let mut config = Config::new()?;
+
+        // Test default value
+        assert!(!config.local_transport_params.grease_quic_bit);
+
+        // Test enabling grease QUIC bit
+        config.enable_grease_quic_bit(true);
+        assert!(config.local_transport_params.grease_quic_bit);
+
+        // Test disabling grease QUIC bit
+        config.enable_grease_quic_bit(false);
+        assert!(!config.local_transport_params.grease_quic_bit);
 
         Ok(())
     }
