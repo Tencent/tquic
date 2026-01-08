@@ -1567,7 +1567,16 @@ impl Bbr3 {
         }
 
         self.adapt_lower_bounds_from_congestion();
-        self.loss_in_round = true;
+        self.loss_in_round = false; //according to ietf,it should be set to false.
+        //see:https://www.ietf.org/archive/id/draft-cardwell-iccrg-bbr-congestion-control-02.html#name-updating-the-model-upon-pac
+        //BBRUpdateCongestionSignals():
+        //  BBRUpdateMaxBw()
+        //  if (rs.losses > 0)
+        //      BBR.loss_in_round = 1
+        //  if (!BBR.loss_round_start)
+        //      return  /* wait until end of round trip */
+        //  BBRAdaptLowerBoundsFromCongestion()
+        //  BBR.loss_in_round = 0
     }
 
     fn is_probing_bw(&self) -> bool {
