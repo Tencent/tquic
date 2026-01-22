@@ -48,6 +48,8 @@ use tquic::TlsConfig;
 use tquic::TransportHandler;
 use tquic_tools::ApplicationProto;
 use tquic_tools::CertCompressionAlgorithmArg;
+use tquic_tools::LossPacketType;
+use tquic_tools::PacketLossConfig;
 use tquic_tools::QuicSocket;
 use tquic_tools::Result;
 
@@ -257,6 +259,41 @@ pub struct ServerOpt {
     /// Disable encryption on 1-RTT packets.
     #[clap(long, help_heading = "Misc")]
     pub disable_encryption: bool,
+
+    /// Packet loss rate (0.0 to 1.0) for testing.
+    #[clap(
+        long,
+        default_value = "0.0",
+        value_name = "RATE",
+        help_heading = "Packet Loss"
+    )]
+    pub packet_loss_rate: f64,
+
+    /// Specific packet numbers to drop (comma-separated).
+    #[clap(
+        long,
+        value_delimiter = ',',
+        value_name = "NUMBERS",
+        help_heading = "Packet Loss"
+    )]
+    pub packet_loss_numbers: Vec<u64>,
+
+    /// Packet types to drop.
+    #[clap(
+        long,
+        value_delimiter = ',',
+        value_name = "TYPES",
+        help_heading = "Packet Loss"
+    )]
+    pub packet_loss_types: Vec<LossPacketType>,
+
+    /// Apply packet loss to incoming packets.
+    #[clap(long, help_heading = "Packet Loss")]
+    pub packet_loss_incoming: bool,
+
+    /// Apply packet loss to outgoing packets.
+    #[clap(long, help_heading = "Packet Loss")]
+    pub packet_loss_outgoing: bool,
 }
 
 const MAX_BUF_SIZE: usize = 65536;
@@ -343,7 +380,36 @@ impl Server {
         let registry = poll.registry();
 
         let handlers = ServerHandler::new(option)?;
-        let sock = Rc::new(QuicSocket::new(&option.listen, registry)?);
+
+        // Create packet loss configuration if needed
+        let packet_loss_config = if option.packet_loss_rate > 0.0
+            || !option.packet_loss_numbers.is_empty()
+            || !option.packet_loss_types.is_empty()
+        {
+            let mut config = PacketLossConfig::new()
+                .with_loss_rate(option.packet_loss_rate)
+                .with_drop_packet_numbers(option.packet_loss_numbers.clone())
+                .with_drop_incoming(option.packet_loss_incoming)
+                .with_drop_outgoing(option.packet_loss_outgoing);
+
+            let packet_types: Vec<_> = option
+                .packet_loss_types
+                .iter()
+                .map(|t| t.to_packet_type())
+                .collect();
+            config = config.with_drop_packet_types(packet_types);
+
+            Some(config)
+        } else {
+            None
+        };
+
+        let sock = Rc::new(QuicSocket::with_packet_loss(
+            &option.listen,
+            registry,
+            packet_loss_config,
+            option.cid_len,
+        )?);
 
         Ok(Server {
             endpoint: Endpoint::new(Box::new(config), true, Box::new(handlers), sock.clone()),

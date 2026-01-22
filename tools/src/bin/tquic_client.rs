@@ -68,6 +68,8 @@ use tquic::TlsConfig;
 use tquic::TransportHandler;
 use tquic_tools::ApplicationProto;
 use tquic_tools::CertCompressionAlgorithmArg;
+use tquic_tools::LossPacketType;
+use tquic_tools::PacketLossConfig;
 use tquic_tools::QuicSocket;
 use tquic_tools::Result;
 
@@ -340,6 +342,40 @@ pub struct ClientOpt {
     /// The range of the request, like "0-1023".
     #[clap(long, value_name = "RANGE", help_heading = "Protocol")]
     pub range: Option<String>,
+    /// Packet loss rate (0.0 to 1.0) for testing.
+    #[clap(
+        long,
+        default_value = "0.0",
+        value_name = "RATE",
+        help_heading = "Packet Loss"
+    )]
+    pub packet_loss_rate: f64,
+
+    /// Specific packet numbers to drop (comma-separated).
+    #[clap(
+        long,
+        value_delimiter = ',',
+        value_name = "NUMBERS",
+        help_heading = "Packet Loss"
+    )]
+    pub packet_loss_numbers: Vec<u64>,
+
+    /// Packet types to drop.
+    #[clap(
+        long,
+        value_delimiter = ',',
+        value_name = "TYPES",
+        help_heading = "Packet Loss"
+    )]
+    pub packet_loss_types: Vec<LossPacketType>,
+
+    /// Apply packet loss to incoming packets.
+    #[clap(long, help_heading = "Packet Loss")]
+    pub packet_loss_incoming: bool,
+
+    /// Apply packet loss to outgoing packets.
+    #[clap(long, help_heading = "Packet Loss")]
+    pub packet_loss_outgoing: bool,
 }
 
 const MAX_BUF_SIZE: usize = 65536;
@@ -599,7 +635,32 @@ impl Worker {
                 false => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
             }
         };
-        let mut sock = QuicSocket::new(&local, registry)?;
+
+        // Create packet loss configuration if needed
+        let packet_loss_config = if option.packet_loss_rate > 0.0
+            || !option.packet_loss_numbers.is_empty()
+            || !option.packet_loss_types.is_empty()
+        {
+            let mut config = PacketLossConfig::new()
+                .with_loss_rate(option.packet_loss_rate)
+                .with_drop_packet_numbers(option.packet_loss_numbers.clone())
+                .with_drop_incoming(option.packet_loss_incoming)
+                .with_drop_outgoing(option.packet_loss_outgoing);
+
+            let packet_types: Vec<_> = option
+                .packet_loss_types
+                .iter()
+                .map(|t| t.to_packet_type())
+                .collect();
+            config = config.with_drop_packet_types(packet_types);
+
+            Some(config)
+        } else {
+            None
+        };
+
+        let mut sock =
+            QuicSocket::with_packet_loss(&local, registry, packet_loss_config, option.cid_len)?;
 
         let mut assigned_addrs = Vec::new();
         assigned_addrs.push(sock.local_addr());

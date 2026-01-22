@@ -76,7 +76,7 @@ const RETRY_INTEGRITY_NONCE_V1: [u8; aead::NONCE_LEN] = [
 ];
 
 /// QUIC packet type.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PacketType {
     /// The Version Negotiation packet is a response to a client packet that
     /// contains a version that is not supported by the server.
