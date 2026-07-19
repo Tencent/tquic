@@ -849,6 +849,35 @@ impl Connection {
                         path.dcid_seq = None; // wait for a new DCID from peer
                     }
                 }
+
+                // Also assign unused dcids to paths still waiting for their
+                // first one — e.g. a path created by add_path() before the
+                // peer's NEW_CONNECTION_ID frames arrived (add_path is
+                // typically called from the connection-established callback,
+                // which fires before the peer's post-handshake NCID flight is
+                // processed). Without this, such a path has dcid_seq=None
+                // forever: select_send_path skips it for probing, so its
+                // PATH_CHALLENGE is never sent and it never becomes active.
+                let waiting: Vec<usize> = self
+                    .paths
+                    .iter()
+                    .filter(|(_, p)| p.dcid_seq.is_none())
+                    .map(|(pid, _)| pid)
+                    .collect();
+                for pid in waiting {
+                    let new_dcid_seq = match self.cids.lowest_unused_dcid_seq() {
+                        Some(seq) => seq,
+                        None => break,
+                    };
+                    let path = self.paths.get_mut(pid)?;
+                    path.dcid_seq = Some(new_dcid_seq);
+                    self.cids.mark_dcid_used(new_dcid_seq, pid)?;
+                    debug!(
+                        "{} assign dcid seq {} to waiting path {}",
+                        self.trace_id, new_dcid_seq, pid
+                    );
+                    self.mark_tickable(true);
+                }
             }
 
             Frame::RetireConnectionId { seq_num } => {
