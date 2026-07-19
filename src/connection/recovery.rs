@@ -846,6 +846,14 @@ impl Recovery {
         self.max_datagram_size = max_datagram_size;
     }
 
+    /// The number of consecutive PTOs fired without any acknowledgment.
+    /// Resets to zero on every ACK, so it doubles as a self-reviving
+    /// path-health signal: a path that keeps losing probe packets accumulates
+    /// PTOs; the first ACK after recovery clears it.
+    pub(crate) fn consecutive_pto_count(&self) -> usize {
+        self.pto_count
+    }
+
     /// Check whether this path can still send packets.
     pub(crate) fn can_send(&mut self) -> bool {
         // Check congestion controller

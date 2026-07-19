@@ -50,10 +50,19 @@ impl RoundRobinScheduler {
     }
 
     /// Try to select an available path
-    fn select(&mut self, iter: &mut slab::IterMut<Path>) -> Option<usize> {
+    fn select(
+        &mut self,
+        iter: &mut slab::IterMut<Path>,
+        healthy_only: bool,
+        max_srtt: Option<std::time::Duration>,
+    ) -> Option<usize> {
         for (pid, path) in iter.by_ref() {
             // Skip the path that is not ready for sending non-probing packets.
             if !path.active() || !path.recovery.can_send() {
+                continue;
+            }
+            // Blackhole-suspect paths are only used when no healthy path can.
+            if healthy_only && path.unhealthy_with(max_srtt) {
                 continue;
             }
 
@@ -72,30 +81,33 @@ impl MultipathScheduler for RoundRobinScheduler {
         spaces: &mut PacketNumSpaceMap,
         streams: &mut StreamMap,
     ) -> Result<usize> {
-        let mut iter = paths.iter_mut();
-        let mut exist_last = false;
+        // First pass considers only healthy paths; the fallback pass accepts
+        // blackhole-suspect ones so a fully-degraded path set still sends.
+        let max_srtt = paths.max_srtt;
+        for healthy_only in [true, false] {
+            let mut iter = paths.iter_mut();
+            let mut exist_last = false;
 
-        // Iterate and find the last used path
-        if let Some(last) = self.last {
-            if self.find_last(&mut iter, last) {
-                exist_last = true;
-            } else {
-                // The last path has been abandoned
-                iter = paths.iter_mut();
+            // Iterate and find the last used path
+            if let Some(last) = self.last {
+                if self.find_last(&mut iter, last) {
+                    exist_last = true;
+                } else {
+                    // The last path has been abandoned
+                    iter = paths.iter_mut();
+                }
             }
-        }
 
-        // Find the next available path
-        if let Some(pid) = self.select(&mut iter) {
-            return Ok(pid);
-        }
-        if !exist_last {
-            return Err(Error::Done);
-        }
-
-        let mut iter = paths.iter_mut();
-        if let Some(pid) = self.select(&mut iter) {
-            return Ok(pid);
+            // Find the next available path
+            if let Some(pid) = self.select(&mut iter, healthy_only, max_srtt) {
+                return Ok(pid);
+            }
+            if exist_last {
+                let mut iter = paths.iter_mut();
+                if let Some(pid) = self.select(&mut iter, healthy_only, max_srtt) {
+                    return Ok(pid);
+                }
+            }
         }
         Err(Error::Done)
     }

@@ -337,6 +337,25 @@ impl Path {
         self.active && self.dcid_seq.is_some()
     }
 
+    /// Whether the path looks blackholed: two or more consecutive PTOs fired
+    /// without any acknowledgment. Schedulers prefer healthy paths and only
+    /// fall back to unhealthy ones when no healthy path can send — otherwise
+    /// a dead-but-uncongested path (sparse traffic never fills its cwnd, so
+    /// srtt stays frozen at last-known-good) gets picked forever and traffic
+    /// blackholes despite live alternatives. Self-reviving: the first ACK
+    /// after link recovery resets the PTO count.
+    pub fn unhealthy(&self) -> bool {
+        self.recovery.consecutive_pto_count() >= 2
+    }
+
+    /// unhealthy(), plus the optional zombie-bufferbloat srtt cutoff (see
+    /// PathMap::max_srtt). Schedulers use this so a link parking packets for
+    /// seconds is avoided even though it technically delivers.
+    pub fn unhealthy_with(&self, max_srtt: Option<Duration>) -> bool {
+        self.unhealthy()
+            || max_srtt.is_some_and(|m| self.recovery.rtt.smoothed_rtt() > m)
+    }
+
     /// Set the active state of the path
     pub(crate) fn set_active(&mut self, v: bool) {
         self.active = v;
@@ -418,6 +437,12 @@ pub(crate) struct PathMap {
 
     /// Whether it serves as a server.
     is_server: bool,
+
+    /// Zombie-bufferbloat cutoff: paths whose smoothed RTT exceeds this are
+    /// treated as unhealthy by the multipath schedulers (a link can be "up"
+    /// yet park packets for seconds — worse than dead for interactive
+    /// traffic). None disables the cutoff.
+    pub(crate) max_srtt: Option<time::Duration>,
 }
 
 impl PathMap {
@@ -449,6 +474,7 @@ impl PathMap {
             anti_ampl_factor,
             is_multipath: false,
             is_server,
+            max_srtt: None,
         }
     }
 
