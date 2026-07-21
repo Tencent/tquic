@@ -109,6 +109,11 @@ pub struct Path {
 
     /// Whether the path has been abandoned in MPQUIC mode.
     pub(super) is_abandon: bool,
+
+    /// The path this one superseded via NAT rebinding (same CID seen from a
+    /// new 4-tuple). Once this path validates, the stale path is retired so
+    /// repeated rebindings can't exhaust the path table.
+    pub(crate) migrated_from: Option<usize>,
 }
 
 impl Path {
@@ -154,6 +159,7 @@ impl Path {
             trace_id: trace_id.to_string(),
             space_id: SpaceId::Data,
             is_abandon: false,
+            migrated_from: None,
         }
     }
 
@@ -300,8 +306,18 @@ impl Path {
     }
 
     /// Whether PATH_CHALLENGE or PATH_RESPONSE should be sent on the path.
+    ///
+    /// The anti-amplification limit only applies while the peer's address is
+    /// unverified, mirroring inc/dec/cmp_anti_ampl_limit: once the first
+    /// PATH_RESPONSE arrives the limit is frozen, and consulting the frozen
+    /// value here would deadlock validation of a path that was opened by a
+    /// small packet (e.g. a NAT rebinding) — the path gets stuck in
+    /// ValidatingMTU because the padded challenge is never allowed out.
     pub(super) fn need_send_validation_frames(&self, is_server: bool) -> bool {
-        if is_server && self.anti_ampl_limit < MIN_PATH_PROBE_SIZE {
+        if is_server
+            && !self.verified_peer_address
+            && self.anti_ampl_limit < MIN_PATH_PROBE_SIZE
+        {
             return false;
         }
 
@@ -314,7 +330,10 @@ impl Path {
         if self.validated() {
             return false;
         }
-        if is_server && self.anti_ampl_limit <= self.recovery.max_datagram_size {
+        if is_server
+            && !self.verified_peer_address
+            && self.anti_ampl_limit <= self.recovery.max_datagram_size
+        {
             return false;
         }
         true
@@ -514,6 +533,24 @@ impl PathMap {
         let pid = self.paths.insert(path);
         self.addrs.insert((local_addr, remote_addr), pid);
         Ok(pid)
+    }
+
+    /// Retire a path: deactivate it and drop its 4-tuple mapping so the same
+    /// tuple can be re-created later (e.g. a NAT flapping back). The slab
+    /// entry stays until `insert_path` evicts it once it is `unused()` —
+    /// callers must clear `dcid_seq` themselves (the CID manager lives on
+    /// the connection).
+    pub fn retire_path(&mut self, path_id: usize) {
+        let key = match self.paths.get_mut(path_id) {
+            Some(p) => {
+                p.set_active(false);
+                (p.local_addr, p.remote_addr)
+            }
+            None => return,
+        };
+        if self.addrs.get(&key) == Some(&path_id) {
+            self.addrs.remove(&key);
+        }
     }
 
     /// Return an immutable iterator over all existing paths.
