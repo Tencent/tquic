@@ -871,6 +871,13 @@ impl Connection {
                         path.scid_seq = None;
                     }
                 }
+
+                // RFC 9000 Section 5.1.1: an endpoint SHOULD supply a new
+                // connection ID when the peer retires one. Without this the
+                // pool only ever shrinks — e.g. repeated NAT rebindings
+                // (each of which retires the superseded path's CID) would
+                // eventually exhaust it.
+                self.events.add(Event::ScidToAdvertise(1));
             }
 
             Frame::PathChallenge { data } => {
