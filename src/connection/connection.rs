@@ -3718,7 +3718,16 @@ impl Connection {
     /// If `path_addr` is `None`, a Ping frame will be sent on each active path.
     /// Otherwise, a Ping frame will be on the specified path.
     pub fn ping(&mut self, path_addr: Option<FourTuple>) -> Result<()> {
-        self.paths.mark_ping(path_addr)
+        self.paths.mark_ping(path_addr)?;
+        // Wake the connection: setting need_send_ping alone does not make the
+        // endpoint process this connection, so on a truly idle connection the
+        // PING would sit unsent until some other event arrives — which, for
+        // an application using ping() as a keep-alive on an otherwise silent
+        // connection, is never (both ends stay dark until the idle timeout,
+        // or until an application-level liveness check kills the healthy
+        // connection).
+        self.mark_tickable(true);
+        Ok(())
     }
 
     /// Client add a new path on the connection.
