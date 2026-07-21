@@ -300,8 +300,18 @@ impl Path {
     }
 
     /// Whether PATH_CHALLENGE or PATH_RESPONSE should be sent on the path.
+    ///
+    /// The anti-amplification limit only applies while the peer's address is
+    /// unverified, mirroring inc/dec/cmp_anti_ampl_limit: once the first
+    /// PATH_RESPONSE arrives the limit is frozen, and consulting the frozen
+    /// value here would deadlock validation of a path that was opened by a
+    /// small packet (e.g. a NAT rebinding) — the path gets stuck in
+    /// ValidatingMTU because the padded challenge is never allowed out.
     pub(super) fn need_send_validation_frames(&self, is_server: bool) -> bool {
-        if is_server && self.anti_ampl_limit < MIN_PATH_PROBE_SIZE {
+        if is_server
+            && !self.verified_peer_address
+            && self.anti_ampl_limit < MIN_PATH_PROBE_SIZE
+        {
             return false;
         }
 
@@ -314,7 +324,10 @@ impl Path {
         if self.validated() {
             return false;
         }
-        if is_server && self.anti_ampl_limit <= self.recovery.max_datagram_size {
+        if is_server
+            && !self.verified_peer_address
+            && self.anti_ampl_limit <= self.recovery.max_datagram_size
+        {
             return false;
         }
         true
