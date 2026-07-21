@@ -3835,11 +3835,24 @@ impl Connection {
             None => return Ok(()),
         };
 
-        // TODO: check number of active path
+        // Refuse to abandon the last path still usable for sending.
+        let has_other = self
+            .paths
+            .iter()
+            .any(|(id, p)| id != pid && p.active());
+        if !has_other {
+            return Err(Error::InvalidOperation("last active path".into()));
+        }
 
-        // Mark the path as abandoned.
+        // Mark the path as abandoned, stop scheduling on it, free its DCID
+        // (RETIRE_CONNECTION_ID makes the peer issue a fresh one) and drop
+        // its 4-tuple mapping so the slot can be evicted and reused.
         let path = self.paths.get_mut(pid)?;
         path.is_abandon = true;
+        if let Some(seq) = path.dcid_seq.take() {
+            self.cids.mark_dcid_to_retire(seq, true);
+        }
+        self.paths.retire_path(pid);
         Ok(())
     }
 
