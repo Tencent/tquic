@@ -890,6 +890,30 @@ impl Connection {
                     if let Some(ref mut scheduler) = self.multipath_scheduler {
                         scheduler.on_path_updated(&mut self.paths, PathEvent::Validated(path_id));
                     }
+                    // NAT rebinding completed: this path supersedes the one
+                    // its CID previously lived on. Retire the stale path
+                    // (deactivate + free its DCID) so schedulers stop
+                    // feeding the dead address and repeated rebindings can't
+                    // exhaust max_paths or the CID pool.
+                    let old_pid = self
+                        .paths
+                        .get_mut(path_id)
+                        .ok()
+                        .and_then(|p| p.migrated_from.take());
+                    if let Some(old_pid) = old_pid {
+                        if old_pid != path_id {
+                            if let Ok(old) = self.paths.get_mut(old_pid) {
+                                if let Some(seq) = old.dcid_seq.take() {
+                                    self.cids.mark_dcid_to_retire(seq, true);
+                                }
+                            }
+                            self.paths.retire_path(old_pid);
+                            debug!(
+                                "{} path {} superseded by rebind path {}",
+                                self.trace_id, old_pid, path_id
+                            );
+                        }
+                    }
                 }
             }
 
@@ -3204,19 +3228,42 @@ impl Connection {
                     let space_id = self.spaces.add();
                     path.space_id = space_id;
                 }
-                Some(cid_pid) => {
-                    // Found NAT rebinding: If path migration occurs, the new path
-                    // will simply share the same packet number space with the
-                    // original path.
-                    path.space_id = self.paths.get(cid_pid)?.space_id;
-                }
+                Some(cid_pid) => match self.paths.get(cid_pid) {
+                    Ok(p) => {
+                        // Found NAT rebinding: If path migration occurs, the new path
+                        // will simply share the same packet number space with the
+                        // original path. Remember the stale path so it can be
+                        // retired once this one validates.
+                        path.space_id = p.space_id;
+                        path.migrated_from = Some(cid_pid);
+                    }
+                    // The bound path was already evicted — treat the packet
+                    // as opening a genuinely new path.
+                    Err(_) => path.space_id = self.spaces.add(),
+                },
             }
         }
 
         let pid = self.paths.insert_path(path)?;
         self.paths.get_mut(pid)?.update_trace_id(pid);
-        if cid_pid.is_none() {
-            self.cids.mark_scid_used(cid_seq, pid)?;
+        // Bind the packet's SCID to the new path — also on NAT rebinding, so
+        // a later rebinding of the same CID chains from the freshest path
+        // (and never dereferences an evicted one).
+        self.cids.mark_scid_used(cid_seq, pid)?;
+
+        // A server-created path needs a DCID before select_send_path will
+        // probe it: without one its PATH_CHALLENGE is never sent, it never
+        // validates, and user data keeps flowing to the stale address after
+        // a NAT rebinding.
+        if !self.cids.zero_length_dcid() && self.paths.get(pid)?.dcid_seq.is_none() {
+            if let Some(seq) = self.cids.lowest_unused_dcid_seq() {
+                self.paths.get_mut(pid)?.dcid_seq = Some(seq);
+                self.cids.mark_dcid_used(seq, pid)?;
+                debug!(
+                    "{} assign dcid seq {} to server-created path {}",
+                    self.trace_id, seq, pid
+                );
+            }
         }
         Ok(pid)
     }
@@ -7710,6 +7757,115 @@ pub(crate) mod tests {
             assert!(s.sent_count > 50);
             assert!(s.recv_count > 50);
         }
+        Ok(())
+    }
+
+    /// Exchange one round of packets while emulating a NAT that maps the
+    /// client's `real` address to `public` (rewrites src on client->server
+    /// packets and dst on server->client packets).
+    fn natted_round(
+        test_pair: &mut TestPair,
+        real: SocketAddr,
+        public: SocketAddr,
+    ) -> Result<()> {
+        let mut packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+        for (_, info) in packets.iter_mut() {
+            if info.src == real {
+                info.src = public;
+            }
+        }
+        TestPair::conn_packets_in(&mut test_pair.server, packets)?;
+
+        let mut packets = TestPair::conn_packets_out(&mut test_pair.server)?;
+        for (_, info) in packets.iter_mut() {
+            if info.dst == public {
+                info.dst = real;
+            }
+        }
+        TestPair::conn_packets_in(&mut test_pair.client, packets)
+    }
+
+    #[test]
+    fn conn_multipath_nat_rebind() -> Result<()> {
+        let mut client_config = TestPair::new_test_config(false)?;
+        client_config.set_cid_len(crate::MAX_CID_LEN);
+        client_config.enable_multipath(true);
+        client_config.set_multipath_algorithm(MultipathAlgorithm::MinRtt);
+        let mut server_config = TestPair::new_test_config(true)?;
+        server_config.set_cid_len(crate::MAX_CID_LEN);
+        server_config.enable_multipath(true);
+        server_config.set_multipath_algorithm(MultipathAlgorithm::MinRtt);
+
+        let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
+        test_pair.handshake()?;
+        test_pair.advertise_new_cids()?;
+
+        let client_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 9443);
+        let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 443);
+        assert_eq!(test_pair.server.paths_iter().count(), 1);
+
+        // Two successive NAT rebindings: the server must migrate to each new
+        // 4-tuple and retire the superseded path.
+        for (round, port) in [9555u16, 9666].iter().enumerate() {
+            let public = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), *port);
+
+            // The second rebinding needs a fresh unused DCID: a live endpoint
+            // replenishes on ScidToAdvertise, but TestPair drives the
+            // connections directly, so add one manually. The NCID frame
+            // itself travels through the NAT inside the normal rounds below.
+            if round > 0 {
+                let scid = ConnectionId::random();
+                test_pair
+                    .client
+                    .cids
+                    .add_scid(scid, Some(100 + round as u128), true, None, true)?;
+            }
+
+            let mut converged = false;
+            for _ in 0..30 {
+                // Keep traffic flowing so the rebound tuple keeps appearing
+                // and the new path earns anti-amplification credit.
+                let _ = test_pair.client.ping(None);
+                natted_round(&mut test_pair, client_addr, public)?;
+
+                if let Ok(p) = test_pair.server.get_path(server_addr, public) {
+                    if p.active() && p.state() == PathState::Validated {
+                        converged = true;
+                        break;
+                    }
+                }
+            }
+            assert!(converged, "rebind to port {} never validated", port);
+
+            // The pre-rebinding tuple must be gone from the address table.
+            let stale = if round == 0 { client_addr.port() } else { 9555 };
+            let stale_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), stale);
+            assert!(test_pair.server.get_path(server_addr, stale_addr).is_err());
+
+            // Exactly one active server path (no dead-path accumulation).
+            let active = test_pair
+                .server
+                .paths
+                .iter()
+                .filter(|(_, p)| p.active())
+                .count();
+            assert_eq!(active, 1);
+
+            // The client's view never changes across a rebinding.
+            assert_eq!(test_pair.client.paths_iter().count(), 1);
+        }
+
+        // Data still flows end-to-end through the final rebound tuple.
+        let final_public = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 9666);
+        let data = Bytes::from_static(b"post-rebind payload");
+        assert_eq!(test_pair.client.stream_write(4, data.clone(), false), Ok(data.len()));
+        natted_round(&mut test_pair, client_addr, final_public)?;
+        let mut buf = vec![0; 128];
+        assert_eq!(
+            test_pair.server.stream_read(4, &mut buf)?,
+            (data.len(), false)
+        );
+        assert_eq!(&buf[..data.len()], &data[..]);
         Ok(())
     }
 
