@@ -1420,7 +1420,7 @@ impl Connection {
         // All ack-eliciting 0-RTT and 1-RTT packets within its advertised
         // max_ack_delay.
         if space.ack_timer.is_none() {
-            let ack_delay = time::Duration::from_millis(self.peer_transport_params.max_ack_delay);
+            let ack_delay = time::Duration::from_millis(self.local_transport_params.max_ack_delay);
             space.ack_timer = Some(time::Instant::now() + ack_delay);
             debug!(
                 "{} set ack timer for space {:?}, timeout {:?} ",
@@ -6765,6 +6765,38 @@ pub(crate) mod tests {
             let space = test_pair.server.spaces.get(SpaceId::Data).unwrap();
             assert!(space.consecutive_non_ack_eliciting_sent <= space::MAX_NON_ACK_ELICITING);
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn ack_timer_uses_local_max_ack_delay() -> Result<()> {
+        const LOCAL_MAX_ACK_DELAY: u64 = 100;
+        const PEER_MAX_ACK_DELAY: u64 = 1;
+
+        let mut client_config = TestPair::new_test_config(false)?;
+        client_config.set_ack_eliciting_threshold(2);
+        client_config.set_max_ack_delay(LOCAL_MAX_ACK_DELAY);
+        let mut server_config = TestPair::new_test_config(true)?;
+        let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
+        test_pair.client.peer_transport_params.max_ack_delay = PEER_MAX_ACK_DELAY;
+
+        let before = time::Instant::now();
+        test_pair
+            .client
+            .try_schedule_ack_frame(SpaceId::Data, 1, true)?;
+        let after = time::Instant::now();
+
+        let ack_timer = test_pair
+            .client
+            .spaces
+            .get(SpaceId::Data)
+            .unwrap()
+            .ack_timer
+            .unwrap();
+        let local_ack_delay = Duration::from_millis(LOCAL_MAX_ACK_DELAY);
+        assert!(ack_timer >= before + local_ack_delay);
+        assert!(ack_timer <= after + local_ack_delay);
 
         Ok(())
     }
