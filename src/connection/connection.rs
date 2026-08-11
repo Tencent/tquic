@@ -1113,6 +1113,15 @@ impl Connection {
 
     /// Check and record handshake status.
     fn process_tls_session(&mut self, tls_result: Result<()>) -> Result<()> {
+        if let Some(tls_error) = self.tls_session.error() {
+            self.local_error = Some(ConnectionError {
+                is_app: false,
+                error_code: tls_error.error_code,
+                frame: None,
+                reason: tls_error.reason.clone(),
+            });
+        }
+
         if self.flags.contains(HandshakeCompleted) {
             return tls_result;
         }
@@ -5623,7 +5632,20 @@ pub(crate) mod tests {
         server_config.set_tls_config(tls_config);
 
         let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
-        assert!(test_pair.handshake().is_err());
+        assert!(matches!(test_pair.handshake(), Err(Error::TlsFail(_))));
+
+        const TLS_ALERT_NO_APPLICATION_PROTOCOL: u8 = 0x78;
+        let expected_error = ConnectionError {
+            is_app: false,
+            error_code: Error::CryptoError(TLS_ALERT_NO_APPLICATION_PROTOCOL).to_wire(),
+            frame: None,
+            reason: Vec::new(),
+        };
+        assert_eq!(test_pair.server.local_error(), Some(&expected_error));
+
+        let packets = TestPair::conn_packets_out(&mut test_pair.server)?;
+        TestPair::conn_packets_in(&mut test_pair.client, packets)?;
+        assert_eq!(test_pair.client.peer_error(), Some(&expected_error));
 
         Ok(())
     }
