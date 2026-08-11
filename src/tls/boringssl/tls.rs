@@ -1139,10 +1139,8 @@ extern "C" fn send_alert(ssl: *mut Ssl, level: tls::Level, alert: u8) -> c_int {
         alert
     );
 
-    const TLS_ALERT_ERROR: u64 = 0x100;
-    let error: u64 = TLS_ALERT_ERROR + u64::from(alert);
     session_data.error = Some(tls::TlsError {
-        error_code: error,
+        error_code: Error::CryptoError(alert).to_wire(),
         reason: Vec::new(),
     });
 

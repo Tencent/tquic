@@ -97,8 +97,8 @@ pub enum Error {
     /// enough MTU.
     NoViablePath,
 
-    /// The cryptographic handshake failed. A range of 256 values is reserved
-    /// for carrying error codes specific to the cryptographic handshake.
+    /// The cryptographic handshake failed. The value is a TLS alert
+    /// description, which is encoded in the reserved 0x100-0x1ff range.
     CryptoError(u8),
 
     /// An endpoint detected a multipath error with protocol compliance that
@@ -175,7 +175,7 @@ impl Error {
             Error::KeyUpdateError => 0x0e,
             Error::AeadLimitReached => 0x0f,
             Error::NoViablePath => 0x10,
-            Error::CryptoError(v) => v as u64,
+            Error::CryptoError(v) => 0x100 + u64::from(v),
             Error::MultipathProtocolViolation => 0x1001d76d3ded42f3,
             _ => 0x0,
         }
@@ -274,6 +274,9 @@ mod tests {
 
     #[test]
     fn error_to_wire() {
+        assert_eq!(Error::CryptoError(0).to_wire(), 0x100);
+        assert_eq!(Error::CryptoError(u8::MAX).to_wire(), 0x1ff);
+
         let mut found_internal_err = false;
         for err in Error::iter() {
             if err == Error::NoError {
@@ -287,11 +290,7 @@ mod tests {
                 assert_eq!(err.to_wire(), 0);
                 continue;
             }
-            if let Error::CryptoError(_) = err {
-                assert_eq!(err.to_wire(), 0);
-            } else {
-                assert!(err.to_wire() > 0);
-            }
+            assert!(err.to_wire() > 0);
         }
     }
 
