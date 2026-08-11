@@ -15,7 +15,6 @@
 use std::collections::hash_map;
 use std::collections::VecDeque;
 use std::convert::TryFrom;
-use std::mem::MaybeUninit;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -85,6 +84,20 @@ pub struct Http3Connection {
     /// The streams for peer QPACK.
     peer_qpack_streams: QpackStreams,
 
+    /// Field sections waiting for encoder-stream insertions.
+    blocked_field_sections: StreamIdHashMap<BlockedFieldSection>,
+
+    /// Decoder instructions waiting for QPACK decoder-stream flow-control
+    /// credit.
+    pending_qpack_decoder_instructions: VecDeque<Bytes>,
+
+    /// Encoder instructions waiting for QPACK encoder-stream flow-control
+    /// credit.
+    pending_qpack_encoder_instructions: VecDeque<Bytes>,
+
+    /// HTTP/3 events made ready by QPACK encoder-stream processing.
+    pending_qpack_events: VecDeque<(u64, Http3Event)>,
+
     /// The next stream ID to be used for a request(bididirectional) stream.
     next_request_stream_id: u64,
     /// The next stream ID to be used for a unidirectional stream.
@@ -147,7 +160,9 @@ impl Http3Connection {
             },
 
             qpack_encoder: qpack::QpackEncoder::new(),
-            qpack_decoder: qpack::QpackDecoder::new(),
+            qpack_decoder: qpack::QpackDecoder::with_max_capacity(
+                config.qpack_max_table_capacity.unwrap_or(0),
+            ),
 
             local_qpack_streams: QpackStreams {
                 encoder_stream_id: None,
@@ -158,6 +173,11 @@ impl Http3Connection {
                 encoder_stream_id: None,
                 decoder_stream_id: None,
             },
+
+            blocked_field_sections: Default::default(),
+            pending_qpack_decoder_instructions: VecDeque::new(),
+            pending_qpack_encoder_instructions: VecDeque::new(),
+            pending_qpack_events: VecDeque::new(),
 
             next_request_stream_id: 0,
             next_uni_stream_id: initial_uni_stream_id,
@@ -325,6 +345,7 @@ impl Http3Connection {
             let _ = conn.stream_shutdown(stream_id, crate::Shutdown::Write, 0);
         }
 
+        self.cancel_qpack_stream(conn, stream_id)?;
         self.stream_destroy(stream_id);
         Ok(())
     }
@@ -355,6 +376,23 @@ impl Http3Connection {
 
     /// Encode HTTP/3 header fields into a field section with QPACK.
     fn encode_header_fields<T: NameValue>(&mut self, headers: &[T]) -> Result<Bytes> {
+        self.encode_header_fields_inner(None, headers)
+            .map(|(field_section, _)| field_section)
+    }
+
+    fn encode_header_fields_for_stream<T: NameValue>(
+        &mut self,
+        stream_id: u64,
+        headers: &[T],
+    ) -> Result<(Bytes, Vec<u8>)> {
+        self.encode_header_fields_inner(Some(stream_id), headers)
+    }
+
+    fn encode_header_fields_inner<T: NameValue>(
+        &mut self,
+        stream_id: Option<u64>,
+        headers: &[T],
+    ) -> Result<(Bytes, Vec<u8>)> {
         // RFC9114: The default value of max_field_section_size is unlimited.
         let max_field_section_size = self
             .peer_settings
@@ -374,13 +412,65 @@ impl Http3Connection {
         }
 
         let mut header_block = BytesMut::zeroed(headers_size);
-        match self.qpack_encoder.encode(headers, header_block.as_mut()) {
-            Ok(v) => {
-                header_block.truncate(v);
-                Ok(header_block.freeze())
+        let encoded = match stream_id {
+            Some(stream_id) => {
+                self.qpack_encoder
+                    .encode_for_stream(stream_id, headers, header_block.as_mut())
+            }
+            None => self
+                .qpack_encoder
+                .encode(headers, header_block.as_mut())
+                .map(|field_len| (field_len, Vec::new())),
+        };
+        match encoded {
+            Ok((field_len, instructions)) => {
+                header_block.truncate(field_len);
+                Ok((header_block.freeze(), instructions))
             }
             Err(_) => Err(Http3Error::InternalError),
         }
+    }
+
+    fn queue_qpack_encoder_instructions(
+        &mut self,
+        conn: &mut Connection,
+        instructions: Vec<u8>,
+    ) -> Result<()> {
+        if !instructions.is_empty() {
+            self.pending_qpack_encoder_instructions
+                .push_back(Bytes::from(instructions));
+        }
+        self.flush_qpack_encoder_instructions(conn)
+    }
+
+    fn flush_qpack_encoder_instructions(&mut self, conn: &mut Connection) -> Result<()> {
+        let Some(stream_id) = self.local_qpack_streams.encoder_stream_id else {
+            return if self.pending_qpack_encoder_instructions.is_empty() {
+                Ok(())
+            } else {
+                Err(Http3Error::InternalError)
+            };
+        };
+
+        while let Some(instruction) = self.pending_qpack_encoder_instructions.pop_front() {
+            let capacity = conn.stream_capacity(stream_id)?;
+            if capacity == 0 {
+                self.pending_qpack_encoder_instructions
+                    .push_front(instruction);
+                let _ = conn.stream_want_write(stream_id, true);
+                return Ok(());
+            }
+
+            let write_len = capacity.min(instruction.len());
+            let written = conn.stream_write(stream_id, instruction.slice(..write_len), false)?;
+            if written < instruction.len() {
+                self.pending_qpack_encoder_instructions
+                    .push_front(instruction.slice(written..));
+                let _ = conn.stream_want_write(stream_id, true);
+                return Ok(());
+            }
+        }
+        Ok(())
     }
 
     /// Write HTTP/3 header block to quic stream buffer.
@@ -493,7 +583,18 @@ impl Http3Connection {
             stream.mark_priority_initialized();
         }
 
-        let header_block = self.encode_header_fields(headers)?;
+        // A previous call may already have encoded this field section and
+        // queued its dynamic-table references before request-stream flow
+        // control blocked the HEADERS frame. Reuse that section so a retry
+        // cannot create an additional QPACK acknowledgment obligation for a
+        // field section that will never be sent.
+        if let Some((header_block, cached_fin)) = stream.take_header_block() {
+            return self.send_header_block(conn, stream_id, header_block, cached_fin || fin);
+        }
+
+        let (header_block, encoder_instructions) =
+            self.encode_header_fields_for_stream(stream_id, headers)?;
+        self.queue_qpack_encoder_instructions(conn, encoder_instructions)?;
         self.send_header_block(conn, stream_id, header_block, fin)
     }
 
@@ -969,10 +1070,8 @@ impl Http3Connection {
             }
         };
 
-        // Try to open QPACK encoder/decoder streams, but ignore errors if it fails
-        // since we don't support QPACK dynamic table yet.
-        self.open_qpack_encoder_stream(conn).ok();
-        self.open_qpack_decoder_stream(conn).ok();
+        self.open_qpack_encoder_stream(conn)?;
+        self.open_qpack_decoder_stream(conn)?;
 
         Ok(())
     }
@@ -1113,17 +1212,75 @@ impl Http3Connection {
         stream_id: u64,
         field_section: Vec<u8>,
     ) -> Result<(u64, Http3Event)> {
+        let Some(headers) = self.decode_qpack_field_section(
+            conn,
+            stream_id,
+            field_section,
+            BlockedFieldSectionKind::Headers,
+        )?
+        else {
+            return Err(Http3Error::Done);
+        };
+
+        let headers_event = Http3Event::Headers {
+            headers,
+            fin: conn.stream_finished(stream_id),
+        };
+
+        Ok((stream_id, headers_event))
+    }
+
+    fn decode_qpack_field_section(
+        &mut self,
+        conn: &mut Connection,
+        stream_id: u64,
+        field_section: Vec<u8>,
+        kind: BlockedFieldSectionKind,
+    ) -> Result<Option<Vec<Header>>> {
         // RFC9114: The default value of max_field_section_size is unlimited.
         let max_field_section_size = self
             .local_settings
             .max_field_section_size
             .unwrap_or(u64::MAX);
 
-        let headers = match self
-            .qpack_decoder
-            .decode(&field_section[..], max_field_section_size)
-        {
-            Ok(v) => v.0,
+        match self.qpack_decoder.decode_field_section(
+            stream_id,
+            &field_section,
+            max_field_section_size,
+        ) {
+            Ok(qpack::DecodeStatus::Decoded {
+                headers,
+                decoder_instructions,
+                ..
+            }) => {
+                self.queue_qpack_decoder_instructions(conn, decoder_instructions)?;
+                Ok(Some(headers))
+            }
+            Ok(qpack::DecodeStatus::Blocked {
+                required_insert_count,
+            }) => {
+                if self.blocked_field_sections.contains_key(&stream_id)
+                    || self.blocked_field_sections.len() as u64
+                        >= self.local_settings.qpack_blocked_streams.unwrap_or(0)
+                {
+                    let e = Http3Error::QpackDecompressionFailed;
+                    conn.close(true, e.to_wire(), b"too many QPACK blocked streams")?;
+                    return Err(e);
+                }
+
+                self.blocked_field_sections.insert(
+                    stream_id,
+                    BlockedFieldSection {
+                        field_section,
+                        required_insert_count,
+                        kind,
+                    },
+                );
+                if let Some(stream) = self.streams.get_mut(&stream_id) {
+                    stream.set_qpack_blocked(true);
+                }
+                Ok(None)
+            }
             Err(e) => {
                 error!(
                     "{:?} stream {} qpack decode error: {:?}",
@@ -1133,16 +1290,61 @@ impl Http3Connection {
                 );
 
                 conn.close(true, e.to_wire(), b"qpack decompression failed")?;
-                return Err(e);
+                Err(e)
             }
+        }
+    }
+
+    fn queue_qpack_decoder_instructions(
+        &mut self,
+        conn: &mut Connection,
+        instructions: Vec<u8>,
+    ) -> Result<()> {
+        if !instructions.is_empty() {
+            self.pending_qpack_decoder_instructions
+                .push_back(Bytes::from(instructions));
+        }
+        self.flush_qpack_decoder_instructions(conn)
+    }
+
+    fn flush_qpack_decoder_instructions(&mut self, conn: &mut Connection) -> Result<()> {
+        let Some(stream_id) = self.local_qpack_streams.decoder_stream_id else {
+            return if self.pending_qpack_decoder_instructions.is_empty() {
+                Ok(())
+            } else {
+                Err(Http3Error::InternalError)
+            };
         };
 
-        let headers_event = Http3Event::Headers {
-            headers,
-            fin: conn.stream_finished(stream_id),
-        };
+        while let Some(instruction) = self.pending_qpack_decoder_instructions.pop_front() {
+            let capacity = conn.stream_capacity(stream_id)?;
+            if capacity == 0 {
+                self.pending_qpack_decoder_instructions
+                    .push_front(instruction);
+                let _ = conn.stream_want_write(stream_id, true);
+                return Ok(());
+            }
 
-        Ok((stream_id, headers_event))
+            let write_len = capacity.min(instruction.len());
+            let written = conn.stream_write(stream_id, instruction.slice(..write_len), false)?;
+            if written < instruction.len() {
+                self.pending_qpack_decoder_instructions
+                    .push_front(instruction.slice(written..));
+                let _ = conn.stream_want_write(stream_id, true);
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    fn cancel_qpack_stream(&mut self, conn: &mut Connection, stream_id: u64) -> Result<()> {
+        self.blocked_field_sections.remove(&stream_id);
+        if let Some(stream) = self.streams.get_mut(&stream_id) {
+            stream.set_qpack_blocked(false);
+        }
+
+        let instruction = self.qpack_decoder.stream_cancellation(stream_id)?;
+        self.queue_qpack_decoder_instructions(conn, instruction)
     }
 
     /// Receive an HTTP/3 DATA frame from the peer.
@@ -1248,7 +1450,7 @@ impl Http3Connection {
         conn: &mut Connection,
         stream_id: u64,
         push_id: u64,
-        _field_section: Vec<u8>,
+        field_section: Vec<u8>,
     ) -> Result<(u64, Http3Event)> {
         // A client MUST NOT send a PUSH_PROMISE frame. A server MUST treat the receipt of
         // a PUSH_PROMISE frame as a connection error of type H3_FRAME_UNEXPECTED.
@@ -1288,7 +1490,15 @@ impl Http3Connection {
             return Err(Http3Error::IdError);
         }
 
-        // Ignore the PUSH_PROMISE field_section temporarily.
+        // Decode the promised field section even though push delivery is not
+        // exposed yet, so QPACK acknowledgments and table references remain in
+        // sync with the peer.
+        let _ = self.decode_qpack_field_section(
+            conn,
+            stream_id,
+            field_section,
+            BlockedFieldSectionKind::PushPromise,
+        )?;
         Err(Http3Error::Done)
     }
 
@@ -1444,6 +1654,13 @@ impl Http3Connection {
                 raw,
                 ..
             } => {
+                if let Err(e) = self
+                    .qpack_encoder
+                    .set_max_capacity(qpack_max_table_capacity.unwrap_or(0))
+                {
+                    conn.close(true, e.to_wire(), b"invalid QPACK table capacity")?;
+                    return Err(e);
+                }
                 self.peer_settings = Http3Settings {
                     max_field_section_size,
                     qpack_max_table_capacity,
@@ -1520,15 +1737,108 @@ impl Http3Connection {
         conn: &mut Connection,
         stream_id: u64,
     ) -> Result<(u64, Http3Event)> {
-        let mut d: [u8; 4096] = unsafe {
-            #[allow(clippy::uninit_assumed_init, invalid_value)]
-            MaybeUninit::uninit().assume_init()
-        };
+        let stream_type = self
+            .streams
+            .get(&stream_id)
+            .and_then(Http3Stream::stream_type)
+            .ok_or(Http3Error::InternalError)?;
+        let mut data = [0; 4096];
 
-        // We don't support qpack dynamic table yet, so just read and discard all data.
         loop {
-            conn.stream_read(stream_id, &mut d)?;
+            let read = match conn.stream_read(stream_id, &mut data) {
+                Ok((0, _)) => break,
+                Ok((read, _)) => read,
+                Err(crate::Error::Done) => break,
+                Err(e) => return Err(e.into()),
+            };
+
+            let result = match stream_type {
+                Http3StreamType::QpackEncoder => {
+                    match self
+                        .qpack_decoder
+                        .process_encoder_instructions(&data[..read])
+                    {
+                        Ok(instructions) => {
+                            self.queue_qpack_decoder_instructions(conn, instructions)?;
+                            self.unblock_qpack_streams(conn)
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
+                Http3StreamType::QpackDecoder => self
+                    .qpack_encoder
+                    .process_decoder_instructions(&data[..read]),
+                _ => unreachable!(),
+            };
+
+            if let Err(e) = result {
+                conn.close(true, e.to_wire(), b"invalid QPACK instruction")?;
+                return Err(e);
+            }
         }
+
+        self.flush_qpack_encoder_instructions(conn)?;
+        self.flush_qpack_decoder_instructions(conn)?;
+        if let Some(event) = self.pending_qpack_events.pop_front() {
+            return Ok(event);
+        }
+        Err(Http3Error::Done)
+    }
+
+    fn unblock_qpack_streams(&mut self, conn: &mut Connection) -> Result<()> {
+        let insert_count = self.qpack_decoder.insert_count();
+        let ready: Vec<u64> = self
+            .blocked_field_sections
+            .iter()
+            .filter_map(|(&stream_id, blocked)| {
+                (blocked.required_insert_count <= insert_count).then_some(stream_id)
+            })
+            .collect();
+
+        for stream_id in ready {
+            let blocked = self.blocked_field_sections.remove(&stream_id).unwrap();
+            let max_field_section_size = self
+                .local_settings
+                .max_field_section_size
+                .unwrap_or(u64::MAX);
+            let status = self.qpack_decoder.decode_field_section(
+                stream_id,
+                &blocked.field_section,
+                max_field_section_size,
+            )?;
+            let qpack::DecodeStatus::Decoded {
+                headers,
+                decoder_instructions,
+                ..
+            } = status
+            else {
+                return Err(Http3Error::QpackDecompressionFailed);
+            };
+            self.queue_qpack_decoder_instructions(conn, decoder_instructions)?;
+
+            if let Some(stream) = self.streams.get_mut(&stream_id) {
+                stream.set_qpack_blocked(false);
+            }
+
+            if matches!(blocked.kind, BlockedFieldSectionKind::Headers) {
+                let fin = conn.stream_finished(stream_id);
+                self.pending_qpack_events
+                    .push_back((stream_id, Http3Event::Headers { headers, fin }));
+                if fin {
+                    let mut completed = false;
+                    if let Some(stream) = self.streams.get_mut(&stream_id) {
+                        stream.mark_read_finished();
+                        completed = stream.write_finished();
+                    }
+                    self.pending_qpack_events
+                        .push_back((stream_id, Http3Event::Finished));
+                    if completed {
+                        self.stream_destroy(stream_id);
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Process readable HTTP/3 push stream.
@@ -1545,6 +1855,9 @@ impl Http3Connection {
         // borrowing `self` for the entire duration of the loop, because we'll need to borrow it
         // again in inner block.
         while let Some(stream) = self.streams.get_mut(&stream_id) {
+            if stream.qpack_blocked() {
+                break;
+            }
             match stream.state() {
                 Http3StreamState::PushId => {
                     stream.parse_push_id(conn)?;
@@ -1716,8 +2029,6 @@ impl Http3Connection {
                 return self.process_readable_push_stream(conn, stream_id, polling);
             }
 
-            // Actually, Encoder and Decoder have different parsing instruction formats,
-            // but since we don't support dynamic table, we handle them here.
             Http3StreamType::QpackEncoder | Http3StreamType::QpackDecoder => {
                 return self.process_readable_qpack_stream(conn, stream_id);
             }
@@ -1747,6 +2058,9 @@ impl Http3Connection {
         // borrowing `self` for the entire duration of the loop, because we'll need to borrow it
         // again in inner block.
         while let Some(stream) = self.streams.get_mut(&stream_id) {
+            if stream.qpack_blocked() {
+                break;
+            }
             match stream.state() {
                 Http3StreamState::FrameType => {
                     stream.parse_frame_type(conn)?;
@@ -1921,12 +2235,17 @@ impl Http3Connection {
                 Err(Http3Error::Done) => None,
                 // If the stream was reset, return a Reset event early, to avoid return a Finished event later.
                 Err(Http3Error::TransportError(crate::Error::StreamReset(e))) => {
-                    return Ok((stream_id, Http3Event::Reset(e)))
+                    self.cancel_qpack_stream(conn, stream_id)?;
+                    return Ok((stream_id, Http3Event::Reset(e)));
                 }
                 Err(e) => return Err(e),
             };
 
-            if conn.stream_finished(stream_id) {
+            let qpack_blocked = self
+                .streams
+                .get(&stream_id)
+                .is_some_and(Http3Stream::qpack_blocked);
+            if conn.stream_finished(stream_id) && !qpack_blocked {
                 trace!("{:?} stream {} finished", conn.trace_id(), stream_id);
                 self.process_finished_stream(stream_id);
 
@@ -1963,6 +2282,13 @@ impl Http3Connection {
             return Err(Http3Error::Done);
         }
 
+        self.flush_qpack_encoder_instructions(conn)?;
+        self.flush_qpack_decoder_instructions(conn)?;
+
+        if let Some(event) = self.pending_qpack_events.pop_front() {
+            return Ok(event);
+        }
+
         // Process finished HTTP/3 streams.
         if let Some(stream_id) = self.finished_streams.pop_front() {
             return Ok((stream_id, Http3Event::Finished));
@@ -1974,6 +2300,10 @@ impl Http3Connection {
             // Everything is fine, continue.
             Err(Http3Error::Done) => (),
             Err(e) => return Err(e),
+        }
+
+        if let Some(event) = self.pending_qpack_events.pop_front() {
+            return Ok(event);
         }
 
         // Process all readable HTTP/3 streams.
@@ -2064,6 +2394,18 @@ struct Http3Settings {
 struct QpackStreams {
     pub encoder_stream_id: Option<u64>,
     pub decoder_stream_id: Option<u64>,
+}
+
+#[derive(Clone, Copy)]
+enum BlockedFieldSectionKind {
+    Headers,
+    PushPromise,
+}
+
+struct BlockedFieldSection {
+    field_section: Vec<u8>,
+    required_insert_count: u64,
+    kind: BlockedFieldSectionKind,
 }
 
 /// An extensible HTTP/3 Priority Parameters
@@ -5643,6 +5985,151 @@ mod tests {
             Some(qpack_blocked_streams)
         );
         assert_eq!(s.server.peer_settings.connect_protocol_enabled, None);
+    }
+
+    #[test]
+    fn dynamic_table_round_trip_over_qpack_streams() {
+        let mut client_config = Session::new_test_config(false).unwrap();
+        let mut server_config = Session::new_test_config(true).unwrap();
+        let mut h3_config = Http3Config::new().unwrap();
+        h3_config.set_qpack_max_table_capacity(512);
+        h3_config.set_qpack_blocked_streams(1);
+
+        let mut s =
+            Session::new_with_test_config(&mut client_config, &mut server_config, &h3_config)
+                .unwrap();
+        let headers = Session::default_request_headers();
+
+        let first_stream = s.send_request_with_custom_headers(&headers, true).unwrap();
+        assert_eq!(
+            s.server_poll(),
+            Ok((
+                first_stream,
+                Http3Event::Headers {
+                    headers: headers.clone(),
+                    fin: true,
+                },
+            ))
+        );
+        assert_eq!(s.server_poll(), Ok((first_stream, Http3Event::Finished)));
+        assert!(s.server.qpack_decoder.insert_count() > 0);
+
+        // Deliver Insert Count Increment feedback so the next field section
+        // can safely reference the entries inserted by the first request.
+        s.move_forward().unwrap();
+        assert_eq!(s.client_poll(), Err(Http3Error::Done));
+
+        let second_stream = s.send_request_with_custom_headers(&headers, true).unwrap();
+        assert_eq!(
+            s.server_poll(),
+            Ok((second_stream, Http3Event::Headers { headers, fin: true },))
+        );
+        assert_eq!(s.server_poll(), Ok((second_stream, Http3Event::Finished)));
+
+        // Deliver and process the Section Acknowledgment produced for the
+        // dynamically referenced second field section.
+        s.move_forward().unwrap();
+        assert_eq!(s.client_poll(), Err(Http3Error::Done));
+    }
+
+    #[test]
+    fn qpack_encoder_instruction_resumes_after_flow_control() {
+        let mut client_config = Session::new_test_config(false).unwrap();
+        let mut server_config = Session::new_test_config(true).unwrap();
+        server_config.set_initial_max_stream_data_uni(24);
+
+        let mut h3_config = Http3Config::new().unwrap();
+        h3_config.set_qpack_max_table_capacity(512);
+        h3_config.set_qpack_blocked_streams(1);
+        let mut s =
+            Session::new_with_test_config(&mut client_config, &mut server_config, &h3_config)
+                .unwrap();
+        let headers = vec![Header::new(
+            b"x-large-field",
+            b"abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz",
+        )];
+
+        let stream_id = s.send_request_with_custom_headers(&headers, true).unwrap();
+        assert!(!s.client.pending_qpack_encoder_instructions.is_empty());
+        assert_eq!(
+            s.server_poll(),
+            Ok((stream_id, Http3Event::Headers { headers, fin: true },))
+        );
+        assert_eq!(s.server_poll(), Ok((stream_id, Http3Event::Finished)));
+
+        // Reading each partial encoder-stream chunk returns flow-control
+        // credit. Polling the sender flushes the queued remainder.
+        for _ in 0..8 {
+            s.move_forward().unwrap();
+            let _ = s.client_poll();
+            s.move_forward().unwrap();
+            let _ = s.server_poll();
+            if s.client.pending_qpack_encoder_instructions.is_empty()
+                && s.server.qpack_decoder.insert_count() == 1
+            {
+                break;
+            }
+        }
+        assert!(s.client.pending_qpack_encoder_instructions.is_empty());
+        assert_eq!(s.server.qpack_decoder.insert_count(), 1);
+    }
+
+    #[test]
+    fn blocked_field_section_resumes_after_encoder_instructions() {
+        let mut client_config = Session::new_test_config(false).unwrap();
+        let mut server_config = Session::new_test_config(true).unwrap();
+        let mut h3_config = Http3Config::new().unwrap();
+        h3_config.set_qpack_max_table_capacity(220);
+        h3_config.set_qpack_blocked_streams(1);
+        let mut s =
+            Session::new_with_test_config(&mut client_config, &mut server_config, &h3_config)
+                .unwrap();
+
+        // RFC 9204 Appendix B.2 field section references two entries that
+        // have not arrived on the encoder stream yet.
+        let stream_id = s.client.stream_new(&mut s.pair.client).unwrap();
+        let field_section = hex::decode("03811011").unwrap();
+        let mut frame_bytes = BytesMut::zeroed(32);
+        let frame_len = frame::Http3Frame::Headers { field_section }
+            .encode(frame_bytes.as_mut())
+            .unwrap();
+        frame_bytes.truncate(frame_len);
+        s.pair
+            .client
+            .stream_write(stream_id, frame_bytes.freeze(), true)
+            .unwrap();
+        s.move_forward().unwrap();
+
+        assert_eq!(s.server_poll(), Err(Http3Error::Done));
+        assert!(s.server.blocked_field_sections.contains_key(&stream_id));
+        assert!(s.server.streams.get(&stream_id).unwrap().qpack_blocked());
+
+        let encoder_instructions =
+            hex::decode("3fbd01c00f7777772e6578616d706c652e636f6dc10c2f73616d706c652f70617468")
+                .unwrap();
+        let encoder_stream_id = s.client.local_qpack_streams.encoder_stream_id.unwrap();
+        s.pair
+            .client
+            .stream_write(encoder_stream_id, Bytes::from(encoder_instructions), false)
+            .unwrap();
+        s.move_forward().unwrap();
+
+        assert_eq!(
+            s.server_poll(),
+            Ok((
+                stream_id,
+                Http3Event::Headers {
+                    headers: vec![
+                        Header::new(b":authority", b"www.example.com"),
+                        Header::new(b":path", b"/sample/path"),
+                    ],
+                    fin: true,
+                },
+            ))
+        );
+        assert_eq!(s.server_poll(), Ok((stream_id, Http3Event::Finished)));
+        assert_eq!(s.server_poll(), Err(Http3Error::Done));
+        assert!(!s.server.blocked_field_sections.contains_key(&stream_id));
     }
 
     // Client try to open multiple control streams.
