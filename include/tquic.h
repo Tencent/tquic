@@ -570,6 +570,13 @@ void quic_config_set_ack_delay_exponent(struct quic_config_t *config, uint64_t v
 void quic_config_set_max_ack_delay(struct quic_config_t *config, uint64_t v);
 
 /**
+ * Enable ACK Frequency and advertise the minimum supported acknowledgment
+ * delay in microseconds. Returns 0 on success or a negative error code.
+ */
+int quic_config_enable_ack_frequency(struct quic_config_t *config,
+                                     uint64_t min_ack_delay);
+
+/**
  * Set congestion control algorithm that the connection would use.
  */
 void quic_config_set_congestion_control_algorithm(struct quic_config_t *config,
@@ -1024,6 +1031,11 @@ bool quic_conn_is_in_early_data(struct quic_conn_t *conn);
 bool quic_conn_is_multipath(struct quic_conn_t *conn);
 
 /**
+ * Check whether the peer advertised ACK Frequency support.
+ */
+bool quic_conn_peer_supports_ack_frequency(struct quic_conn_t *conn);
+
+/**
  * Return the negotiated application level protocol.
  */
 void quic_conn_application_proto(struct quic_conn_t *conn, const uint8_t **out, size_t *out_len);
@@ -1054,6 +1066,19 @@ int quic_conn_early_data_reason_string(struct quic_conn_t *conn,
  * Send a Ping frame on the active path(s) for keep-alive.
  */
 int quic_conn_ping(struct quic_conn_t *conn);
+
+/**
+ * Queue an ACK_FREQUENCY frame. requested_max_ack_delay is in microseconds.
+ */
+int quic_conn_update_ack_frequency(struct quic_conn_t *conn,
+                                   uint64_t ack_eliciting_threshold,
+                                   uint64_t requested_max_ack_delay,
+                                   uint64_t reordering_threshold);
+
+/**
+ * Queue an IMMEDIATE_ACK frame.
+ */
+int quic_conn_immediate_ack(struct quic_conn_t *conn);
 
 /**
  * Send a Ping frame on the specified path for keep-alive.

@@ -296,6 +296,18 @@ pub extern "C" fn quic_config_set_max_ack_delay(config: &mut Config, v: u64) {
     config.set_max_ack_delay(v);
 }
 
+/// Enable ACK Frequency and advertise `min_ack_delay` in microseconds.
+#[no_mangle]
+pub extern "C" fn quic_config_enable_ack_frequency(
+    config: &mut Config,
+    min_ack_delay: u64,
+) -> c_int {
+    match config.enable_ack_frequency(min_ack_delay) {
+        Ok(_) => 0,
+        Err(e) => e.to_errno() as c_int,
+    }
+}
+
 /// Set congestion control algorithm that the connection would use.
 #[no_mangle]
 pub extern "C" fn quic_config_set_congestion_control_algorithm(
@@ -1080,6 +1092,12 @@ pub extern "C" fn quic_conn_is_multipath(conn: &mut Connection) -> bool {
     conn.is_multipath()
 }
 
+/// Check whether the peer advertised ACK Frequency support.
+#[no_mangle]
+pub extern "C" fn quic_conn_peer_supports_ack_frequency(conn: &mut Connection) -> bool {
+    conn.peer_supports_ack_frequency()
+}
+
 /// Return the negotiated application level protocol.
 #[no_mangle]
 pub extern "C" fn quic_conn_application_proto(
@@ -1156,6 +1174,33 @@ pub extern "C" fn quic_conn_early_data_reason_string(
 #[no_mangle]
 pub extern "C" fn quic_conn_ping(conn: &mut Connection) -> c_int {
     match conn.ping(None) {
+        Ok(_) => 0,
+        Err(e) => e.to_errno() as c_int,
+    }
+}
+
+/// Queue an ACK_FREQUENCY frame. Delay is expressed in microseconds.
+#[no_mangle]
+pub extern "C" fn quic_conn_update_ack_frequency(
+    conn: &mut Connection,
+    ack_eliciting_threshold: u64,
+    requested_max_ack_delay: u64,
+    reordering_threshold: u64,
+) -> c_int {
+    match conn.update_ack_frequency(
+        ack_eliciting_threshold,
+        requested_max_ack_delay,
+        reordering_threshold,
+    ) {
+        Ok(_) => 0,
+        Err(e) => e.to_errno() as c_int,
+    }
+}
+
+/// Queue an IMMEDIATE_ACK frame.
+#[no_mangle]
+pub extern "C" fn quic_conn_immediate_ack(conn: &mut Connection) -> c_int {
+    match conn.immediate_ack() {
         Ok(_) => 0,
         Err(e) => e.to_errno() as c_int,
     }

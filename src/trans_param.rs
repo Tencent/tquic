@@ -89,6 +89,10 @@ pub struct TransportParams {
     /// in milliseconds by which the endpoint will delay sending acknowledgments.
     pub max_ack_delay: u64,
 
+    /// The minimum acknowledgment delay in microseconds that this endpoint can
+    /// honor. Presence of this parameter enables ACK Frequency negotiation.
+    pub min_ack_delay: Option<u64>,
+
     /// The parameter is included if the endpoint does not support active
     /// connection migration on the address being used during the handshake.
     pub disable_active_migration: bool,
@@ -266,9 +270,22 @@ impl TransportParams {
                     tp.disable_encryption = true;
                 }
 
+                0xff04de1b => {
+                    tp.min_ack_delay = Some(val.read_varint()?);
+                }
+
                 // Ignore unknown parameters.
                 _ => (),
             }
+        }
+
+        // Parameters can appear in any order, so validate this relationship
+        // only after all values have been decoded.
+        if tp
+            .min_ack_delay
+            .is_some_and(|v| v > tp.max_ack_delay.saturating_mul(1000))
+        {
+            return Err(Error::TransportParameterError);
         }
 
         Ok((tp, len - buf.len()))
@@ -280,6 +297,15 @@ impl TransportParams {
         is_server: bool,
         mut buf: &mut [u8],
     ) -> Result<usize> {
+        if tp
+            .min_ack_delay
+            .is_some_and(|v| v > tp.max_ack_delay.saturating_mul(1000))
+        {
+            return Err(Error::InvalidConfig(
+                "min_ack_delay exceeds max_ack_delay".into(),
+            ));
+        }
+
         let len = buf.len();
 
         if is_server {
@@ -362,6 +388,12 @@ impl TransportParams {
             buf.write_varint(tp.max_ack_delay)?;
         }
 
+        if let Some(min_ack_delay) = tp.min_ack_delay {
+            buf.write_varint(0xff04de1b)?;
+            buf.write_varint(codec::encode_varint_len(min_ack_delay) as u64)?;
+            buf.write_varint(min_ack_delay)?;
+        }
+
         if tp.disable_active_migration {
             buf.write_varint(0x000c)?;
             buf.write_varint(0)?;
@@ -430,6 +462,7 @@ impl TransportParams {
             max_udp_payload_size: Some(self.max_udp_payload_size as u32),
             ack_delay_exponent: Some(self.ack_delay_exponent as u16),
             max_ack_delay: Some(self.max_ack_delay as u16),
+            min_ack_delay: self.min_ack_delay,
             active_connection_id_limit: Some(self.active_conn_id_limit as u32),
             initial_max_data: Some(self.initial_max_data),
             initial_max_stream_data_bidi_local: Some(self.initial_max_stream_data_bidi_local),
@@ -469,6 +502,8 @@ impl Default for TransportParams {
             // If max_ack_delay parameter is absent, a default of 25
             // milliseconds is assumed.
             max_ack_delay: 25,
+
+            min_ack_delay: None,
 
             disable_active_migration: false,
 
@@ -576,6 +611,7 @@ mod tests {
             initial_max_streams_uni: 100,
             ack_delay_exponent: 10,
             max_ack_delay: 2_u64.pow(8),
+            min_ack_delay: Some(1000),
             disable_active_migration: true,
             preferred_address: None,
             active_conn_id_limit: 12,
@@ -620,6 +656,7 @@ mod tests {
             initial_max_streams_uni: 100,
             ack_delay_exponent: 10,
             max_ack_delay: 2_u64.pow(8),
+            min_ack_delay: Some(2000),
             disable_active_migration: true,
             preferred_address,
             active_conn_id_limit: 12,
@@ -677,5 +714,36 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    #[test]
+    fn min_ack_delay_must_not_exceed_max_ack_delay() {
+        let tp = TransportParams {
+            max_ack_delay: 1,
+            min_ack_delay: Some(1001),
+            ..TransportParams::default()
+        };
+        let mut raw = [0; 128];
+        assert!(matches!(
+            TransportParams::encode(&tp, false, &mut raw),
+            Err(Error::InvalidConfig(_))
+        ));
+
+        // min_ack_delay precedes max_ack_delay to exercise order-independent
+        // validation during decoding.
+        let mut raw = [0; 64];
+        let raw_len = raw.len();
+        let mut out = &mut raw[..];
+        out.write_varint(0xff04de1b).unwrap();
+        out.write_varint(2).unwrap();
+        out.write_varint(1001).unwrap();
+        out.write_varint(0x000b).unwrap();
+        out.write_varint(1).unwrap();
+        out.write_varint(1).unwrap();
+        let written = raw_len - out.len();
+        assert_eq!(
+            TransportParams::decode(&raw[..written], true),
+            Err(Error::TransportParameterError)
+        );
     }
 }
