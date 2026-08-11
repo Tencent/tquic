@@ -30,6 +30,8 @@ use super::space::SpaceId;
 use super::space::SpaceId::*;
 use super::Connection;
 use super::HandshakeStatus;
+use crate::ack_frequency::AckFrequencyParams;
+use crate::ack_frequency::AckFrequencySenderState;
 use crate::congestion_control;
 use crate::congestion_control::CongestionController;
 use crate::congestion_control::Pacer;
@@ -59,6 +61,10 @@ pub struct Recovery {
     /// acknowledgments for packets in the Application Data packet number space.
     /// It is used for PTO calculation.
     pub max_ack_delay: Duration,
+
+    /// ACK_FREQUENCY frames that affect the peer's acknowledgment delay and
+    /// therefore the PTO calculation.
+    ack_frequency: AckFrequencySenderState,
 
     /// The validated maximum size of outgoing UDP payloads in bytes.
     pub max_datagram_size: usize,
@@ -127,6 +133,7 @@ impl Recovery {
     pub(super) fn new(conf: &RecoveryConfig) -> Self {
         Recovery {
             max_ack_delay: conf.max_ack_delay,
+            ack_frequency: AckFrequencySenderState::default(),
             max_datagram_size: crate::DEFAULT_SEND_UDP_PAYLOAD_SIZE,
             pto_linear_factor: conf.pto_linear_factor,
             max_pto: conf.max_pto,
@@ -152,6 +159,22 @@ impl Recovery {
     /// Set trace id.
     pub fn set_trace_id(&mut self, trace_id: &str) {
         self.trace_id = trace_id.to_string();
+    }
+
+    pub(super) fn on_ack_frequency_sent(&mut self, params: AckFrequencyParams) {
+        self.ack_frequency.on_frame_sent(params);
+    }
+
+    pub(super) fn on_ack_frequency_acked(&mut self, params: AckFrequencyParams) {
+        self.ack_frequency.on_frame_acked(params);
+    }
+
+    pub(super) fn ack_frequency_state(&self) -> AckFrequencySenderState {
+        self.ack_frequency.clone()
+    }
+
+    pub(super) fn set_ack_frequency_state(&mut self, state: AckFrequencySenderState) {
+        self.ack_frequency = state;
     }
 
     /// Handle packet sent event.
@@ -713,8 +736,11 @@ impl Recovery {
             .pto_count
             .saturating_sub(self.pto_linear_factor as usize);
 
+        let max_ack_delay = self
+            .ack_frequency
+            .effective_max_ack_delay(self.max_ack_delay);
         cmp::min(
-            duration + self.max_ack_delay * 2_u32.saturating_pow(backoff_factor as u32),
+            duration + max_ack_delay * 2_u32.saturating_pow(backoff_factor as u32),
             self.max_pto,
         )
     }
@@ -1654,5 +1680,35 @@ mod tests {
         assert_eq!(calculate_pto_with_count(100), (MAX_PTO_UT, MAX_PTO_UT));
 
         Ok(())
+    }
+
+    #[test]
+    fn ack_frequency_delay_is_included_in_pto() {
+        let conf = new_test_recovery_config();
+        let mut recovery = Recovery::new(&conf);
+        let pto_base = Duration::from_millis(500);
+        let params = AckFrequencyParams {
+            sequence_number: 1,
+            ack_eliciting_threshold: 8,
+            requested_max_ack_delay: 250_000,
+            reordering_threshold: 3,
+        };
+
+        recovery.on_ack_frequency_sent(params);
+        assert_eq!(
+            recovery.pto_with_ack_delay(pto_base),
+            Duration::from_millis(750)
+        );
+
+        let acknowledged = AckFrequencyParams {
+            sequence_number: 2,
+            requested_max_ack_delay: 10_000,
+            ..params
+        };
+        recovery.on_ack_frequency_acked(acknowledged);
+        assert_eq!(
+            recovery.pto_with_ack_delay(pto_base),
+            Duration::from_millis(510)
+        );
     }
 }

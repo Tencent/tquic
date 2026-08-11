@@ -161,6 +161,19 @@ pub enum Frame {
     /// confirmation of the handshake to the client.
     HandshakeDone,
 
+    /// IMMEDIATE_ACK frame (type=0x1f) requests that the peer acknowledge the
+    /// containing packet without delay.
+    ImmediateAck,
+
+    /// ACK_FREQUENCY frame (type=0xaf) updates the peer's acknowledgment
+    /// policy. All delay values are expressed in microseconds.
+    AckFrequency {
+        sequence_number: u64,
+        ack_eliciting_threshold: u64,
+        requested_max_ack_delay: u64,
+        reordering_threshold: u64,
+    },
+
     /// PATH_ABANDON frame informs the peer to abandon a path.
     /// See draft-ietf-quic-multipath-05.
     PathAbandon {
@@ -347,6 +360,15 @@ impl Frame {
 
             0x1e => Frame::HandshakeDone,
 
+            0x1f => Frame::ImmediateAck,
+
+            0xaf => Frame::AckFrequency {
+                sequence_number: b.read_varint()?,
+                ack_eliciting_threshold: b.read_varint()?,
+                requested_max_ack_delay: b.read_varint()?,
+                reordering_threshold: b.read_varint()?,
+            },
+
             0x15228c05 => Frame::PathAbandon {
                 dcid_seq_num: b.read_varint()?,
                 error_code: b.read_varint()?,
@@ -373,6 +395,13 @@ impl Frame {
         match (pkt_type, &frame) {
             // PADDING and PING are allowed on all packet types.
             (_, Frame::Paddings { .. }) | (_, Frame::Ping { .. }) => true,
+
+            // ACK_FREQUENCY and IMMEDIATE_ACK are only permitted in 1-RTT
+            // packets after support has been negotiated.
+            (PacketType::OneRTT, Frame::AckFrequency { .. }) => true,
+            (PacketType::OneRTT, Frame::ImmediateAck) => true,
+            (_, Frame::AckFrequency { .. }) => false,
+            (_, Frame::ImmediateAck) => false,
 
             // ACK, CRYPTO, HANDSHAKE_DONE, NEW_TOKEN, PATH_RESPONSE, and
             // RETIRE_CONNECTION_ID can't be sent on 0-RTT packets.
@@ -587,6 +616,23 @@ impl Frame {
                 b.write_varint(0x1e)?;
             }
 
+            Frame::ImmediateAck => {
+                b.write_varint(0x1f)?;
+            }
+
+            Frame::AckFrequency {
+                sequence_number,
+                ack_eliciting_threshold,
+                requested_max_ack_delay,
+                reordering_threshold,
+            } => {
+                b.write_varint(0xaf)?;
+                b.write_varint(*sequence_number)?;
+                b.write_varint(*ack_eliciting_threshold)?;
+                b.write_varint(*requested_max_ack_delay)?;
+                b.write_varint(*reordering_threshold)?;
+            }
+
             Frame::PathAbandon {
                 dcid_seq_num,
                 error_code,
@@ -742,6 +788,21 @@ impl Frame {
             }
 
             Frame::HandshakeDone => 1,
+
+            Frame::ImmediateAck => 1,
+
+            Frame::AckFrequency {
+                sequence_number,
+                ack_eliciting_threshold,
+                requested_max_ack_delay,
+                reordering_threshold,
+            } => {
+                codec::encode_varint_len(0xaf)
+                    + codec::encode_varint_len(*sequence_number)
+                    + codec::encode_varint_len(*ack_eliciting_threshold)
+                    + codec::encode_varint_len(*requested_max_ack_delay)
+                    + codec::encode_varint_len(*reordering_threshold)
+            }
 
             Frame::PathAbandon {
                 dcid_seq_num,
@@ -922,6 +983,20 @@ impl Frame {
 
             Frame::HandshakeDone => QuicFrame::HandshakeDone,
 
+            Frame::ImmediateAck => QuicFrame::ImmediateAck,
+
+            Frame::AckFrequency {
+                sequence_number,
+                ack_eliciting_threshold,
+                requested_max_ack_delay,
+                reordering_threshold,
+            } => QuicFrame::AckFrequency {
+                sequence_number: *sequence_number,
+                ack_eliciting_threshold: *ack_eliciting_threshold,
+                requested_max_ack_delay: *requested_max_ack_delay,
+                reordering_threshold: *reordering_threshold,
+            },
+
             Frame::PathAbandon { .. } => QuicFrame::Unknown {
                 raw_frame_type: 0x15228c05,
                 frame_type_value: None,
@@ -1089,6 +1164,26 @@ impl std::fmt::Debug for Frame {
 
             Frame::HandshakeDone => {
                 write!(f, "HANDSHAKE_DONE")?;
+            }
+
+            Frame::ImmediateAck => {
+                write!(f, "IMMEDIATE_ACK")?;
+            }
+
+            Frame::AckFrequency {
+                sequence_number,
+                ack_eliciting_threshold,
+                requested_max_ack_delay,
+                reordering_threshold,
+            } => {
+                write!(
+                    f,
+                    "ACK_FREQUENCY sequence={} threshold={} delay={} reordering={}",
+                    sequence_number,
+                    ack_eliciting_threshold,
+                    requested_max_ack_delay,
+                    reordering_threshold
+                )?;
             }
 
             Frame::PathAbandon {
@@ -1789,6 +1884,66 @@ mod tests {
         assert!(Frame::from_bytes(&mut buf, PacketType::ZeroRTT).is_err());
         assert!(Frame::from_bytes(&mut buf, PacketType::Initial).is_err());
         assert!(Frame::from_bytes(&mut buf, PacketType::Handshake).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn immediate_ack() -> Result<()> {
+        let frame = Frame::ImmediateAck;
+        assert_eq!(format!("{:?}", &frame), "IMMEDIATE_ACK");
+
+        let mut buf = [0; 16];
+        let len = frame.to_bytes(&mut buf)?;
+        assert_eq!(len, frame.wire_len());
+        assert_eq!(&buf[..len], &[0x1f]);
+
+        let mut encoded = Bytes::copy_from_slice(&buf[..len]);
+        assert_eq!(
+            (frame, len),
+            Frame::from_bytes(&mut encoded, PacketType::OneRTT)?
+        );
+        for pkt_type in [
+            PacketType::Initial,
+            PacketType::Handshake,
+            PacketType::ZeroRTT,
+        ] {
+            let mut encoded = Bytes::copy_from_slice(&buf[..len]);
+            assert!(Frame::from_bytes(&mut encoded, pkt_type).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn ack_frequency() -> Result<()> {
+        let frame = Frame::AckFrequency {
+            sequence_number: 1,
+            ack_eliciting_threshold: 2,
+            requested_max_ack_delay: 3,
+            reordering_threshold: 4,
+        };
+        assert_eq!(
+            format!("{:?}", &frame),
+            "ACK_FREQUENCY sequence=1 threshold=2 delay=3 reordering=4"
+        );
+
+        let mut buf = [0; 32];
+        let len = frame.to_bytes(&mut buf)?;
+        assert_eq!(len, frame.wire_len());
+        assert_eq!(len, 6);
+
+        let mut encoded = Bytes::copy_from_slice(&buf[..len]);
+        assert_eq!(
+            (frame, len),
+            Frame::from_bytes(&mut encoded, PacketType::OneRTT)?
+        );
+        for pkt_type in [
+            PacketType::Initial,
+            PacketType::Handshake,
+            PacketType::ZeroRTT,
+        ] {
+            let mut encoded = Bytes::copy_from_slice(&buf[..len]);
+            assert!(Frame::from_bytes(&mut encoded, pkt_type).is_err());
+        }
         Ok(())
     }
 
