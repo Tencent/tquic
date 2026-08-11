@@ -68,13 +68,13 @@ impl Http3Config {
 /// An HTTP/3 connection event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Http3Event {
-    /// HTTP/3 headers were received on request stream.
+    /// An HTTP/3 header or trailer field section was received on a request stream.
     Headers {
         /// HTTP/3 header fields are represented as a list of name-value pairs.
         /// Note that the application is responsible for validating the headers.
         headers: Vec<Header>,
 
-        /// Whether the stream consists of only headers and no data.
+        /// Whether the peer's send side finished with this field section.
         fin: bool,
     },
 
@@ -188,7 +188,7 @@ impl NameValue for HeaderRef<'_> {
 /// The Http3Handler lists the callbacks used by the Http3Connection to
 /// communicate with the user application code.
 pub trait Http3Handler {
-    /// Called when the stream got headers.
+    /// Called when the stream receives a header or trailer field section.
     fn on_stream_headers(&self, stream_id: u64, event: &mut Http3Event);
 
     /// Called when the stream has buffered data to read.
