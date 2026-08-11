@@ -56,6 +56,21 @@ pub struct Http3Stream {
     /// Whether the stream has been initialized by the local endpoint.
     local_initialized: bool,
 
+    /// The number of HEADERS frames received on this stream.
+    headers_received_count: usize,
+
+    /// Whether a DATA frame has been sent on this stream.
+    data_sent: bool,
+
+    /// Whether a DATA frame has been received on this stream.
+    data_received: bool,
+
+    /// Whether a trailing HEADERS frame has been sent on this stream.
+    trailers_sent: bool,
+
+    /// Whether a trailing HEADERS frame has been received on this stream.
+    trailers_received: bool,
+
     /// Whether all the application data with fin has been written to quic stream buffer.
     write_finished: bool,
 
@@ -97,6 +112,11 @@ impl Http3Stream {
 
             peer_initialized: false,
             local_initialized: false,
+            headers_received_count: 0,
+            data_sent: false,
+            data_received: false,
+            trailers_sent: false,
+            trailers_received: false,
             write_finished: false,
             data_event_triggered: false,
             priority_initialized: false,
@@ -144,9 +164,31 @@ impl Http3Stream {
             (frame::HEADERS_FRAME_TYPE, false) => self.peer_initialized = true,
 
             // Receipt of an invalid sequence of frames MUST be treated as a connection error of type H3_FRAME_UNEXPECTED.
-            // In particular, a DATA frame before any HEADERS frame, or a HEADERS or DATA frame after the trailing HEADERS
-            // frame, is considered invalid.
+            // In particular, a DATA frame before any HEADERS frame is considered invalid.
             (frame::DATA_FRAME_TYPE, false) => return Err(Http3Error::FrameUnexpected),
+
+            // A request has at most one initial field section and one trailer section. A response
+            // can have informational field sections before the final field section, so a HEADERS
+            // frame is unambiguously a trailer only after DATA has been received. For a peer-created
+            // request stream, the second HEADERS frame is always the trailer, even without content.
+            (frame::HEADERS_FRAME_TYPE, true) => {
+                if self.trailers_received {
+                    return Err(Http3Error::FrameUnexpected);
+                }
+
+                if self.data_received || (!self.local && self.headers_received_count() > 0) {
+                    self.trailers_received = true;
+                }
+            }
+
+            // A HEADERS or DATA frame after the trailing HEADERS frame is invalid.
+            (frame::DATA_FRAME_TYPE, true) => {
+                if self.trailers_received {
+                    return Err(Http3Error::FrameUnexpected);
+                }
+
+                self.data_received = true;
+            }
 
             // RFC9114 7. Table 1: HTTP/3 Frames and Stream Type Overview
             // `CANCEL_PUSH`, `SETTINGS`, `GOAWAY`, and `MAX_PUSH_ID` frames MUST NOT be sent on the request stream.
@@ -622,6 +664,36 @@ impl Http3Stream {
     /// Mark the stream as locally initialized.
     pub fn mark_local_initialized(&mut self) {
         self.local_initialized = true
+    }
+
+    /// Increment the number of HEADERS frames received on this stream.
+    pub fn increment_headers_received(&mut self) {
+        self.headers_received_count = self.headers_received_count.saturating_add(1);
+    }
+
+    /// Return the number of HEADERS frames received on this stream.
+    pub fn headers_received_count(&self) -> usize {
+        self.headers_received_count
+    }
+
+    /// Return true if a DATA frame has been sent on this stream.
+    pub fn data_sent(&self) -> bool {
+        self.data_sent
+    }
+
+    /// Mark that a DATA frame has been sent on this stream.
+    pub fn mark_data_sent(&mut self) {
+        self.data_sent = true;
+    }
+
+    /// Return true if a trailing HEADERS frame has been sent on this stream.
+    pub fn trailers_sent(&self) -> bool {
+        self.trailers_sent
+    }
+
+    /// Mark that a trailing HEADERS frame has been sent on this stream.
+    pub fn mark_trailers_sent(&mut self) {
+        self.trailers_sent = true;
     }
 
     /// Return true if the stream's priority has been initialized.
@@ -1257,6 +1329,7 @@ mod tests {
                 Ok(())
             );
             assert_eq!(stream.peer_initialized, true);
+            stream.increment_headers_received();
 
             // RFC9114 7. Table 1: HTTP/3 Frames and Stream Type Overview
             // `CANCEL_PUSH`, `SETTINGS`, `GOAWAY`, and `MAX_PUSH_ID` frames MUST NOT be sent on the request stream.
@@ -1273,6 +1346,31 @@ mod tests {
                 frame::PRIORITY_UPDATE_FRAME_REQUEST_TYPE,
                 frame::PRIORITY_UPDATE_FRAME_PUSH_TYPE,
             ] {
+                assert_eq!(
+                    stream.check_frame_on_request_stream(frame_type),
+                    Err(Http3Error::FrameUnexpected)
+                );
+            }
+
+            if local {
+                // A locally-created request stream receives a response. After DATA,
+                // the next HEADERS frame is the response trailer section.
+                assert_eq!(
+                    stream.check_frame_on_request_stream(frame::DATA_FRAME_TYPE),
+                    Ok(())
+                );
+                assert!(stream.data_received);
+            }
+
+            // For a peer-created request stream, the second HEADERS frame is a
+            // request trailer even when there was no DATA frame.
+            assert_eq!(
+                stream.check_frame_on_request_stream(frame::HEADERS_FRAME_TYPE),
+                Ok(())
+            );
+            assert!(stream.trailers_received);
+
+            for frame_type in vec![frame::HEADERS_FRAME_TYPE, frame::DATA_FRAME_TYPE] {
                 assert_eq!(
                     stream.check_frame_on_request_stream(frame_type),
                     Err(Http3Error::FrameUnexpected)

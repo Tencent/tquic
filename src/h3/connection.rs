@@ -474,8 +474,8 @@ impl Http3Connection {
         Ok(())
     }
 
-    /// Write HTTP/3 headers to quic stream buffer.
-    pub fn send_headers<T: NameValue>(
+    /// Encode and write an HTTP/3 HEADERS frame to a request stream.
+    fn send_headers_frame<T: NameValue>(
         &mut self,
         conn: &mut Connection,
         stream_id: u64,
@@ -497,6 +497,71 @@ impl Http3Connection {
         self.send_header_block(conn, stream_id, header_block, fin)
     }
 
+    /// Write the initial HTTP/3 request or response headers to a request stream.
+    pub fn send_headers<T: NameValue>(
+        &mut self,
+        conn: &mut Connection,
+        stream_id: u64,
+        headers: &[T],
+        fin: bool,
+    ) -> Result<()> {
+        match self.streams.get(&stream_id) {
+            Some(stream) if !stream.local_initialized() && !stream.write_finished() => (),
+            _ => return Err(Http3Error::FrameUnexpected),
+        }
+
+        self.send_headers_frame(conn, stream_id, headers, fin)
+    }
+
+    /// Write an additional HTTP/3 field section to a request stream.
+    ///
+    /// This can be used to send a trailer section, or by a server to send an
+    /// informational response followed by another response field section.
+    /// Clients can only use this method to send trailers. Once a trailer has
+    /// been sent, no more HEADERS or DATA frames can be sent on the stream.
+    ///
+    /// If the underlying QUIC stream does not have enough capacity, this method
+    /// returns [`Http3Error::StreamBlocked`] and the application should retry it
+    /// after the stream becomes writable.
+    ///
+    /// See [Section 4.1 of RFC 9114] for the HTTP message frame sequence.
+    ///
+    /// [Section 4.1 of RFC 9114]: https://www.rfc-editor.org/rfc/rfc9114.html#section-4.1
+    pub fn send_additional_headers<T: NameValue>(
+        &mut self,
+        conn: &mut Connection,
+        stream_id: u64,
+        headers: &[T],
+        is_trailer_section: bool,
+        fin: bool,
+    ) -> Result<()> {
+        // A request cannot contain informational field sections.
+        if !self.is_server && !is_trailer_section {
+            return Err(Http3Error::FrameUnexpected);
+        }
+
+        match self.streams.get(&stream_id) {
+            Some(stream)
+                if stream.local_initialized()
+                    && !stream.write_finished()
+                    && !stream.trailers_sent()
+                    && (is_trailer_section || !stream.data_sent()) => {}
+            _ => return Err(Http3Error::FrameUnexpected),
+        }
+
+        self.send_headers_frame(conn, stream_id, headers, fin)?;
+
+        if is_trailer_section {
+            // The stream can be removed after a successful write when both
+            // directions are finished, in which case no further writes are possible.
+            if let Some(stream) = self.streams.get_mut(&stream_id) {
+                stream.mark_trailers_sent();
+            }
+        }
+
+        Ok(())
+    }
+
     /// Write request or response body into quic transport stream's send buffer.
     pub fn send_body(
         &mut self,
@@ -515,6 +580,16 @@ impl Http3Connection {
             .streams
             .get_mut(&stream_id)
             .ok_or(Http3Error::FrameUnexpected)?;
+
+        // A cached block on an initialized stream is an additional field section
+        // waiting for flow-control capacity. It must be retried through
+        // send_additional_headers(), not bypassed with a DATA frame.
+        if stream.write_finished()
+            || stream.trailers_sent()
+            || (stream.local_initialized() && stream.has_header_block())
+        {
+            return Err(Http3Error::FrameUnexpected);
+        }
 
         if let Some((header_block, write_fin)) = stream.take_header_block() {
             // We should update fin flag if the application send empty body with fin.
@@ -594,6 +669,10 @@ impl Http3Connection {
         conn.stream_write(stream_id, bytes.freeze(), false)?;
         // Write the DATA frame payload.
         let written = conn.stream_write(stream_id, body, fin)?;
+
+        if let Some(stream) = self.streams.get_mut(&stream_id) {
+            stream.mark_data_sent();
+        }
 
         trace!(
             "{:?} stream {} send DATA frame written {} body_len {} fin {}",
@@ -1136,6 +1215,10 @@ impl Http3Connection {
                 return Err(e);
             }
         };
+
+        if let Some(stream) = self.streams.get_mut(&stream_id) {
+            stream.increment_headers_received();
+        }
 
         let headers_event = Http3Event::Headers {
             headers,
@@ -3086,6 +3169,364 @@ mod tests {
 
         assert_eq!(s.client_poll(), Ok((stream_id, Http3Event::Finished)));
         assert_eq!(s.client_poll(), Err(Http3Error::Done));
+    }
+
+    // Client and server exchange content followed by trailer sections.
+    #[test]
+    fn request_and_response_with_trailers() {
+        let mut s = Session::new().unwrap();
+
+        let (stream_id, req_headers) = s.send_request(false).unwrap();
+        let req_body = s.client_send_body(stream_id, false).unwrap();
+        let req_trailers = vec![Header::new(b"request-checksum", b"abc123")];
+
+        s.client
+            .send_additional_headers(&mut s.pair.client, stream_id, &req_trailers, true, true)
+            .unwrap();
+        s.move_forward().ok();
+
+        assert_eq!(
+            s.server_poll(),
+            Ok((
+                stream_id,
+                Http3Event::Headers {
+                    headers: req_headers,
+                    fin: false,
+                },
+            ))
+        );
+        assert_eq!(s.server_poll(), Ok((stream_id, Http3Event::Data)));
+
+        let mut recv_buf = vec![0; req_body.len()];
+        assert_eq!(
+            s.server_recv_body(stream_id, &mut recv_buf),
+            Ok(req_body.len())
+        );
+        assert_eq!(recv_buf, req_body);
+        assert_eq!(
+            s.server_poll(),
+            Ok((
+                stream_id,
+                Http3Event::Headers {
+                    headers: req_trailers,
+                    fin: true,
+                },
+            ))
+        );
+        assert_eq!(s.server_poll(), Ok((stream_id, Http3Event::Finished)));
+
+        let resp_headers = s.send_response(stream_id, false).unwrap();
+        let resp_body = s.server_send_body(stream_id, false).unwrap();
+        let resp_trailers = vec![Header::new(b"response-checksum", b"def456")];
+
+        assert_eq!(
+            s.server.send_additional_headers(
+                &mut s.pair.server,
+                stream_id,
+                &resp_trailers,
+                false,
+                false,
+            ),
+            Err(Http3Error::FrameUnexpected)
+        );
+
+        s.server
+            .send_additional_headers(&mut s.pair.server, stream_id, &resp_trailers, true, true)
+            .unwrap();
+        s.move_forward().ok();
+
+        assert_eq!(
+            s.client_poll(),
+            Ok((
+                stream_id,
+                Http3Event::Headers {
+                    headers: resp_headers,
+                    fin: false,
+                },
+            ))
+        );
+        assert_eq!(s.client_poll(), Ok((stream_id, Http3Event::Data)));
+
+        let mut recv_buf = vec![0; resp_body.len()];
+        assert_eq!(
+            s.client_recv_body(stream_id, &mut recv_buf),
+            Ok(resp_body.len())
+        );
+        assert_eq!(recv_buf, resp_body);
+        assert_eq!(
+            s.client_poll(),
+            Ok((
+                stream_id,
+                Http3Event::Headers {
+                    headers: resp_trailers,
+                    fin: true,
+                },
+            ))
+        );
+        assert_eq!(s.client_poll(), Ok((stream_id, Http3Event::Finished)));
+    }
+
+    // Trailer sections are valid even when the message has no content.
+    #[test]
+    fn trailers_without_body() {
+        let mut s = Session::new().unwrap();
+
+        let (stream_id, req_headers) = s.send_request(false).unwrap();
+        let req_trailers = vec![Header::new(b"request-complete", b"true")];
+
+        s.client
+            .send_additional_headers(&mut s.pair.client, stream_id, &req_trailers, true, true)
+            .unwrap();
+        s.move_forward().ok();
+
+        assert_eq!(
+            s.server_poll(),
+            Ok((
+                stream_id,
+                Http3Event::Headers {
+                    headers: req_headers,
+                    fin: false,
+                },
+            ))
+        );
+        assert_eq!(
+            s.server_poll(),
+            Ok((
+                stream_id,
+                Http3Event::Headers {
+                    headers: req_trailers,
+                    fin: true,
+                },
+            ))
+        );
+        assert_eq!(s.server_poll(), Ok((stream_id, Http3Event::Finished)));
+    }
+
+    // RFC 9114 forbids HEADERS and DATA frames after a trailer section.
+    #[test]
+    fn trailer_sequence_is_enforced() {
+        let mut s = Session::new().unwrap();
+        let stream_id = s.client.stream_new(&mut s.pair.client).unwrap();
+        let req_headers = Session::default_request_headers();
+        let req_trailers = vec![Header::new(b"request-complete", b"true")];
+
+        assert_eq!(
+            s.client.send_additional_headers(
+                &mut s.pair.client,
+                stream_id,
+                &req_trailers,
+                true,
+                false,
+            ),
+            Err(Http3Error::FrameUnexpected)
+        );
+        s.client
+            .send_headers(&mut s.pair.client, stream_id, &req_headers, false)
+            .unwrap();
+        assert_eq!(
+            s.client
+                .send_headers(&mut s.pair.client, stream_id, &req_headers, false),
+            Err(Http3Error::FrameUnexpected)
+        );
+        assert_eq!(
+            s.client.send_additional_headers(
+                &mut s.pair.client,
+                stream_id,
+                &req_trailers,
+                false,
+                false,
+            ),
+            Err(Http3Error::FrameUnexpected)
+        );
+
+        s.client
+            .send_additional_headers(&mut s.pair.client, stream_id, &req_trailers, true, false)
+            .unwrap();
+
+        assert_eq!(
+            s.client.send_additional_headers(
+                &mut s.pair.client,
+                stream_id,
+                &req_trailers,
+                true,
+                false,
+            ),
+            Err(Http3Error::FrameUnexpected)
+        );
+        assert_eq!(
+            s.client.send_body(
+                &mut s.pair.client,
+                stream_id,
+                Bytes::from_static(b"invalid"),
+                false,
+            ),
+            Err(Http3Error::FrameUnexpected)
+        );
+
+        s.move_forward().ok();
+        s.client_send_frame(
+            stream_id,
+            frame::Http3Frame::Data {
+                data: b"invalid".to_vec(),
+            },
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(
+            s.server_poll(),
+            Ok((
+                stream_id,
+                Http3Event::Headers {
+                    headers: req_headers,
+                    fin: false,
+                },
+            ))
+        );
+        assert_eq!(
+            s.server_poll(),
+            Ok((
+                stream_id,
+                Http3Event::Headers {
+                    headers: req_trailers,
+                    fin: false,
+                },
+            ))
+        );
+        assert_eq!(s.server_poll(), Err(Http3Error::FrameUnexpected));
+    }
+
+    // A blocked trailer is retried through the additional-headers API and
+    // cannot be bypassed by writing a DATA frame.
+    #[test]
+    fn trailer_flow_control_retry() {
+        let h3_config = Http3Config::new().unwrap();
+        let mut h3_client = Http3Connection::new(&h3_config, false).unwrap();
+        let req_headers = Session::default_request_headers();
+        let req_trailers = vec![Header::new(b"request-checksum", b"abc123")];
+        let headers_frame_size =
+            Session::calculate_headers_frame_size(&mut h3_client, &req_headers).unwrap();
+        let trailers_frame_size =
+            Session::calculate_headers_frame_size(&mut h3_client, &req_trailers).unwrap();
+
+        let mut client_config = Session::new_test_config(false).unwrap();
+        let mut server_config = Session::new_test_config(true).unwrap();
+        // The critical streams consume 5 bytes. Leave the request stream one
+        // byte short of the capacity required for its trailer frame.
+        server_config
+            .set_initial_max_data((5 + headers_frame_size + trailers_frame_size - 1) as u64);
+
+        let mut s =
+            Session::new_with_test_config(&mut client_config, &mut server_config, &h3_config)
+                .unwrap();
+        let (stream_id, req_headers) = s.send_request(false).unwrap();
+
+        assert_eq!(
+            s.client.send_additional_headers(
+                &mut s.pair.client,
+                stream_id,
+                &req_trailers,
+                true,
+                true,
+            ),
+            Err(Http3Error::StreamBlocked)
+        );
+        assert!(s.client.streams.get(&stream_id).unwrap().has_header_block());
+        assert_eq!(
+            s.client.send_body(
+                &mut s.pair.client,
+                stream_id,
+                Bytes::from_static(b"invalid"),
+                false,
+            ),
+            Err(Http3Error::FrameUnexpected)
+        );
+
+        assert_eq!(
+            s.server_poll(),
+            Ok((
+                stream_id,
+                Http3Event::Headers {
+                    headers: req_headers,
+                    fin: false,
+                },
+            ))
+        );
+        assert_eq!(s.server_poll(), Err(Http3Error::Done));
+        s.move_forward().unwrap();
+
+        s.client
+            .send_additional_headers(&mut s.pair.client, stream_id, &req_trailers, true, true)
+            .unwrap();
+        assert!(!s.client.streams.get(&stream_id).unwrap().has_header_block());
+        s.move_forward().unwrap();
+
+        assert_eq!(
+            s.server_poll(),
+            Ok((
+                stream_id,
+                Http3Event::Headers {
+                    headers: req_trailers,
+                    fin: true,
+                },
+            ))
+        );
+        assert_eq!(s.server_poll(), Ok((stream_id, Http3Event::Finished)));
+    }
+
+    // Servers can send informational responses before the final response field section.
+    #[test]
+    fn informational_response_uses_additional_headers() {
+        let mut s = Session::new().unwrap();
+
+        let (stream_id, req_headers) = s.send_request(true).unwrap();
+        assert_eq!(
+            s.server_poll(),
+            Ok((
+                stream_id,
+                Http3Event::Headers {
+                    headers: req_headers,
+                    fin: true,
+                },
+            ))
+        );
+        assert_eq!(s.server_poll(), Ok((stream_id, Http3Event::Finished)));
+
+        let informational = vec![
+            Header::new(b":status", b"103"),
+            Header::new(b"link", b"</style.css>; rel=preload"),
+        ];
+        let final_headers = Session::default_response_headers();
+
+        s.server
+            .send_headers(&mut s.pair.server, stream_id, &informational, false)
+            .unwrap();
+        s.server
+            .send_additional_headers(&mut s.pair.server, stream_id, &final_headers, false, true)
+            .unwrap();
+        s.move_forward().ok();
+
+        assert_eq!(
+            s.client_poll(),
+            Ok((
+                stream_id,
+                Http3Event::Headers {
+                    headers: informational,
+                    fin: false,
+                },
+            ))
+        );
+        assert_eq!(
+            s.client_poll(),
+            Ok((
+                stream_id,
+                Http3Event::Headers {
+                    headers: final_headers,
+                    fin: true,
+                },
+            ))
+        );
+        assert_eq!(s.client_poll(), Ok((stream_id, Http3Event::Finished)));
     }
 
     // Client and server send body with empty data block with or without FIN flag.
