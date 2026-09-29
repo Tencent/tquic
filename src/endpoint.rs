@@ -247,27 +247,47 @@ impl Endpoint {
                 return self.send_version_negotiation(&hdr, local, remote);
             }
 
+            // The first Initial packet from a client always includes a DCID
+            // of at least 8 bytes, while the DCID of a subsequent Initial
+            // packet carrying a valid Retry token is the retry source cid
+            // chosen by the server. See RFC 9000 Section 7.2
+            //
             // Validate token of the Initial packet
             let token = if let Some(ref mut token) = hdr.token {
                 match self.validate_address_token(token, &remote, &hdr.dcid) {
                     Ok(token) => Some(token),
-                    Err(_) => match AddressToken::token_type(token) {
-                        // In response to processing an Initial packet containing
-                        // a token that was provided in a Retry packet, a server
-                        // cannot send another Retry packet; it can only refuse
-                        // the connection or permit it to proceed.
-                        Ok(RetryToken) => return Err(Error::InvalidToken),
-                        _ => return self.send_retry(&hdr, local, remote),
-                    },
+                    Err(_) => {
+                        // Drop the Initial packet with an invalid token and
+                        // a DCID shorter than 8 bytes
+                        if hdr.dcid.len() < 8 {
+                            return Ok(());
+                        }
+                        match AddressToken::token_type(token) {
+                            // In response to processing an Initial packet containing
+                            // a token that was provided in a Retry packet, a server
+                            // cannot send another Retry packet; it can only refuse
+                            // the connection or permit it to proceed.
+                            Ok(RetryToken) => return Err(Error::InvalidToken),
+                            _ => return self.send_retry(&hdr, local, remote),
+                        }
+                    }
                 }
+            } else if hdr.dcid.len() < 8 {
+                // Drop the Initial packet without token and with a DCID
+                // shorter than 8 bytes
+                return Ok(());
             } else if self.config.retry {
                 return self.send_retry(&hdr, local, remote);
             } else {
                 None
             };
 
+            // The odcid of a validated retry token is always present
             let odcid = match token {
-                Some(ref token) => token.odcid.unwrap(), // always success
+                Some(ref token) => match token.odcid {
+                    Some(odcid) => odcid,
+                    None => return Err(Error::InvalidToken),
+                },
                 None => hdr.dcid,
             };
 
@@ -2456,6 +2476,67 @@ mod tests {
         let mut initial = TEST_INITIAL.clone();
         e.recv(&mut initial, &info)?;
         assert_eq!(e.conns.len(), 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn endpoint_initial_with_short_dcid() -> Result<()> {
+        // Craft an Initial packet with a zero-length DCID
+        let build_pkt = |token: Option<Vec<u8>>| -> Result<[u8; 1200]> {
+            let hdr = PacketHeader {
+                pkt_type: PacketType::Initial,
+                version: crate::QUIC_VERSION_V1,
+                dcid: ConnectionId::new(&[]),
+                scid: ConnectionId::random(),
+                token,
+                pkt_num: 0,
+                pkt_num_len: 4,
+                key_phase: false,
+            };
+            let mut pkt = [0u8; 1200];
+            hdr.to_bytes(&mut pkt)?;
+            Ok(pkt)
+        };
+
+        let info = TestTool::new_test_packet_info(false);
+
+        // The server drops Initial packets with a zero-length DCID, no
+        // matter whether they carry a token or not
+        for mut pkt in [build_pkt(None)?, build_pkt(Some(vec![0xff]))?] {
+            let sock = Rc::new(MockSocket::new());
+            let mut e = Endpoint::new(
+                Box::new(TestPair::new_test_config(true)?),
+                true,
+                Box::new(ServerHandler::new(
+                    CaseConf::default(),
+                    Arc::new(AtomicBool::new(false)),
+                )),
+                sock.clone(),
+            );
+
+            e.recv(&mut pkt, &info)?;
+            e.process_connections()?;
+            assert_eq!(sock.packets.borrow().len(), 0);
+            assert_eq!(e.conns.len(), 0);
+        }
+
+        // A well-formed Initial packet is still accepted
+        let mut initial = TEST_INITIAL;
+        let sock = Rc::new(MockSocket::new());
+        let mut e = Endpoint::new(
+            Box::new(TestPair::new_test_config(true)?),
+            true,
+            Box::new(ServerHandler::new(
+                CaseConf::default(),
+                Arc::new(AtomicBool::new(false)),
+            )),
+            sock.clone(),
+        );
+        let _ = e.recv(&mut initial, &info);
+        // The connection was created regardless of the subsequent handshake
+        // failure on the test packet
+        assert_eq!(e.conns.len(), 1);
 
         Ok(())
     }
