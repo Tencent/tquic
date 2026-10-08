@@ -497,6 +497,25 @@ impl Config {
         self.local_transport_params.max_ack_delay = cmp::min(v, VINT_MAX);
     }
 
+    /// Enable the ACK Frequency extension and advertise `min_ack_delay` in
+    /// microseconds. This must be configured before creating a connection.
+    pub fn enable_ack_frequency(&mut self, min_ack_delay: u64) -> Result<()> {
+        if min_ack_delay > VINT_MAX
+            || min_ack_delay
+                > self
+                    .local_transport_params
+                    .max_ack_delay
+                    .saturating_mul(1000)
+        {
+            return Err(Error::InvalidConfig(
+                "min_ack_delay is outside the supported range".into(),
+            ));
+        }
+
+        self.local_transport_params.min_ack_delay = Some(min_ack_delay);
+        Ok(())
+    }
+
     /// Set the maximum number of ack-eliciting packets the endpoint receives before
     /// sending an acknowledgment.
     /// The default value is `2`.
@@ -1221,6 +1240,25 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn enable_ack_frequency_validates_min_ack_delay() -> Result<()> {
+        let mut config = Config::new()?;
+        config.set_max_ack_delay(25);
+        config.enable_ack_frequency(25_000)?;
+        assert_eq!(config.local_transport_params.min_ack_delay, Some(25_000));
+        assert!(matches!(
+            config.enable_ack_frequency(25_001),
+            Err(Error::InvalidConfig(_))
+        ));
+
+        config.set_max_ack_delay(VINT_MAX);
+        assert!(matches!(
+            config.enable_ack_frequency(VINT_MAX + 1),
+            Err(Error::InvalidConfig(_))
+        ));
+        Ok(())
+    }
 }
 
 pub use crate::congestion_control::CongestionControlAlgorithm;
@@ -1263,6 +1301,7 @@ mod ffi;
 #[path = "h3/connection.rs"]
 mod h3_connection;
 
+mod ack_frequency;
 mod codec;
 pub mod endpoint;
 pub mod error;

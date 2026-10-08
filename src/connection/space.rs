@@ -90,7 +90,7 @@ pub struct PacketNumSpace {
     pub largest_rx_non_probing_pkt_num: u64,
 
     /// Highest received ack-eliciting packet number.
-    pub largest_rx_ack_eliciting_pkt_num: u64,
+    pub largest_rx_ack_eliciting_pkt_num: Option<u64>,
 
     /// The packet numbers to acknowledge.
     pub recv_pkt_num_need_ack: RangeSet,
@@ -130,6 +130,9 @@ pub struct PacketNumSpace {
     /// The largest packet number acknowledged in the packet number space so far.
     pub largest_acked_pkt: u64,
 
+    /// The largest packet number included in an ACK frame sent to the peer.
+    pub largest_ack_sent: Option<u64>,
+
     /// The number of times a PTO has been sent without receiving an acknowledgment.
     pub loss_probes: usize,
 
@@ -156,7 +159,7 @@ impl PacketNumSpace {
             first_pkt_num_sent: None,
             largest_rx_pkt_time: Instant::now(),
             largest_rx_non_probing_pkt_num: 0,
-            largest_rx_ack_eliciting_pkt_num: 0,
+            largest_rx_ack_eliciting_pkt_num: None,
             recv_pkt_num_need_ack: RangeSet::new(crate::MAX_ACK_RANGES),
             recv_pkt_num_win: SeqNumWindow::default(),
             need_send_ack: false,
@@ -169,6 +172,7 @@ impl PacketNumSpace {
             time_of_last_sent_ack_eliciting_pkt: None,
             loss_time: None,
             largest_acked_pkt: u64::MAX,
+            largest_ack_sent: None,
             loss_probes: 0,
             bytes_in_flight: 0,
             ack_eliciting_in_flight: 0,

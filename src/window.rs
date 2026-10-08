@@ -46,7 +46,7 @@ impl SeqNumWindow {
     }
 
     /// Check whether the packet number exist or not
-    pub fn contains(&mut self, seq: u64) -> bool {
+    pub fn contains(&self, seq: u64) -> bool {
         // Sequence number is on the right end of the window.
         if seq > self.upper() {
             return false;
@@ -61,6 +61,19 @@ impl SeqNumWindow {
         self.window & mask != 0
     }
 
+    /// Return the first missing sequence number in the inclusive range that is
+    /// still represented by this window. Sequence numbers older than the
+    /// window are treated as already processed, matching `contains()`.
+    pub fn first_missing(&self, start: u64, end: u64) -> Option<u64> {
+        let start = start.max(self.lower);
+        let end = end.min(self.upper());
+        if start > end {
+            return None;
+        }
+
+        (start..=end).find(|seq| !self.contains(*seq))
+    }
+
     /// Return the largest sequence number
     fn upper(&self) -> u64 {
         self.lower.saturating_add(SEQ_NUM_WINDOW_SIZE) - 1
@@ -73,7 +86,7 @@ mod tests {
 
     #[test]
     fn seq_num_window_default() {
-        let mut win = SeqNumWindow::default();
+        let win = SeqNumWindow::default();
         assert!(!win.contains(0));
         assert!(!win.contains(1));
     }
@@ -124,5 +137,20 @@ mod tests {
         assert!(win.contains(max_seq));
         assert!(!win.contains(max_seq - 1));
         assert!(win.contains(max_seq - 128));
+    }
+
+    #[test]
+    fn seq_num_window_first_missing() {
+        let mut win = SeqNumWindow::default();
+        for seq in [0, 1, 3, 4] {
+            win.insert(seq);
+        }
+        assert_eq!(win.first_missing(0, 4), Some(2));
+        win.insert(2);
+        assert_eq!(win.first_missing(0, 4), None);
+
+        win.insert(200);
+        assert_eq!(win.first_missing(0, 72), None);
+        assert_eq!(win.first_missing(73, 200), Some(73));
     }
 }

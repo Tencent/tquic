@@ -212,6 +212,7 @@ pub enum EventData {
         max_udp_payload_size: Option<u32>,
         ack_delay_exponent: Option<u16>,
         max_ack_delay: Option<u16>,
+        min_ack_delay: Option<u64>,
         active_connection_id_limit: Option<u32>,
         initial_max_data: Option<u64>,
         initial_max_stream_data_bidi_local: Option<u64>,
@@ -1106,6 +1107,8 @@ pub enum QuicFrameTypeName {
     ConnectionClose,
     ApplicationClose,
     HandshakeDone,
+    ImmediateAck,
+    AckFrequency,
     Datagram,
     Unknown,
 }
@@ -1212,6 +1215,15 @@ pub enum QuicFrame {
     },
 
     HandshakeDone,
+
+    ImmediateAck,
+
+    AckFrequency {
+        sequence_number: u64,
+        ack_eliciting_threshold: u64,
+        requested_max_ack_delay: u64,
+        reordering_threshold: u64,
+    },
 
     Datagram {
         length: u64,

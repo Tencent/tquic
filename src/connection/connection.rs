@@ -41,6 +41,9 @@ use self::stream::Stream;
 use self::stream::StreamIter;
 use self::timer::Timer;
 use self::ConnectionFlags::*;
+use crate::ack_frequency::AckFrequencyParams;
+use crate::ack_frequency::AckFrequencyReceiverState;
+use crate::ack_frequency::MAX_REQUESTED_ACK_DELAY;
 use crate::codec;
 use crate::codec::Decoder;
 use crate::codec::Encoder;
@@ -123,6 +126,18 @@ pub struct Connection {
 
     /// Recovery and congestion control configurations.
     recovery_conf: RecoveryConfig,
+
+    /// ACK Frequency policy received from the peer.
+    ack_frequency_receiver: AckFrequencyReceiverState,
+
+    /// Sequence number allocated to the next outgoing ACK_FREQUENCY frame.
+    next_ack_frequency_sequence: u64,
+
+    /// The newest ACK_FREQUENCY frame waiting to be sent.
+    pending_ack_frequency: Option<AckFrequencyParams>,
+
+    /// Whether an IMMEDIATE_ACK frame is waiting to be sent.
+    pending_immediate_ack: bool,
 
     /// Error to be sent to the peer in a CONNECTION_CLOSE frame.
     local_error: Option<ConnectionError>,
@@ -263,6 +278,10 @@ impl Connection {
             peer_transport_params: TransportParams::default(),
             local_transport_params: conf.local_transport_params.clone(),
             recovery_conf: conf.recovery.clone(),
+            ack_frequency_receiver: AckFrequencyReceiverState::default(),
+            next_ack_frequency_sequence: 0,
+            pending_ack_frequency: None,
+            pending_immediate_ack: false,
             local_error: None,
             peer_error: None,
             timers: timer::TimerTable::default(),
@@ -649,6 +668,7 @@ impl Connection {
 
         // Update packet number space
         let space = self.spaces.get_mut(space_id).ok_or(Error::InternalError)?;
+        let previous_largest_ack_eliciting = space.largest_rx_ack_eliciting_pkt_num;
         if space.recv_pkt_num_need_ack.max() < Some(pkt_num) {
             space.largest_rx_pkt_time = info.time;
         }
@@ -661,11 +681,19 @@ impl Connection {
             // TODO: try to do connection migration
         }
         if ack_eliciting_pkt {
-            space.largest_rx_ack_eliciting_pkt_num =
-                cmp::max(space.largest_rx_ack_eliciting_pkt_num, pkt_num);
+            space.largest_rx_ack_eliciting_pkt_num = Some(
+                space
+                    .largest_rx_ack_eliciting_pkt_num
+                    .map_or(pkt_num, |largest| cmp::max(largest, pkt_num)),
+            );
         }
 
-        self.try_schedule_ack_frame(space_id, pkt_num, ack_eliciting_pkt)?;
+        self.try_schedule_ack_frame(
+            space_id,
+            pkt_num,
+            ack_eliciting_pkt,
+            previous_largest_ack_eliciting,
+        )?;
 
         // An endpoint restarts its idle timer when a packet from its peer is
         // received and processed successfully.
@@ -982,6 +1010,32 @@ impl Connection {
 
             Frame::StreamsBlocked { bidi, max } => {
                 self.streams.on_streams_blocked_frame_received(max, bidi)?;
+            }
+
+            Frame::AckFrequency {
+                sequence_number,
+                ack_eliciting_threshold,
+                requested_max_ack_delay,
+                reordering_threshold,
+            } => {
+                self.ack_frequency_receiver.on_frame(
+                    AckFrequencyParams {
+                        sequence_number,
+                        ack_eliciting_threshold,
+                        requested_max_ack_delay,
+                        reordering_threshold,
+                    },
+                    self.local_transport_params.min_ack_delay,
+                )?;
+            }
+
+            Frame::ImmediateAck => {
+                if self.local_transport_params.min_ack_delay.is_none() {
+                    return Err(Error::ProtocolViolation);
+                }
+                let space = self.spaces.get_mut(space_id).ok_or(Error::InternalError)?;
+                space.need_send_ack = true;
+                space.ack_timer = None;
             }
         }
 
@@ -1374,6 +1428,7 @@ impl Connection {
         space_id: SpaceId,
         pkt_num: u64,
         ack_eliciting: bool,
+        previous_largest_ack_eliciting: Option<u64>,
     ) -> Result<()> {
         if !ack_eliciting {
             return Ok(());
@@ -1391,36 +1446,80 @@ impl Connection {
             return Ok(());
         }
 
-        // A receiver SHOULD send an ACK frame after receiving at least two
-        // ack-eliciting packets.
+        let ack_frequency = self.ack_frequency_receiver.params();
+
+        // ACK_FREQUENCY's threshold counts packets that can be received before
+        // an ACK is sent. Thus, a value of 1 acknowledges every second packet.
         space.ack_eliciting_pkts_since_last_sent_ack += 1;
-        let ack_eliciting_threshold = self.recovery_conf.ack_eliciting_threshold;
-        if space.ack_eliciting_pkts_since_last_sent_ack >= ack_eliciting_threshold {
+        let threshold_reached = ack_frequency.map_or_else(
+            || {
+                space.ack_eliciting_pkts_since_last_sent_ack
+                    >= self.recovery_conf.ack_eliciting_threshold
+            },
+            |params| space.ack_eliciting_pkts_since_last_sent_ack > params.ack_eliciting_threshold,
+        );
+        if threshold_reached {
             space.need_send_ack = true;
             space.ack_timer = None;
             return Ok(());
         }
 
-        // In order to assist loss detection at the sender, an endpoint SHOULD
-        // generate and send an ACK frame without delay when it receives an
-        // ack-eliciting packet either:
-        // - when the received packet has a packet number less than another
-        //   ack-eliciting packet that has been received, or
-        // - when the packet has a packet number larger than the highest-numbered
-        // ack-eliciting packet that has been received and there are missing
-        // packets between that packet and this packet.
-        if pkt_num < space.largest_rx_ack_eliciting_pkt_num
-            || pkt_num > space.largest_rx_ack_eliciting_pkt_num + 1
+        if let Some(params) = ack_frequency {
+            let reordering_threshold = params.reordering_threshold;
+            if reordering_threshold > 0 {
+                // A sufficiently old packet is acknowledged immediately.
+                let old_packet = space.largest_ack_sent.is_some_and(|largest_acked| {
+                    largest_acked
+                        .checked_sub(reordering_threshold)
+                        .is_some_and(|limit| pkt_num <= limit)
+                });
+
+                // draft-14 also compares Largest Unacked with the smallest
+                // unreported missing packet. The receive window bounds this
+                // search without iterating over attacker-controlled gaps.
+                let missing_packet = space
+                    .largest_rx_ack_eliciting_pkt_num
+                    .and_then(|largest_unacked| {
+                        let first_unreported = space
+                            .largest_ack_sent
+                            .and_then(|largest_acked| {
+                                largest_acked.checked_sub(reordering_threshold)
+                            })
+                            .map_or(0, |largest_reported_missing| {
+                                largest_reported_missing.saturating_add(1)
+                            });
+                        space
+                            .recv_pkt_num_win
+                            .first_missing(first_unreported, largest_unacked)
+                            .map(|smallest_missing| (largest_unacked, smallest_missing))
+                    })
+                    .is_some_and(|(largest_unacked, smallest_missing)| {
+                        largest_unacked.saturating_sub(smallest_missing) >= reordering_threshold
+                    });
+
+                if old_packet || missing_packet {
+                    space.need_send_ack = true;
+                    space.ack_timer = None;
+                    return Ok(());
+                }
+            }
+        } else if previous_largest_ack_eliciting
+            .is_some_and(|largest| pkt_num < largest || pkt_num > largest.saturating_add(1))
         {
+            // Preserve RFC 9000's immediate ACK behavior when ACK Frequency
+            // has not changed the reordering policy.
             space.need_send_ack = true;
             space.ack_timer = None;
             return Ok(());
         }
 
-        // All ack-eliciting 0-RTT and 1-RTT packets within its advertised
-        // max_ack_delay.
+        // Acknowledge within the requested delay, or the transport parameter
+        // delay when ACK Frequency has not supplied an override.
         if space.ack_timer.is_none() {
-            let ack_delay = time::Duration::from_millis(self.peer_transport_params.max_ack_delay);
+            let ack_delay = ack_frequency.map_or_else(
+                || time::Duration::from_millis(self.peer_transport_params.max_ack_delay),
+                |params| time::Duration::from_micros(params.requested_max_ack_delay),
+            );
             space.ack_timer = Some(time::Instant::now() + ack_delay);
             debug!(
                 "{} set ack timer for space {:?}, timeout {:?} ",
@@ -1432,6 +1531,7 @@ impl Connection {
 
     /// Process acknowledged frames in each packet number space
     fn try_process_acked_frames(&mut self) {
+        let mut acked_ack_frequency = Vec::new();
         for (_, space) in self.spaces.iter_mut() {
             for acked_frame in space.acked.drain(..) {
                 match acked_frame {
@@ -1491,8 +1591,28 @@ impl Connection {
                         }
                     }
 
+                    Frame::AckFrequency {
+                        sequence_number,
+                        ack_eliciting_threshold,
+                        requested_max_ack_delay,
+                        reordering_threshold,
+                    } => {
+                        acked_ack_frequency.push(AckFrequencyParams {
+                            sequence_number,
+                            ack_eliciting_threshold,
+                            requested_max_ack_delay,
+                            reordering_threshold,
+                        });
+                    }
+
                     _ => (),
                 }
+            }
+        }
+
+        for params in acked_ack_frequency {
+            for (_, path) in self.paths.iter_mut() {
+                path.recovery.on_ack_frequency_acked(params);
             }
         }
     }
@@ -1827,6 +1947,25 @@ impl Connection {
             rate_sample_state: Default::default(),
             buffer_flags: write_status.buffer_flags,
         };
+        let sent_ack_frequency = sent_pkt.frames.iter().find_map(|frame| match frame {
+            Frame::AckFrequency {
+                sequence_number,
+                ack_eliciting_threshold,
+                requested_max_ack_delay,
+                reordering_threshold,
+            } => Some(AckFrequencyParams {
+                sequence_number: *sequence_number,
+                ack_eliciting_threshold: *ack_eliciting_threshold,
+                requested_max_ack_delay: *requested_max_ack_delay,
+                reordering_threshold: *reordering_threshold,
+            }),
+            _ => None,
+        });
+        if let Some(params) = sent_ack_frequency {
+            for (_, path) in self.paths.iter_mut() {
+                path.recovery.on_ack_frequency_sent(params);
+            }
+        }
         debug!(
             "{} sent packet {:?} {:?} {:?}",
             self.trace_id,
@@ -1978,6 +2117,10 @@ impl Connection {
         // simplicity.
         let out = &mut buf[..left];
 
+        // ACK_FREQUENCY and IMMEDIATE_ACK are congestion controlled and can
+        // only be carried in 1-RTT packets.
+        self.try_write_ack_frequency_control_frames(out, st, pkt_type)?;
+
         // Write PATH_CHALLENGE/PATH_RESPONSE frames
         self.try_write_path_validation_frames(out, st, pkt_type, path_id)?;
 
@@ -2063,6 +2206,33 @@ impl Connection {
             };
             Connection::write_frame_to_packet(frame, out, st)?;
             st.in_flight = true
+        }
+
+        Ok(())
+    }
+
+    fn try_write_ack_frequency_control_frames(
+        &mut self,
+        out: &mut [u8],
+        st: &mut FrameWriteStatus,
+        pkt_type: PacketType,
+    ) -> Result<()> {
+        if pkt_type != PacketType::OneRTT || self.is_closing() {
+            return Ok(());
+        }
+
+        if let Some(params) = self.pending_ack_frequency {
+            Connection::write_frame_to_packet(params.into_frame(), out, st)?;
+            self.pending_ack_frequency = None;
+            st.ack_eliciting = true;
+            st.in_flight = true;
+        }
+
+        if self.pending_immediate_ack {
+            Connection::write_frame_to_packet(Frame::ImmediateAck, out, st)?;
+            self.pending_immediate_ack = false;
+            st.ack_eliciting = true;
+            st.in_flight = true;
         }
 
         Ok(())
@@ -2175,14 +2345,17 @@ impl Connection {
         let ack_delay_exp = self.local_transport_params.ack_delay_exponent as u32;
         let ack_delay = space.largest_rx_pkt_time.elapsed();
         let ack_delay = ack_delay.as_micros() as u64 / 2_u64.pow(ack_delay_exp);
+        let largest_ack = space.recv_pkt_num_need_ack.max();
         let frame = Frame::Ack {
             ack_delay,
             ack_ranges: space.recv_pkt_num_need_ack.clone(),
             ecn_counts: None, // ECN not supported
         };
         Connection::write_frame_to_packet(frame, out, st)?;
+        space.largest_ack_sent = cmp::max(space.largest_ack_sent, largest_ack);
         space.need_send_ack = false;
         space.ack_eliciting_pkts_since_last_sent_ack = 0;
+        space.ack_timer = None;
 
         Ok(())
     }
@@ -2822,6 +2995,27 @@ impl Connection {
                         space.need_send_ack = true;
                     }
 
+                    // A lost ACK_FREQUENCY frame can be retransmitted with the
+                    // same sequence number unless a newer policy superseded it.
+                    Frame::AckFrequency {
+                        sequence_number,
+                        ack_eliciting_threshold,
+                        requested_max_ack_delay,
+                        reordering_threshold,
+                    } => {
+                        if self.next_ack_frequency_sequence <= sequence_number.saturating_add(1) {
+                            self.pending_ack_frequency = Some(AckFrequencyParams {
+                                sequence_number,
+                                ack_eliciting_threshold,
+                                requested_max_ack_delay,
+                                reordering_threshold,
+                            });
+                        }
+                    }
+
+                    // IMMEDIATE_ACK frames are never retransmitted.
+                    Frame::ImmediateAck => {}
+
                     // The HANDSHAKE_DONE frame MUST be retransmitted until it
                     // is acknowledged.
                     Frame::HandshakeDone if !self.flags.contains(HandshakeDoneAcked) => {
@@ -3109,6 +3303,8 @@ impl Connection {
                 || path.need_send_validation_frames(self.is_server)
                 || path.dplpmtud.should_probe()
                 || path.need_send_ping
+                || self.pending_ack_frequency.is_some()
+                || self.pending_immediate_ack
                 || self.cids.need_send_cid_control_frames()
                 || self.streams.need_send_stream_frames()
                 || self.spaces.need_send_buffered_frames())
@@ -3127,6 +3323,8 @@ impl Connection {
         self.need_send_handshake_done_frame()
             || self.need_send_new_token_frame()
             || self.local_error.as_ref().is_some_and(|e| e.is_app)
+            || self.pending_ack_frequency.is_some()
+            || self.pending_immediate_ack
             || self.cids.need_send_cid_control_frames()
             || self.streams.need_send_stream_frames()
     }
@@ -3175,6 +3373,11 @@ impl Connection {
         if self.cids.zero_length_scid() {
             cid_pid = None;
         }
+        let ack_frequency_state = self
+            .paths
+            .get_active()
+            .ok()
+            .map(|path| path.recovery.ack_frequency_state());
         let mut path = path::Path::new(
             info.dst,
             info.src,
@@ -3182,6 +3385,11 @@ impl Connection {
             &self.recovery_conf,
             &self.trace_id,
         );
+        path.recovery.max_ack_delay =
+            time::Duration::from_millis(self.peer_transport_params.max_ack_delay);
+        if let Some(state) = ack_frequency_state {
+            path.recovery.set_ack_frequency_state(state);
+        }
         if self.is_server {
             path.anti_ampl_limit = buf_len * self.paths.anti_ampl_factor;
         }
@@ -3721,6 +3929,72 @@ impl Connection {
         self.paths.mark_ping(path_addr)
     }
 
+    /// Return whether the peer advertised support for ACK Frequency.
+    pub fn peer_supports_ack_frequency(&self) -> bool {
+        self.peer_transport_params.min_ack_delay.is_some()
+    }
+
+    /// Queue a new ACK_FREQUENCY frame for the peer.
+    ///
+    /// `requested_max_ack_delay` is expressed in microseconds. A newer call
+    /// supersedes an update that has not yet been sent.
+    pub fn update_ack_frequency(
+        &mut self,
+        ack_eliciting_threshold: u64,
+        requested_max_ack_delay: u64,
+        reordering_threshold: u64,
+    ) -> Result<()> {
+        if !self.is_established() {
+            return Err(Error::InvalidOperation(
+                "ACK Frequency requires an established connection".into(),
+            ));
+        }
+
+        let min_ack_delay = self
+            .peer_transport_params
+            .min_ack_delay
+            .ok_or_else(|| Error::InvalidOperation("peer does not support ACK Frequency".into()))?;
+        if requested_max_ack_delay < min_ack_delay
+            || requested_max_ack_delay >= MAX_REQUESTED_ACK_DELAY
+        {
+            return Err(Error::InvalidConfig(
+                "requested_max_ack_delay is outside the peer's supported range".into(),
+            ));
+        }
+        if ack_eliciting_threshold > crate::VINT_MAX || reordering_threshold > crate::VINT_MAX {
+            return Err(Error::InvalidConfig(
+                "ACK Frequency thresholds exceed the QUIC varint limit".into(),
+            ));
+        }
+        if self.next_ack_frequency_sequence > crate::VINT_MAX {
+            return Err(Error::InvalidOperation(
+                "ACK Frequency sequence number exhausted".into(),
+            ));
+        }
+
+        let params = AckFrequencyParams {
+            sequence_number: self.next_ack_frequency_sequence,
+            ack_eliciting_threshold,
+            requested_max_ack_delay,
+            reordering_threshold,
+        };
+        self.next_ack_frequency_sequence = self.next_ack_frequency_sequence.saturating_add(1);
+        self.pending_ack_frequency = Some(params);
+        Ok(())
+    }
+
+    /// Queue an IMMEDIATE_ACK frame for the peer.
+    pub fn immediate_ack(&mut self) -> Result<()> {
+        if !self.is_established() || !self.peer_supports_ack_frequency() {
+            return Err(Error::InvalidOperation(
+                "peer ACK Frequency support is unavailable".into(),
+            ));
+        }
+
+        self.pending_immediate_ack = true;
+        Ok(())
+    }
+
     /// Client add a new path on the connection.
     pub fn add_path(&mut self, local_addr: SocketAddr, remote_addr: SocketAddr) -> Result<u64> {
         if self.is_server {
@@ -3741,6 +4015,11 @@ impl Connection {
             self.cids.lowest_unused_dcid_seq()
         };
 
+        let ack_frequency_state = self
+            .paths
+            .get_active()
+            .ok()
+            .map(|path| path.recovery.ack_frequency_state());
         let mut path = path::Path::new(
             local_addr,
             remote_addr,
@@ -3748,6 +4027,11 @@ impl Connection {
             &self.recovery_conf,
             &self.trace_id,
         );
+        path.recovery.max_ack_delay =
+            time::Duration::from_millis(self.peer_transport_params.max_ack_delay);
+        if let Some(state) = ack_frequency_state {
+            path.recovery.set_ack_frequency_state(state);
+        }
         path.dcid_seq = dcid_seq;
         let pid = self.paths.insert_path(path)?;
         self.paths.get_mut(pid)?.update_trace_id(pid);
@@ -7944,6 +8228,134 @@ pub(crate) mod tests {
                 .initiate_key_update(space, false),
             Err(Error::Done)
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn ack_frequency_negotiation_and_control_frames() -> Result<()> {
+        let mut client_config = TestPair::new_test_config(false)?;
+        client_config.enable_ack_frequency(1000)?;
+        let mut server_config = TestPair::new_test_config(true)?;
+        server_config.enable_ack_frequency(2000)?;
+        let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
+        test_pair.handshake()?;
+
+        assert_eq!(
+            test_pair.client.peer_transport_params.min_ack_delay,
+            Some(2000)
+        );
+        assert_eq!(
+            test_pair.server.peer_transport_params.min_ack_delay,
+            Some(1000)
+        );
+
+        test_pair.client.update_ack_frequency(1, 10_000, 3)?;
+        let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+        TestPair::conn_packets_in(&mut test_pair.server, packets)?;
+        assert_eq!(
+            test_pair.server.ack_frequency_receiver.params(),
+            Some(AckFrequencyParams {
+                sequence_number: 0,
+                ack_eliciting_threshold: 1,
+                requested_max_ack_delay: 10_000,
+                reordering_threshold: 3,
+            })
+        );
+
+        test_pair.client.immediate_ack()?;
+        let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+        TestPair::conn_packets_in(&mut test_pair.server, packets)?;
+        assert!(
+            test_pair
+                .server
+                .spaces
+                .get(SpaceId::Data)
+                .ok_or(Error::InternalError)?
+                .need_send_ack
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn ack_frequency_requires_transport_parameter() -> Result<()> {
+        let mut test_pair = TestPair::new_with_test_config()?;
+        test_pair.handshake()?;
+
+        assert!(matches!(
+            test_pair.client.update_ack_frequency(1, 10_000, 1),
+            Err(Error::InvalidOperation(_))
+        ));
+
+        let frame = Frame::AckFrequency {
+            sequence_number: 0,
+            ack_eliciting_threshold: 1,
+            requested_max_ack_delay: 10_000,
+            reordering_threshold: 1,
+        };
+        assert_eq!(
+            test_pair.build_packet_and_send(PacketType::OneRTT, &[frame], false),
+            Err(Error::ProtocolViolation)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn ack_frequency_reordering_threshold_uses_draft_14_rules() -> Result<()> {
+        let mut conn = TestPair::new_with_test_config()?.server;
+        conn.ack_frequency_receiver.on_frame(
+            AckFrequencyParams {
+                sequence_number: 1,
+                ack_eliciting_threshold: 100,
+                requested_max_ack_delay: 10_000,
+                reordering_threshold: 3,
+            },
+            Some(0),
+        )?;
+
+        *conn
+            .spaces
+            .get_mut(SpaceId::Data)
+            .ok_or(Error::InternalError)? = PacketNumSpace::new(SpaceId::Data);
+
+        // This is the reordering-threshold example from draft-14. With a
+        // threshold of 3, packets 5, 9, and 10 trigger immediate ACKs.
+        let packets = [0, 1, 3, 4, 5, 8, 9, 10];
+        let expected = [false, false, false, false, true, false, true, true];
+        for (pkt_num, expected_ack) in packets.into_iter().zip(expected) {
+            let previous = {
+                let space = conn.spaces.get_mut(SpaceId::Data).unwrap();
+                let previous = space.largest_rx_ack_eliciting_pkt_num;
+                space.recv_pkt_num_win.insert(pkt_num);
+                space.largest_rx_ack_eliciting_pkt_num = Some(pkt_num);
+                previous
+            };
+            conn.try_schedule_ack_frame(SpaceId::Data, pkt_num, true, previous)?;
+            let space = conn.spaces.get_mut(SpaceId::Data).unwrap();
+            assert_eq!(space.need_send_ack, expected_ack, "packet {pkt_num}");
+            if expected_ack {
+                space.largest_ack_sent = Some(pkt_num);
+                space.need_send_ack = false;
+                space.ack_eliciting_pkts_since_last_sent_ack = 0;
+                space.ack_timer = None;
+            }
+        }
+
+        // A packet at or below Largest Acked - Reordering Threshold also
+        // triggers an immediate ACK.
+        let previous = conn
+            .spaces
+            .get(SpaceId::Data)
+            .and_then(|space| space.largest_rx_ack_eliciting_pkt_num);
+        conn.spaces
+            .get_mut(SpaceId::Data)
+            .unwrap()
+            .recv_pkt_num_win
+            .insert(7);
+        conn.try_schedule_ack_frame(SpaceId::Data, 7, true, previous)?;
+        assert!(conn.spaces.get(SpaceId::Data).unwrap().need_send_ack);
 
         Ok(())
     }
