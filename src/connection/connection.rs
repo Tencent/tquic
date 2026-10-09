@@ -87,6 +87,12 @@ pub struct Connection {
     /// Whether this is a server connection.
     is_server: bool,
 
+    /// RFC 9221 DATAGRAM frames received, awaiting the application (FIFO).
+    dgram_recv: VecDeque<Vec<u8>>,
+    /// DATAGRAM frames queued by the application to send (FIFO). Unreliable:
+    /// dropped, never retransmitted, if lost or if the queue overflows.
+    dgram_send: VecDeque<Vec<u8>>,
+
     /// Connection Identifiers.
     cids: cid::ConnectionIdMgr,
 
@@ -251,6 +257,8 @@ impl Connection {
         let mut conn = Connection {
             version: crate::QUIC_VERSION_V1,
             is_server,
+            dgram_recv: VecDeque::new(),
+            dgram_send: VecDeque::new(),
             cids,
             spaces: space::PacketNumSpaceMap::new(),
             paths,
@@ -718,6 +726,17 @@ impl Connection {
             Frame::Paddings { .. } => (), // just ignore
 
             Frame::Ping { .. } => (), // just ignore
+
+            Frame::Datagram { data, .. } => {
+                // RFC 9221: deliver to the application recv queue. Bounded so
+                // a flood can't grow memory unboundedly (unreliable: drop
+                // oldest, mirroring a full NIC rx ring).
+                const MAX_DGRAM_RECV: usize = 1024;
+                if self.dgram_recv.len() >= MAX_DGRAM_RECV {
+                    self.dgram_recv.pop_front();
+                }
+                self.dgram_recv.push_back(data.to_vec());
+            }
 
             Frame::Ack {
                 ack_delay,
@@ -2009,6 +2028,10 @@ impl Connection {
         // Write STREAM frames
         self.try_write_stream_frames(out, st, pkt_type, path_id)?;
 
+        // Write DATAGRAM frames (RFC 9221) — after streams so bulk stream
+        // data doesn't starve, but they still ride each packet's spare room.
+        self.try_write_datagram_frames(out, st, pkt_type)?;
+
         // Write a NEW_TOKEN frame
         self.try_write_new_token_frame(out, st, pkt_type, path_id)?;
 
@@ -2065,6 +2088,54 @@ impl Connection {
             st.in_flight = true
         }
 
+        Ok(())
+    }
+
+    /// Write DATAGRAM frames (RFC 9221) from the send queue into the packet.
+    /// Unreliable: each is emitted at most once (no retransmit on loss), and
+    /// one too large to fit any packet is dropped rather than blocking the
+    /// queue. Only in 1-RTT packets (application data).
+    fn try_write_datagram_frames(
+        &mut self,
+        out: &mut [u8],
+        st: &mut FrameWriteStatus,
+        pkt_type: PacketType,
+    ) -> Result<()> {
+        if pkt_type != PacketType::OneRTT {
+            return Ok(());
+        }
+        // Only emit if the peer advertised DATAGRAM support (RFC 9221);
+        // otherwise sending one is a protocol violation.
+        if self.peer_transport_params.max_datagram_frame_size == 0 {
+            self.dgram_send.clear();
+            return Ok(());
+        }
+        while let Some(front) = self.dgram_send.front() {
+            // length-prefixed form (0x31): 1-byte type + varint len + data,
+            // so other frames may coexist in the same packet.
+            let wire = 1 + codec::encode_varint_len(front.len() as u64) + front.len();
+            let remaining = out.len().saturating_sub(st.written);
+            if wire > remaining {
+                // "Too big for any packet" is judged against the negotiated
+                // max, not this packet's leftover room — otherwise a datagram
+                // that doesn't fit the current (ACK-filled) packet but WOULD
+                // fit a fresh one gets stuck in the queue forever.
+                let peer_max = self.peer_transport_params.max_datagram_frame_size as usize;
+                if wire > peer_max {
+                    self.dgram_send.pop_front(); // exceeds peer's max — drop
+                    continue;
+                }
+                break; // try the next (emptier) packet
+            }
+            let data = self.dgram_send.pop_front().unwrap();
+            let frame = Frame::Datagram {
+                length: Some(data.len()),
+                data: Bytes::from(data),
+            };
+            Connection::write_frame_to_packet(frame, out, st)?;
+            st.ack_eliciting = true;
+            st.in_flight = true;
+        }
         Ok(())
     }
 
@@ -3111,6 +3182,7 @@ impl Connection {
                 || path.need_send_ping
                 || self.cids.need_send_cid_control_frames()
                 || self.streams.need_send_stream_frames()
+                || !self.dgram_send.is_empty()
                 || self.spaces.need_send_buffered_frames())
         {
             if !self.is_server && self.tls_session.is_in_early_data() {
@@ -3129,6 +3201,10 @@ impl Connection {
             || self.local_error.as_ref().is_some_and(|e| e.is_app)
             || self.cids.need_send_cid_control_frames()
             || self.streams.need_send_stream_frames()
+            // DATAGRAM frames may be sent on any path; without this a
+            // datagram-only workload never consults the multipath scheduler
+            // and everything defaults to the primary path.
+            || !self.dgram_send.is_empty()
     }
 
     /// Find space id for the specified packet type and path id.
@@ -3394,6 +3470,48 @@ impl Connection {
     /// Check whether the connection handshake is complete.
     pub fn is_established(&self) -> bool {
         self.flags.contains(HandshakeCompleted)
+    }
+
+    /// Queue an unreliable DATAGRAM (RFC 9221) to send. It is emitted in the
+    /// next outgoing packet(s) and never retransmitted if lost. Bounded send
+    /// queue: returns Error::Done when full (caller drops, like a NIC tx ring).
+    pub fn datagram_send(&mut self, data: &[u8]) -> Result<()> {
+        const MAX_DGRAM_SEND: usize = 1024;
+        if self.dgram_send.len() >= MAX_DGRAM_SEND {
+            return Err(Error::Done);
+        }
+        self.dgram_send.push_back(data.to_vec());
+        // Put the connection on the endpoint's send/tick queues so the queued
+        // datagram is flushed on the next poll (mirrors stream_write).
+        self.mark_tickable(true);
+        self.mark_sendable(true);
+        Ok(())
+    }
+
+    /// Read the next received DATAGRAM into `out`. Returns the byte length, or
+    /// Error::Done if none are queued.
+    pub fn datagram_recv(&mut self, out: &mut [u8]) -> Result<usize> {
+        let d = self.dgram_recv.pop_front().ok_or(Error::Done)?;
+        let n = d.len().min(out.len());
+        out[..n].copy_from_slice(&d[..n]);
+        Ok(n)
+    }
+
+    /// Number of DATAGRAMs waiting to be read.
+    pub fn datagram_recv_queue_len(&self) -> usize {
+        self.dgram_recv.len()
+    }
+
+    /// Largest DATAGRAM payload the peer will accept, or None if the peer did
+    /// not advertise DATAGRAM support. The caller sizes its frames below this.
+    pub fn datagram_max_send_size(&self) -> Option<usize> {
+        let m = self.peer_transport_params.max_datagram_frame_size;
+        if m == 0 {
+            return None;
+        }
+        // m bounds the whole DATAGRAM frame; subtract worst-case header
+        // (1-byte type + up to 8-byte length varint).
+        Some((m as usize).saturating_sub(9))
     }
 
     /// Check whether the connection handshake is confirmed.
@@ -4961,6 +5079,54 @@ pub(crate) mod tests {
             TestPair::conn_packets_in(&mut self.server, packets)?;
             Ok(())
         }
+    }
+
+    #[test]
+    fn datagram_end_to_end() -> Result<()> {
+        // Enable RFC 9221 DATAGRAM support on both ends.
+        let mut client_config = TestPair::new_test_config(false)?;
+        client_config.set_max_datagram_frame_size(1500);
+        let mut server_config = TestPair::new_test_config(true)?;
+        server_config.set_max_datagram_frame_size(1500);
+        let mut pair = TestPair::new(&mut client_config, &mut server_config)?;
+        pair.handshake()?;
+
+        // Peer support must have been negotiated via transport params.
+        assert!(pair.client.datagram_max_send_size().is_some());
+        assert!(pair.server.datagram_max_send_size().is_some());
+
+        // client -> server unreliable datagram (the tunnel's uplink)
+        let up = b"tunneled IP packet over a TQUIC DATAGRAM";
+        pair.client.datagram_send(up)?;
+        pair.move_forward()?;
+        let mut out = [0u8; 2048];
+        let n = pair.server.datagram_recv(&mut out)?;
+        assert_eq!(&out[..n], up);
+        assert_eq!(pair.server.datagram_recv(&mut out), Err(Error::Done)); // no more
+
+        // server -> client (the downlink)
+        let down = b"reply datagram";
+        pair.server.datagram_send(down)?;
+        pair.move_forward()?;
+        let n = pair.client.datagram_recv(&mut out)?;
+        assert_eq!(&out[..n], down);
+        Ok(())
+    }
+
+    #[test]
+    fn datagram_peer_no_support_is_dropped() -> Result<()> {
+        // Client enables datagrams; server does NOT advertise support.
+        let mut client_config = TestPair::new_test_config(false)?;
+        client_config.set_max_datagram_frame_size(1500);
+        let mut server_config = TestPair::new_test_config(true)?;
+        let mut pair = TestPair::new(&mut client_config, &mut server_config)?;
+        pair.handshake()?;
+        // Server didn't advertise → client must not attempt to send datagrams.
+        assert!(pair.client.datagram_max_send_size().is_none());
+        pair.client.datagram_send(b"should be dropped, not a protocol error")?;
+        pair.move_forward()?; // must not error out the connection
+        assert!(!pair.client.is_closed() && !pair.server.is_closed());
+        Ok(())
     }
 
     #[test]

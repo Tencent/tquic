@@ -449,6 +449,13 @@ impl Config {
         self.local_transport_params.initial_max_data = cmp::min(v, self.max_connection_window);
     }
 
+    /// Set `max_datagram_frame_size` (RFC 9221). Non-zero enables receiving
+    /// unreliable DATAGRAM frames and advertises support to the peer; the peer
+    /// may then send us datagrams up to this size. 0 (default) disables it.
+    pub fn set_max_datagram_frame_size(&mut self, v: u64) {
+        self.local_transport_params.max_datagram_frame_size = cmp::min(v, VINT_MAX);
+    }
+
     /// Set the `initial_max_stream_data_bidi_local` transport parameter.
     /// The value is capped by the setting `max_stream_window`.
     /// The default value is `5242880`.

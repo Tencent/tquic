@@ -121,6 +121,11 @@ pub struct TransportParams {
     /// completely trust the path between themselves.
     /// See draft-banks-quic-disable-encryption-00.
     pub disable_encryption: bool,
+
+    /// max_datagram_frame_size (RFC 9221, id 0x20): the largest DATAGRAM frame
+    /// this endpoint will RECEIVE. 0 (absent) means DATAGRAM frames are not
+    /// supported by this endpoint.
+    pub max_datagram_frame_size: u64,
 }
 
 impl TransportParams {
@@ -172,6 +177,11 @@ impl TransportParams {
                     if tp.max_udp_payload_size < 1200 {
                         return Err(Error::TransportParameterError);
                     }
+                }
+
+                // max_datagram_frame_size (RFC 9221)
+                0x0020 => {
+                    tp.max_datagram_frame_size = val.read_varint()?;
                 }
 
                 0x0004 => {
@@ -308,6 +318,14 @@ impl TransportParams {
             buf.write_varint(0x0003)?;
             buf.write_varint(codec::encode_varint_len(tp.max_udp_payload_size) as u64)?;
             buf.write_varint(tp.max_udp_payload_size)?;
+        }
+
+        // max_datagram_frame_size (RFC 9221, id 0x20) — advertise only when
+        // this endpoint accepts DATAGRAM frames.
+        if tp.max_datagram_frame_size != 0 {
+            buf.write_varint(0x0020)?;
+            buf.write_varint(codec::encode_varint_len(tp.max_datagram_frame_size) as u64)?;
+            buf.write_varint(tp.max_datagram_frame_size)?;
         }
 
         if tp.initial_max_data != 0 {
@@ -483,6 +501,7 @@ impl Default for TransportParams {
 
             enable_multipath: false,
             disable_encryption: false,
+            max_datagram_frame_size: 0,
         }
     }
 }
@@ -583,6 +602,7 @@ mod tests {
             retry_source_connection_id: None,
             enable_multipath: true,
             disable_encryption: false,
+            max_datagram_frame_size: 65535,
         };
 
         // encode on the client side
@@ -627,6 +647,7 @@ mod tests {
             retry_source_connection_id: Some(ConnectionId::random()),
             enable_multipath: false,
             disable_encryption: true,
+            max_datagram_frame_size: 1200,
         };
 
         // encode on the server side
