@@ -167,9 +167,20 @@ pub struct Connection {
 
     /// Unique trace id for debug logging
     trace_id: String,
+
+    /// Whether peer supports grease QUIC bit extension
+    peer_grease_quic_bit: bool,
+
+    /// Whether to randomize QUIC bit in outgoing packets
+    grease_quic_bit: bool,
 }
 
 impl Connection {
+    /// Returns true if QUIC bit greasing is negotiated with the peer
+    pub fn grease_quic_bit_enabled(&self) -> bool {
+        self.grease_quic_bit
+    }
+
     /// Create a new QUIC client connection
     #[doc(hidden)]
     pub fn new_client(
@@ -278,6 +289,8 @@ impl Connection {
             #[cfg(feature = "qlog")]
             qlog: None,
             trace_id,
+            peer_grease_quic_bit: false,
+            grease_quic_bit: false,
         };
 
         let write_method = conn.get_write_method();
@@ -1249,6 +1262,12 @@ impl Connection {
 
         self.cids.set_scid_limit(peer_params.active_conn_id_limit);
 
+        // Handle grease QUIC bit negotiation
+        self.peer_grease_quic_bit = peer_params.grease_quic_bit;
+        if self.local_transport_params.grease_quic_bit && peer_params.grease_quic_bit {
+            self.grease_quic_bit = true;
+        }
+
         self.peer_transport_params = peer_params;
         Ok(())
     }
@@ -1806,6 +1825,7 @@ impl Connection {
                 payload_offset,
                 None,
                 key,
+                self.grease_quic_bit,
             )?
         } else {
             payload_offset + payload_len
@@ -4793,6 +4813,7 @@ pub(crate) mod tests {
                 payload_offset,
                 None,
                 key,
+                conn.grease_quic_bit,
             )?;
             space.next_pkt_num += 1;
 
@@ -7944,6 +7965,52 @@ pub(crate) mod tests {
                 .initiate_key_update(space, false),
             Err(Error::Done)
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn grease_quic_bit_negotiation() -> Result<()> {
+        // Test grease QUIC bit negotiation between client and server
+        let mut client_config = TestPair::new_test_config(false)?;
+        let mut server_config = TestPair::new_test_config(true)?;
+
+        // Enable grease QUIC bit on both sides
+        client_config.enable_grease_quic_bit(true);
+        server_config.enable_grease_quic_bit(true);
+
+        let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
+
+        // Before handshake, greasing should not be active
+        assert!(!test_pair.client.grease_quic_bit_enabled());
+        assert!(!test_pair.server.grease_quic_bit_enabled());
+
+        // Complete handshake to exchange transport parameters
+        test_pair.handshake()?;
+
+        // After handshake, greasing should be active on both sides
+        assert!(test_pair.client.grease_quic_bit_enabled());
+        assert!(test_pair.server.grease_quic_bit_enabled());
+
+        Ok(())
+    }
+
+    #[test]
+    fn grease_quic_bit_unilateral() -> Result<()> {
+        // Test when only one side supports grease QUIC bit
+        let mut client_config = TestPair::new_test_config(false)?;
+        let mut server_config = TestPair::new_test_config(true)?;
+
+        // Enable grease QUIC bit only on client
+        client_config.enable_grease_quic_bit(true);
+        server_config.enable_grease_quic_bit(false);
+
+        let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
+        test_pair.handshake()?;
+
+        // Greasing should not be active when only one side supports it
+        assert!(!test_pair.client.grease_quic_bit_enabled());
+        assert!(!test_pair.server.grease_quic_bit_enabled());
 
         Ok(())
     }

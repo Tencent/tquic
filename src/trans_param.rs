@@ -121,6 +121,11 @@ pub struct TransportParams {
     /// completely trust the path between themselves.
     /// See draft-banks-quic-disable-encryption-00.
     pub disable_encryption: bool,
+
+    /// The parameter is used to negotiate the ability to send an arbitrary
+    /// value for the second-most significant bit (QUIC bit) in QUIC packets.
+    /// See RFC 9287.
+    pub grease_quic_bit: bool,
 }
 
 impl TransportParams {
@@ -266,6 +271,15 @@ impl TransportParams {
                     tp.disable_encryption = true;
                 }
 
+                0x2ab2 => {
+                    // RFC 9287: grease_quic_bit transport parameter
+                    // This parameter MUST be sent with an empty value
+                    if !val.is_empty() {
+                        return Err(Error::TransportParameterError);
+                    }
+                    tp.grease_quic_bit = true;
+                }
+
                 // Ignore unknown parameters.
                 _ => (),
             }
@@ -404,6 +418,11 @@ impl TransportParams {
             buf.write_varint(0)?;
         }
 
+        if tp.grease_quic_bit {
+            buf.write_varint(0x2ab2)?;
+            buf.write_varint(0)?;
+        }
+
         Ok(len - buf.len())
     }
 
@@ -439,7 +458,7 @@ impl TransportParams {
             initial_max_streams_uni: Some(self.initial_max_streams_uni),
             preferred_address: None,
             max_datagram_frame_size: None,
-            grease_quic_bit: None,
+            grease_quic_bit: Some(self.grease_quic_bit),
         }
     }
 }
@@ -483,6 +502,7 @@ impl Default for TransportParams {
 
             enable_multipath: false,
             disable_encryption: false,
+            grease_quic_bit: false,
         }
     }
 }
@@ -559,6 +579,7 @@ impl PreferredAddress {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codec::Encoder;
     use crate::ConnectionId;
 
     #[test]
@@ -583,6 +604,7 @@ mod tests {
             retry_source_connection_id: None,
             enable_multipath: true,
             disable_encryption: false,
+            grease_quic_bit: true,
         };
 
         // encode on the client side
@@ -627,6 +649,7 @@ mod tests {
             retry_source_connection_id: Some(ConnectionId::random()),
             enable_multipath: false,
             disable_encryption: true,
+            grease_quic_bit: true,
         };
 
         // encode on the server side
@@ -675,6 +698,41 @@ mod tests {
             assert_eq!(addr, addr2);
             assert_eq!(len, len2);
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn grease_quic_bit_transport_param() -> Result<()> {
+        // Test grease_quic_bit parameter encoding/decoding
+        let tp = TransportParams {
+            grease_quic_bit: true,
+            ..TransportParams::default()
+        };
+
+        // Encode on client side
+        let mut raw_params = [0; 256];
+        let len = TransportParams::encode(&tp, false, &mut raw_params)?;
+
+        // Decode on server side
+        let (tp2, len2) = TransportParams::decode(&raw_params[..len], true)?;
+        assert_eq!(tp.grease_quic_bit, tp2.grease_quic_bit);
+        assert_eq!(len, len2);
+
+        Ok(())
+    }
+
+    #[test]
+    fn grease_quic_bit_param_non_empty_value() -> Result<()> {
+        // Test that non-empty grease_quic_bit parameter value is rejected
+        let mut buf = [0u8; 10];
+        let mut slice = &mut buf[..];
+        slice.write_varint(0x2ab2)?; // grease_quic_bit parameter ID
+        slice.write_varint(1)?; // non-empty length (invalid)
+        slice.write_u8(42)?; // some data
+
+        let result = TransportParams::decode(&buf, false);
+        assert_eq!(result, Err(Error::TransportParameterError));
 
         Ok(())
     }
