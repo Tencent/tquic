@@ -20,6 +20,7 @@ use std::time::Instant;
 use self::scheduler_minrtt::*;
 use self::scheduler_redundant::*;
 use self::scheduler_rr::*;
+use self::scheduler_tempo::*;
 use crate::connection::path::PathMap;
 use crate::connection::space::PacketNumSpaceMap;
 use crate::connection::space::SentPacket;
@@ -83,6 +84,12 @@ pub enum MultipathAlgorithm {
     /// distribution across all path is equal. It is only used for testing
     /// purposes.
     RoundRobin,
+
+    /// TEMPO: arrival-time (earliest-delivery) scheduler. Picks the path where
+    /// the next packet ARRIVES earliest (bytes_in_flight/pacing_rate + srtt/2),
+    /// distributing load by capacity so a single stream aggregates across
+    /// heterogeneous paths without the reorder-collapse of naive round-robin.
+    Tempo,
 }
 
 impl FromStr for MultipathAlgorithm {
@@ -95,6 +102,8 @@ impl FromStr for MultipathAlgorithm {
             Ok(MultipathAlgorithm::Redundant)
         } else if algor.eq_ignore_ascii_case("roundrobin") {
             Ok(MultipathAlgorithm::RoundRobin)
+        } else if algor.eq_ignore_ascii_case("tempo") {
+            Ok(MultipathAlgorithm::Tempo)
         } else {
             Err(Error::InvalidConfig("unknown".into()))
         }
@@ -107,6 +116,7 @@ pub(crate) fn build_multipath_scheduler(conf: &MultipathConfig) -> Box<dyn Multi
         MultipathAlgorithm::MinRtt => Box::new(MinRttScheduler::new(conf)),
         MultipathAlgorithm::Redundant => Box::new(RedundantScheduler::new(conf)),
         MultipathAlgorithm::RoundRobin => Box::new(RoundRobinScheduler::new(conf)),
+        MultipathAlgorithm::Tempo => Box::new(TempoScheduler::new(conf)),
     }
 }
 
@@ -115,6 +125,7 @@ pub(crate) fn buffer_required(algor: MultipathAlgorithm) -> bool {
         MultipathAlgorithm::MinRtt => false,
         MultipathAlgorithm::Redundant => true,
         MultipathAlgorithm::RoundRobin => false,
+        MultipathAlgorithm::Tempo => false,
     }
 }
 
@@ -206,5 +217,6 @@ pub(crate) mod tests {
 }
 
 mod scheduler_minrtt;
+mod scheduler_tempo;
 mod scheduler_redundant;
 mod scheduler_rr;

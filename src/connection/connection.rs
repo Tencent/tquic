@@ -3721,6 +3721,41 @@ impl Connection {
         self.paths.mark_ping(path_addr)
     }
 
+    /// Switch the multipath scheduling algorithm live. Takes effect on the
+    /// next packet-send decision; a no-op scheduler rebuild if multipath was
+    /// never negotiated (the setting still applies if it is later enabled).
+    pub fn set_multipath_algorithm(&mut self, alg: crate::MultipathAlgorithm) {
+        self.multipath_conf.multipath_algorithm = alg;
+        if self.flags.contains(EnableMultipath) {
+            self.multipath_scheduler = Some(build_multipath_scheduler(&self.multipath_conf));
+        }
+    }
+
+    /// Set (or clear, with None) the zombie-bufferbloat cutoff: paths whose
+    /// smoothed RTT exceeds `max_ms` are avoided by the multipath schedulers
+    /// unless no healthy path can send.
+    pub fn set_scheduler_max_rtt(&mut self, max_ms: Option<u64>) {
+        self.paths.max_srtt = max_ms.map(time::Duration::from_millis);
+    }
+
+    /// Per-path health snapshot:
+    /// (local, remote, srtt_ms, consecutive_ptos, active, unhealthy).
+    pub fn path_health(&self) -> Vec<(SocketAddr, SocketAddr, u64, usize, bool, bool)> {
+        self.paths
+            .iter()
+            .map(|(_, p)| {
+                (
+                    p.local_addr(),
+                    p.remote_addr(),
+                    p.recovery.rtt.smoothed_rtt().as_millis() as u64,
+                    p.recovery.consecutive_pto_count(),
+                    p.active(),
+                    p.unhealthy_with(self.paths.max_srtt),
+                )
+            })
+            .collect()
+    }
+
     /// Client add a new path on the connection.
     pub fn add_path(&mut self, local_addr: SocketAddr, remote_addr: SocketAddr) -> Result<u64> {
         if self.is_server {

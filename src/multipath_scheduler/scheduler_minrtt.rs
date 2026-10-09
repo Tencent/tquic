@@ -43,7 +43,9 @@ impl MultipathScheduler for MinRttScheduler {
         spaces: &mut PacketNumSpaceMap,
         streams: &mut StreamMap,
     ) -> Result<usize> {
+        let max_srtt = paths.max_srtt;
         let mut best = None;
+        let mut best_unhealthy = None;
 
         for (pid, path) in paths.iter_mut() {
             // Skip the path that is not ready for sending non-probing packets.
@@ -51,19 +53,27 @@ impl MultipathScheduler for MinRttScheduler {
                 continue;
             }
 
-            // Select the path with the minimum srtt
+            // Blackhole-suspect paths (consecutive PTOs without ACKs) are
+            // tracked separately and only used when no healthy path can send.
             let srtt = path.recovery.rtt.smoothed_rtt();
-            match best {
-                None => best = Some((pid, srtt)),
+            let slot = if path.unhealthy_with(max_srtt) {
+                &mut best_unhealthy
+            } else {
+                &mut best
+            };
+
+            // Select the path with the minimum srtt
+            match slot {
+                None => *slot = Some((pid, srtt)),
                 Some((_, rtt)) => {
-                    if srtt < rtt {
-                        best = Some((pid, srtt));
+                    if srtt < *rtt {
+                        *slot = Some((pid, srtt));
                     }
                 }
             }
         }
 
-        match best {
+        match best.or(best_unhealthy) {
             Some((i, _)) => Ok(i),
             None => Err(Error::Done),
         }
