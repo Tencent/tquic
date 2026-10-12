@@ -77,6 +77,15 @@ pub struct Path {
     /// Pending challenge data with the size of the packet containing them.
     sent_chals: VecDeque<([u8; 8], usize, time::Instant, time::Instant)>,
 
+    /// Challenge data whose retry timer expired before a response arrived.
+    /// A PATH_RESPONSE echoing one of these must still validate the path
+    /// (RFC 9000 8.2.2 accepts a response matching any previously sent
+    /// challenge): the retry timeout starts at INITIAL_CHAL_TIMEOUT (25ms),
+    /// so on a path whose RTT exceeds the current window every response
+    /// arrives after its challenge expired and validation could otherwise
+    /// never complete.
+    stale_chals: VecDeque<([u8; 8], usize)>,
+
     /// Whether it requires sending PATH_CHALLENGE?
     need_send_challenge: bool,
 
@@ -143,6 +152,7 @@ impl Path {
             state,
             recv_chals: VecDeque::new(),
             sent_chals: VecDeque::new(),
+            stale_chals: VecDeque::new(),
             need_send_challenge: false,
             lost_chal: 0,
             max_challenge_size: 0,
@@ -192,7 +202,6 @@ impl Path {
         }
 
         self.verified_peer_address = true;
-        self.lost_chal = 0;
 
         // The 4-tuple is reachable, but we didn't check Path MTU yet.
         let mut challenge_size = 0;
@@ -209,6 +218,22 @@ impl Path {
                 true
             }
         });
+        // A response whose challenge already hit its retry timeout still
+        // proves the round trip — match against the expired challenges too,
+        // or a path whose RTT exceeds the retry window can never validate.
+        if challenge_size == 0 {
+            if let Some(pos) = self.stale_chals.iter().position(|(d, _)| *d == data) {
+                challenge_size = self.stale_chals[pos].1;
+                self.stale_chals.remove(pos);
+            }
+        }
+        // Reset the retry backoff only on a MATCHED response: resetting on a
+        // stale/unknown response restarts the backoff at INITIAL_CHAL_TIMEOUT
+        // every RTT, so the retry window could never grow past the path RTT
+        // and a high-RTT path would re-challenge forever without validating.
+        if challenge_size > 0 {
+            self.lost_chal = 0;
+        }
         self.max_challenge_size = std::cmp::max(self.max_challenge_size, challenge_size);
         self.promote_to(PathState::ValidatingMTU);
 
@@ -217,6 +242,7 @@ impl Path {
             self.promote_to(PathState::Validated);
             self.set_active(multipath);
             self.sent_chals.clear();
+            self.stale_chals.clear();
             return true;
         }
 
@@ -270,7 +296,13 @@ impl Path {
                 return;
             }
 
-            self.sent_chals.pop_front();
+            let (data, size, _, _) = self.sent_chals.pop_front().unwrap();
+            // Keep the expired data matchable: its response may still be in
+            // flight (the retry timeout can be far shorter than the path RTT).
+            if self.stale_chals.len() >= MAX_PATH_CHALS_RECV {
+                let _ = self.stale_chals.pop_front();
+            }
+            self.stale_chals.push_back((data, size));
             self.lost_chal += 1;
 
             if self.lost_chal < MAX_PROBING_TIMEOUTS {
@@ -281,6 +313,7 @@ impl Path {
                 self.state = PathState::Failed;
                 self.active = false;
                 self.sent_chals.clear();
+                self.stale_chals.clear();
                 return;
             }
         }
@@ -902,6 +935,54 @@ mod tests {
         assert_eq!(path_mgr.get_mut(pid)?.state, PathState::Failed);
         assert_eq!(path_mgr.get_mut(pid)?.active(), false);
         assert_eq!(path_mgr.get_mut(pid)?.lost_chal, MAX_PROBING_TIMEOUTS);
+
+        Ok(())
+    }
+
+    // High-RTT validation: the retry timeout (INITIAL_CHAL_TIMEOUT=25ms)
+    // expires long before a high-RTT path (e.g. 200ms) can echo the
+    // challenge. The late PATH_RESPONSE must still validate the path, and
+    // an unmatched response must NOT reset the retry backoff — otherwise
+    // every stale response restarts the backoff and the retry window can
+    // never grow past the path RTT (validation livelock: the path
+    // re-challenges forever, never becomes active, and in MPQUIC mode its
+    // packet number space is never acknowledged).
+    #[test]
+    fn path_chal_high_rtt_late_response() -> Result<()> {
+        let clients = vec![
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 9443),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 9444),
+        ];
+        let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 443);
+        let mut path_mgr = new_path_mgr(&clients, server_addr, 8, false)?;
+        let pid = path_mgr
+            .get_path_id(&(clients[1], server_addr))
+            .ok_or(Error::InternalError)?;
+
+        // Challenge sent, then its retry timer fires BEFORE the response
+        // can return (RTT >> INITIAL_CHAL_TIMEOUT).
+        let now = time::Instant::now();
+        let data1 = rand::random::<[u8; 8]>();
+        path_mgr.get_mut(pid)?.initiate_path_chal();
+        path_mgr.on_path_chal_sent(pid, data1, 1300, now)?;
+        path_mgr.on_path_chal_timeout(now + time::Duration::from_millis(INITIAL_CHAL_TIMEOUT + 1));
+        assert_eq!(path_mgr.get_mut(pid)?.sent_chals.len(), 0);
+        assert_eq!(path_mgr.get_mut(pid)?.lost_chal, 1);
+
+        // An unmatched (garbage) response must not reset the backoff.
+        let garbage = rand::random::<[u8; 8]>();
+        assert_eq!(path_mgr.on_path_resp_received(pid, garbage), false);
+        assert_eq!(path_mgr.get_mut(pid)?.lost_chal, 1);
+
+        // The retry goes out; the ORIGINAL response finally arrives one RTT
+        // after the original send — it must validate the path.
+        let data2 = rand::random::<[u8; 8]>();
+        path_mgr.on_path_chal_sent(pid, data2, 1300, now + time::Duration::from_millis(26))?;
+        assert_eq!(path_mgr.on_path_resp_received(pid, data1), true);
+        assert_eq!(path_mgr.get_mut(pid)?.state, PathState::Validated);
+        assert_eq!(path_mgr.get_mut(pid)?.lost_chal, 0);
+        assert_eq!(path_mgr.get_mut(pid)?.stale_chals.len(), 0);
+        assert_eq!(path_mgr.get_mut(pid)?.sent_chals.len(), 0);
 
         Ok(())
     }
