@@ -14,6 +14,9 @@
 
 //! HTTP/3 header compression (QPACK).
 
+use std::collections::HashMap;
+use std::collections::VecDeque;
+
 use log::trace;
 
 use crate::codec::Decoder;
@@ -24,6 +27,17 @@ use crate::h3::Header;
 use crate::h3::Http3Error;
 use crate::h3::NameValue;
 use crate::h3::Result;
+
+use self::dynamic_table::DynamicTable;
+
+// Encoder stream instructions (RFC 9204 Section 4.3).
+const INSERT_WITH_NAME_REF: u8 = 0b1000_0000;
+const INSERT_WITH_LITERAL_NAME: u8 = 0b0100_0000;
+const SET_DYNAMIC_TABLE_CAPACITY: u8 = 0b0010_0000;
+
+// Decoder stream instructions (RFC 9204 Section 4.4).
+const SECTION_ACKNOWLEDGMENT: u8 = 0b1000_0000;
+const STREAM_CANCELLATION: u8 = 0b0100_0000;
 
 /// An indexed field line representation starts with the '1' 1-bit pattern,
 /// followed by the 'T' bit, indicating whether the reference is into the
@@ -130,107 +144,539 @@ impl Representation {
     }
 }
 
+#[derive(Clone, Debug)]
+struct OutstandingSection {
+    required_insert_count: u64,
+    references: Vec<u64>,
+}
+
+#[derive(Clone, Debug)]
+enum PlannedField {
+    StaticIndexed(u64),
+    DynamicIndexed(u64),
+    StaticName {
+        index: u64,
+        value: Vec<u8>,
+        never_index: bool,
+    },
+    DynamicName {
+        absolute_index: u64,
+        value: Vec<u8>,
+        never_index: bool,
+    },
+    Literal {
+        name: Vec<u8>,
+        value: Vec<u8>,
+        never_index: bool,
+    },
+}
+
 /// A QPACK encoder.
-#[derive(Default)]
-pub struct QpackEncoder {}
+///
+/// The encoder deliberately references only entries covered by the Known
+/// Received Count. This conservative policy avoids creating blocked streams
+/// while still compressing repeated field lines after the decoder confirms an
+/// insertion.
+#[derive(Clone, Debug)]
+pub struct QpackEncoder {
+    table: DynamicTable,
+    known_received_count: u64,
+    pending_capacity: Option<u64>,
+    decoder_stream_buf: Vec<u8>,
+    outstanding: HashMap<u64, VecDeque<OutstandingSection>>,
+}
+
+impl Default for QpackEncoder {
+    fn default() -> Self {
+        Self {
+            table: DynamicTable::new(0),
+            known_received_count: 0,
+            pending_capacity: None,
+            decoder_stream_buf: Vec::new(),
+            outstanding: HashMap::new(),
+        }
+    }
+}
 
 impl QpackEncoder {
     pub fn new() -> QpackEncoder {
         QpackEncoder::default()
     }
 
-    /// Encode a list of headers into a QPACK field section.
-    pub fn encode<T: NameValue>(&mut self, headers: &[T], out: &mut [u8]) -> Result<usize> {
-        // Required Insert Count.
-        let mut off = encode_int(0, 0, 8, out)?;
-
-        // Base.
-        off += encode_int(0, 0, 7, &mut out[off..])?;
-
-        for hdr in headers {
-            match encode_static(hdr) {
-                // Encode as statically indexed.
-                Some((idx, true)) => {
-                    const STATIC: u8 = 0x40;
-                    off += encode_int(idx, INDEXED | STATIC, 6, &mut out[off..])?;
-                    trace!("QpackEncoder Indexed index={} static=true", idx);
-                }
-
-                // Encode value as literal with static name reference.
-                Some((idx, false)) => {
-                    const STATIC: u8 = 0x10;
-                    off += encode_int(idx, LITERAL_WITH_NAME_REF | STATIC, 4, &mut out[off..])?;
-                    off += self.encode_str(hdr.value(), 7, &mut out[off..])?;
-                    trace!(
-                        "QpackDecoder Literal with name refer name_idx={} static=true",
-                        idx
-                    );
-                }
-
-                // Encode as fully literal.
-                None => {
-                    let len = huffman::encode_output_length(hdr.name(), true);
-                    if len < hdr.name().len() {
-                        off += encode_int(len as u64, LITERAL | 0x08, 3, &mut out[off..])?;
-                        off += huffman::encode(hdr.name(), &mut out[off..], true)?;
-                    } else {
-                        off += encode_int(hdr.name().len() as u64, LITERAL, 3, &mut out[off..])?;
-                        let mut buf = &mut out[off..];
-                        off += buf.write(&hdr.name().to_ascii_lowercase())?;
-                    }
-                    off += self.encode_str(hdr.value(), 7, &mut out[off..])?;
-                    trace!(
-                        "QpackDecoder Literal name={:?} value={:?}",
-                        hdr.name(),
-                        hdr.value()
-                    );
-                }
-            };
+    /// Update the maximum capacity advertised by the peer. The matching Set
+    /// Dynamic Table Capacity instruction is emitted with the first insertion.
+    pub fn set_max_capacity(&mut self, capacity: u64) -> Result<()> {
+        self.table.set_max_capacity(capacity);
+        if !self
+            .table
+            .set_encoder_capacity(capacity, self.known_received_count)
+            .map_err(|_| Http3Error::QpackDecoderStreamError)?
+        {
+            return Err(Http3Error::QpackDecoderStreamError);
         }
-
-        Ok(off)
+        self.pending_capacity = (capacity > 0).then_some(capacity);
+        Ok(())
     }
 
-    /// Encode a string in huffman encoding or literal.
-    fn encode_str(&mut self, v: &[u8], prefix: usize, buf: &mut [u8]) -> Result<usize> {
-        let len = huffman::encode_output_length(v, false);
-        if len < v.len() {
-            let mut off = encode_int(len as u64, 0x80, prefix, buf)?;
-            off += huffman::encode(v, &mut buf[off..], false)?;
-            Ok(off)
-        } else {
-            let mut off = encode_int(v.len() as u64, 0, prefix, buf)?;
-            let mut buf = &mut buf[off..];
-            off += buf.write(v)?;
-            Ok(off)
+    /// Encode a list of headers into a QPACK field section without associating
+    /// the section with an HTTP stream. This preserves the original unit-level
+    /// API and uses the static table when no peer capacity has been configured.
+    pub fn encode<T: NameValue>(&mut self, headers: &[T], out: &mut [u8]) -> Result<usize> {
+        self.encode_transactional(None, headers, out)
+            .map(|(field_len, _)| field_len)
+    }
+
+    /// Encode a field section for an HTTP stream and return encoder-stream
+    /// instructions that must be written before the field section.
+    pub fn encode_for_stream<T: NameValue>(
+        &mut self,
+        stream_id: u64,
+        headers: &[T],
+        out: &mut [u8],
+    ) -> Result<(usize, Vec<u8>)> {
+        self.encode_transactional(Some(stream_id), headers, out)
+    }
+
+    fn encode_transactional<T: NameValue>(
+        &mut self,
+        stream_id: Option<u64>,
+        headers: &[T],
+        out: &mut [u8],
+    ) -> Result<(usize, Vec<u8>)> {
+        let mut next = self.clone();
+        let result = next.encode_inner(stream_id, headers, out)?;
+        *self = next;
+        Ok(result)
+    }
+
+    fn encode_inner<T: NameValue>(
+        &mut self,
+        stream_id: Option<u64>,
+        headers: &[T],
+        out: &mut [u8],
+    ) -> Result<(usize, Vec<u8>)> {
+        let allow_dynamic = stream_id.is_some();
+        let mut fields = Vec::with_capacity(headers.len());
+        let mut references = Vec::new();
+        let mut instructions = Vec::new();
+
+        for hdr in headers {
+            let never_index = is_sensitive(hdr.name());
+            let static_match = encode_static(hdr);
+
+            let field = if !never_index && matches!(static_match, Some((_, true))) {
+                PlannedField::StaticIndexed(static_match.unwrap().0)
+            } else if !never_index && allow_dynamic {
+                match self.table.find_exact(hdr.name(), hdr.value()) {
+                    Some(absolute_index) if absolute_index < self.known_received_count => {
+                        self.add_reference(absolute_index, &mut references)?;
+                        PlannedField::DynamicIndexed(absolute_index)
+                    }
+                    _ => self.plan_literal(
+                        hdr,
+                        static_match,
+                        never_index,
+                        allow_dynamic,
+                        &mut references,
+                    )?,
+                }
+            } else {
+                self.plan_literal(
+                    hdr,
+                    static_match,
+                    never_index,
+                    allow_dynamic,
+                    &mut references,
+                )?
+            };
+
+            if !never_index && allow_dynamic {
+                self.maybe_insert(hdr, &mut instructions)?;
+            }
+            fields.push(field);
         }
+
+        let required_insert_count = match references.iter().copied().max() {
+            Some(index) => index.checked_add(1).ok_or(Http3Error::InternalError)?,
+            None => 0,
+        };
+        let base = required_insert_count;
+        let encoded_insert_count =
+            encode_required_insert_count(required_insert_count, self.table.max_capacity())?;
+
+        let mut off = encode_int(encoded_insert_count, 0, 8, out)?;
+        off += encode_int(0, 0, 7, &mut out[off..])?;
+
+        for field in fields {
+            match field {
+                PlannedField::StaticIndexed(index) => {
+                    const STATIC: u8 = 0x40;
+                    off += encode_int(index, INDEXED | STATIC, 6, &mut out[off..])?;
+                    trace!("QpackEncoder Indexed index={} static=true", index);
+                }
+                PlannedField::DynamicIndexed(absolute_index) => {
+                    let relative = absolute_index
+                        .checked_add(1)
+                        .ok_or(Http3Error::InternalError)?;
+                    let index = base
+                        .checked_sub(relative)
+                        .ok_or(Http3Error::InternalError)?;
+                    off += encode_int(index, INDEXED, 6, &mut out[off..])?;
+                    trace!("QpackEncoder Indexed index={} static=false", index);
+                }
+                PlannedField::StaticName {
+                    index,
+                    value,
+                    never_index,
+                } => {
+                    const STATIC: u8 = 0x10;
+                    let first = LITERAL_WITH_NAME_REF | STATIC | if never_index { 0x20 } else { 0 };
+                    off += encode_int(index, first, 4, &mut out[off..])?;
+                    off += encode_string(&value, 0, 7, false, &mut out[off..])?;
+                }
+                PlannedField::DynamicName {
+                    absolute_index,
+                    value,
+                    never_index,
+                } => {
+                    let relative = absolute_index
+                        .checked_add(1)
+                        .ok_or(Http3Error::InternalError)?;
+                    let index = base
+                        .checked_sub(relative)
+                        .ok_or(Http3Error::InternalError)?;
+                    let first = LITERAL_WITH_NAME_REF | if never_index { 0x20 } else { 0 };
+                    off += encode_int(index, first, 4, &mut out[off..])?;
+                    off += encode_string(&value, 0, 7, false, &mut out[off..])?;
+                }
+                PlannedField::Literal {
+                    name,
+                    value,
+                    never_index,
+                } => {
+                    let first = LITERAL | if never_index { 0x10 } else { 0 };
+                    off += encode_string(&name, first, 3, true, &mut out[off..])?;
+                    off += encode_string(&value, 0, 7, false, &mut out[off..])?;
+                }
+            }
+        }
+
+        if let (Some(stream_id), false) = (stream_id, references.is_empty()) {
+            self.outstanding
+                .entry(stream_id)
+                .or_default()
+                .push_back(OutstandingSection {
+                    required_insert_count,
+                    references,
+                });
+        }
+
+        Ok((off, instructions))
+    }
+
+    fn plan_literal<T: NameValue>(
+        &mut self,
+        hdr: &T,
+        static_match: Option<(u64, bool)>,
+        never_index: bool,
+        allow_dynamic: bool,
+        references: &mut Vec<u64>,
+    ) -> Result<PlannedField> {
+        if let Some((index, _)) = static_match {
+            return Ok(PlannedField::StaticName {
+                index,
+                value: hdr.value().to_vec(),
+                never_index,
+            });
+        }
+
+        if !never_index && allow_dynamic {
+            if let Some(absolute_index) = self.table.find_name(hdr.name()) {
+                if absolute_index < self.known_received_count {
+                    self.add_reference(absolute_index, references)?;
+                    return Ok(PlannedField::DynamicName {
+                        absolute_index,
+                        value: hdr.value().to_vec(),
+                        never_index,
+                    });
+                }
+            }
+        }
+
+        Ok(PlannedField::Literal {
+            name: hdr.name().to_ascii_lowercase(),
+            value: hdr.value().to_vec(),
+            never_index,
+        })
+    }
+
+    fn add_reference(&mut self, absolute_index: u64, references: &mut Vec<u64>) -> Result<()> {
+        self.table
+            .add_reference(absolute_index)
+            .map_err(|_| Http3Error::InternalError)?;
+        references.push(absolute_index);
+        Ok(())
+    }
+
+    fn maybe_insert<T: NameValue>(&mut self, hdr: &T, instructions: &mut Vec<u8>) -> Result<()> {
+        if self.table.capacity() == 0
+            || matches!(encode_static(hdr), Some((_, true)))
+            || self.table.find_exact(hdr.name(), hdr.value()).is_some()
+        {
+            return Ok(());
+        }
+
+        let static_name = encode_static(hdr).map(|(index, _)| index);
+        let dynamic_name = self.table.find_name(hdr.name()).map(|absolute_index| {
+            (
+                absolute_index,
+                self.table.insert_count() - absolute_index - 1,
+            )
+        });
+        let name = hdr.name().to_ascii_lowercase();
+        let value = hdr.value().to_vec();
+
+        let inserted = self
+            .table
+            .try_insert_encoder(name.clone(), value.clone(), self.known_received_count)
+            .map_err(|_| Http3Error::InternalError)?;
+        if inserted.is_none() {
+            return Ok(());
+        }
+
+        if let Some(capacity) = self.pending_capacity.take() {
+            append_int(instructions, capacity, SET_DYNAMIC_TABLE_CAPACITY, 5)?;
+        }
+
+        if let Some(index) = static_name {
+            append_int(instructions, index, INSERT_WITH_NAME_REF | 0x40, 6)?;
+            append_string(instructions, &value, 0, 7, false)?;
+        } else if let Some((_, relative_index)) = dynamic_name {
+            append_int(instructions, relative_index, INSERT_WITH_NAME_REF, 6)?;
+            append_string(instructions, &value, 0, 7, false)?;
+        } else {
+            append_string(instructions, &name, INSERT_WITH_LITERAL_NAME, 5, true)?;
+            append_string(instructions, &value, 0, 7, false)?;
+        }
+
+        Ok(())
+    }
+
+    /// Process decoder-stream acknowledgments and insert-count updates.
+    pub fn process_decoder_instructions(&mut self, data: &[u8]) -> Result<()> {
+        self.decoder_stream_buf.extend_from_slice(data);
+
+        let mut consumed = 0;
+        while consumed < self.decoder_stream_buf.len() {
+            let buf = &self.decoder_stream_buf[consumed..];
+            let first = buf[0];
+            let (value, len) = if first & SECTION_ACKNOWLEDGMENT != 0 {
+                match decode_int_partial(buf, 7).map_err(|_| Http3Error::QpackDecoderStreamError)? {
+                    Some(v) => v,
+                    None => break,
+                }
+            } else {
+                match decode_int_partial(buf, 6).map_err(|_| Http3Error::QpackDecoderStreamError)? {
+                    Some(v) => v,
+                    None => break,
+                }
+            };
+
+            if first & SECTION_ACKNOWLEDGMENT != 0 {
+                self.acknowledge_section(value)?;
+            } else if first & 0xc0 == STREAM_CANCELLATION {
+                self.cancel_stream(value)?;
+            } else {
+                self.increment_known_received(value)?;
+            }
+            consumed += len;
+        }
+
+        self.decoder_stream_buf.drain(..consumed);
+        Ok(())
+    }
+
+    fn acknowledge_section(&mut self, stream_id: u64) -> Result<()> {
+        let section = {
+            let sections = self
+                .outstanding
+                .get_mut(&stream_id)
+                .ok_or(Http3Error::QpackDecoderStreamError)?;
+            sections
+                .pop_front()
+                .ok_or(Http3Error::QpackDecoderStreamError)?
+        };
+        if self
+            .outstanding
+            .get(&stream_id)
+            .is_some_and(VecDeque::is_empty)
+        {
+            self.outstanding.remove(&stream_id);
+        }
+
+        self.known_received_count = self.known_received_count.max(section.required_insert_count);
+        self.release_references(section.references)
+    }
+
+    fn cancel_stream(&mut self, stream_id: u64) -> Result<()> {
+        let Some(sections) = self.outstanding.remove(&stream_id) else {
+            return Ok(());
+        };
+        for section in sections {
+            self.release_references(section.references)?;
+        }
+        Ok(())
+    }
+
+    fn increment_known_received(&mut self, increment: u64) -> Result<()> {
+        let known_received_count = self
+            .known_received_count
+            .checked_add(increment)
+            .ok_or(Http3Error::QpackDecoderStreamError)?;
+        if increment == 0 || known_received_count > self.table.insert_count() {
+            return Err(Http3Error::QpackDecoderStreamError);
+        }
+        self.known_received_count = known_received_count;
+        Ok(())
+    }
+
+    fn release_references(&mut self, references: Vec<u64>) -> Result<()> {
+        for absolute_index in references {
+            self.table
+                .release_reference(absolute_index)
+                .map_err(|_| Http3Error::QpackDecoderStreamError)?;
+        }
+        Ok(())
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum DecodeStatus {
+    Decoded {
+        headers: Vec<Header>,
+        consumed: usize,
+        decoder_instructions: Vec<u8>,
+    },
+    Blocked {
+        required_insert_count: u64,
+    },
+}
+
+#[derive(Debug)]
+enum EncoderInstruction {
+    SetCapacity(u64),
+    InsertWithNameReference {
+        static_table: bool,
+        index: u64,
+        value: Vec<u8>,
+    },
+    InsertWithLiteralName {
+        name: Vec<u8>,
+        value: Vec<u8>,
+    },
+    Duplicate(u64),
+}
+
 /// A QPACK decoder.
-#[derive(Default)]
-pub struct QpackDecoder {}
+#[derive(Debug)]
+pub struct QpackDecoder {
+    table: DynamicTable,
+    encoder_stream_buf: Vec<u8>,
+    reported_insert_count: u64,
+}
+
+impl Default for QpackDecoder {
+    fn default() -> Self {
+        Self::with_max_capacity(0)
+    }
+}
 
 impl QpackDecoder {
     pub fn new() -> QpackDecoder {
         QpackDecoder::default()
     }
 
+    pub fn with_max_capacity(max_capacity: u64) -> QpackDecoder {
+        QpackDecoder {
+            table: DynamicTable::new(max_capacity),
+            encoder_stream_buf: Vec::new(),
+            reported_insert_count: 0,
+        }
+    }
+
+    pub fn insert_count(&self) -> u64 {
+        self.table.insert_count()
+    }
+
+    pub fn stream_cancellation(&self, stream_id: u64) -> Result<Vec<u8>> {
+        if self.table.max_capacity() == 0 {
+            return Ok(Vec::new());
+        }
+        let mut instruction = Vec::new();
+        append_int(&mut instruction, stream_id, STREAM_CANCELLATION, 6)?;
+        Ok(instruction)
+    }
+
     /// Decode a QPACK header block into a list of headers.
-    pub fn decode(&mut self, mut buf: &[u8], max_size: u64) -> Result<(Vec<Header>, usize)> {
+    pub fn decode(&mut self, buf: &[u8], max_size: u64) -> Result<(Vec<Header>, usize)> {
+        match self.decode_field_section(0, buf, max_size)? {
+            DecodeStatus::Decoded {
+                headers, consumed, ..
+            } => Ok((headers, consumed)),
+            DecodeStatus::Blocked { .. } => Err(Http3Error::Done),
+        }
+    }
+
+    pub fn decode_field_section(
+        &mut self,
+        stream_id: u64,
+        mut buf: &[u8],
+        max_size: u64,
+    ) -> Result<DecodeStatus> {
         let buf_len = buf.len();
         let mut out = Vec::new();
         let mut left = max_size;
+        let mut largest_reference = None;
 
-        let (req_insert_count, off) = decode_int(buf, 8)?;
+        let (encoded_insert_count, off) = decode_int(buf, 8)?;
         buf = &buf[off..];
-        let (base, off) = decode_int(buf, 7)?;
+
+        if buf.is_empty() {
+            return Err(Http3Error::QpackDecompressionFailed);
+        }
+        let sign = buf[0] & 0x80 != 0;
+        let (delta_base, off) = decode_int(buf, 7)?;
         buf = &buf[off..];
+
+        let required_insert_count = decode_required_insert_count(
+            encoded_insert_count,
+            self.table.insert_count(),
+            self.table.max_capacity(),
+        )?;
+        let base = if sign {
+            let delta_base = delta_base
+                .checked_add(1)
+                .ok_or(Http3Error::QpackDecompressionFailed)?;
+            required_insert_count
+                .checked_sub(delta_base)
+                .ok_or(Http3Error::QpackDecompressionFailed)?
+        } else {
+            required_insert_count
+                .checked_add(delta_base)
+                .ok_or(Http3Error::QpackDecompressionFailed)?
+        };
+
         trace!(
             "QpackDecoder Header count={} base={}",
-            req_insert_count,
+            required_insert_count,
             base
         );
+
+        if required_insert_count > self.table.insert_count() {
+            return Ok(DecodeStatus::Blocked {
+                required_insert_count,
+            });
+        }
 
         while !buf.is_empty() {
             let first = buf[0];
@@ -241,24 +687,36 @@ impl QpackDecoder {
                     let (index, off) = decode_int(buf, 6)?;
                     buf = &buf[off..];
 
-                    trace!("QpackDecoder Indexed index={} static={}", index, static_idx);
-                    if !static_idx {
-                        // TODO: implement dynamic table
-                        return Err(Http3Error::QpackDecompressionFailed);
-                    }
+                    let (name, value) = if static_idx {
+                        let (name, value) = decode_static(index)?;
+                        (name.to_vec(), value.to_vec())
+                    } else {
+                        let absolute_index = relative_absolute(base, index, required_insert_count)?;
+                        update_largest_reference(&mut largest_reference, absolute_index);
+                        let entry = self
+                            .table
+                            .get_absolute(absolute_index)
+                            .ok_or(Http3Error::QpackDecompressionFailed)?;
+                        (entry.name.clone(), entry.value.clone())
+                    };
 
-                    let (name, value) = decode_static(index)?;
-                    left = left
-                        .checked_sub((name.len() + value.len() + 32) as u64)
-                        .ok_or(Http3Error::QpackDecompressionFailed)?;
-                    out.push(Header(name.to_vec(), value.to_vec()));
+                    charge_field(&mut left, &name, &value)?;
+                    out.push(Header(name, value));
                 }
 
                 Representation::IndexedWithPostBase => {
-                    let (index, _) = decode_int(buf, 4)?;
-                    trace!("QpackDecoder Indexed With Post Base index={}", index);
-                    // TODO: implement dynamic table
-                    return Err(Http3Error::QpackDecompressionFailed);
+                    let (index, off) = decode_int(buf, 4)?;
+                    buf = &buf[off..];
+                    let absolute_index = post_base_absolute(base, index, required_insert_count)?;
+                    update_largest_reference(&mut largest_reference, absolute_index);
+                    let entry = self
+                        .table
+                        .get_absolute(absolute_index)
+                        .ok_or(Http3Error::QpackDecompressionFailed)?;
+                    let name = entry.name.clone();
+                    let value = entry.value.clone();
+                    charge_field(&mut left, &name, &value)?;
+                    out.push(Header(name, value));
                 }
 
                 Representation::LiteralWithNameRef => {
@@ -268,29 +726,39 @@ impl QpackDecoder {
                     buf = &buf[off..];
                     let (value, off) = self.decode_str(buf)?;
                     buf = &buf[off..];
-                    trace!(
-                        "QpackDecoder Literal With Name refer name_idx={} static={} value={:?}",
-                        name_idx,
-                        static_idx,
-                        value
-                    );
 
-                    if !static_idx {
-                        // TODO: implement dynamic table
-                        return Err(Http3Error::QpackDecompressionFailed);
-                    }
+                    let name = if static_idx {
+                        decode_static(name_idx)?.0.to_vec()
+                    } else {
+                        let absolute_index =
+                            relative_absolute(base, name_idx, required_insert_count)?;
+                        update_largest_reference(&mut largest_reference, absolute_index);
+                        self.table
+                            .get_absolute(absolute_index)
+                            .ok_or(Http3Error::QpackDecompressionFailed)?
+                            .name
+                            .clone()
+                    };
 
-                    let (name, _) = decode_static(name_idx)?;
-                    left = left
-                        .checked_sub((name.len() + value.len() + 32) as u64)
-                        .ok_or(Http3Error::QpackDecompressionFailed)?;
-                    out.push(Header(name.to_vec(), value));
+                    charge_field(&mut left, &name, &value)?;
+                    out.push(Header(name, value));
                 }
 
                 Representation::LiteralWithPostBase => {
-                    trace!("QpackDecoder Literal With Post Base");
-                    // TODO: implement dynamic table
-                    return Err(Http3Error::QpackDecompressionFailed);
+                    let (name_idx, off) = decode_int(buf, 3)?;
+                    buf = &buf[off..];
+                    let (value, off) = self.decode_str(buf)?;
+                    buf = &buf[off..];
+                    let absolute_index = post_base_absolute(base, name_idx, required_insert_count)?;
+                    update_largest_reference(&mut largest_reference, absolute_index);
+                    let name = self
+                        .table
+                        .get_absolute(absolute_index)
+                        .ok_or(Http3Error::QpackDecompressionFailed)?
+                        .name
+                        .clone();
+                    charge_field(&mut left, &name, &value)?;
+                    out.push(Header(name, value));
                 }
 
                 Representation::Literal => {
@@ -304,49 +772,388 @@ impl QpackDecoder {
                     } else {
                         name.to_vec()
                     };
-
-                    let name = name.to_vec();
                     let (value, off) = self.decode_str(buf)?;
                     buf = &buf[off..];
-                    trace!("QpackDecoder Literal name={:?} value={:?}", name, value);
 
-                    left = left
-                        .checked_sub((name.len() + value.len() + 32) as u64)
-                        .ok_or(Http3Error::QpackDecompressionFailed)?;
+                    charge_field(&mut left, &name, &value)?;
                     out.push(Header(name, value));
                 }
             }
         }
 
-        Ok((out, buf_len - buf.len()))
-    }
-
-    /// Decode a string in huffman encoding or literal.
-    fn decode_str(&self, mut buf: &[u8]) -> Result<(Vec<u8>, usize)> {
-        if buf.is_empty() {
+        let expected_required_insert_count = match largest_reference {
+            Some(index) => index
+                .checked_add(1)
+                .ok_or(Http3Error::QpackDecompressionFailed)?,
+            None => 0,
+        };
+        if expected_required_insert_count != required_insert_count {
             return Err(Http3Error::QpackDecompressionFailed);
         }
 
-        let buf_len = buf.len();
-        let huff = buf[0] & 0x80 == 0x80;
-        let (str_len, off) = decode_int(buf, 7)?;
-        buf = &buf[off..];
+        let mut decoder_instructions = Vec::new();
+        if required_insert_count != 0 {
+            append_int(
+                &mut decoder_instructions,
+                stream_id,
+                SECTION_ACKNOWLEDGMENT,
+                7,
+            )?;
+        }
 
-        let str_val = buf.read(str_len as usize)?;
-        let val = if huff {
-            huffman::decode(&str_val)?
+        Ok(DecodeStatus::Decoded {
+            headers: out,
+            consumed: buf_len - buf.len(),
+            decoder_instructions,
+        })
+    }
+
+    /// Decode a string in Huffman encoding or literal form.
+    fn decode_str(&self, buf: &[u8]) -> Result<(Vec<u8>, usize)> {
+        decode_string_partial(buf, 7)?.ok_or(Http3Error::QpackDecompressionFailed)
+    }
+
+    /// Process control instructions from the encoder and return decoder-stream
+    /// Insert Count Increment feedback.
+    pub fn process_encoder_instructions(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        self.encoder_stream_buf.extend_from_slice(data);
+
+        let mut consumed = 0;
+        while consumed < self.encoder_stream_buf.len() {
+            let Some((instruction, len)) =
+                parse_encoder_instruction(&self.encoder_stream_buf[consumed..])
+                    .map_err(|_| Http3Error::QpackEncoderStreamError)?
+            else {
+                break;
+            };
+            self.apply_encoder_instruction(instruction)?;
+            consumed += len;
+        }
+        self.encoder_stream_buf.drain(..consumed);
+
+        let mut feedback = Vec::new();
+        let increment = self.table.insert_count() - self.reported_insert_count;
+        if increment != 0 {
+            append_int(&mut feedback, increment, 0, 6)
+                .map_err(|_| Http3Error::QpackEncoderStreamError)?;
+            self.reported_insert_count = self.table.insert_count();
+        }
+        Ok(feedback)
+    }
+
+    fn apply_encoder_instruction(&mut self, instruction: EncoderInstruction) -> Result<()> {
+        match instruction {
+            EncoderInstruction::SetCapacity(capacity) => self
+                .table
+                .set_capacity(capacity)
+                .map_err(|_| Http3Error::QpackEncoderStreamError),
+            EncoderInstruction::InsertWithNameReference {
+                static_table,
+                index,
+                value,
+            } => {
+                let name = if static_table {
+                    decode_static(index)
+                        .map_err(|_| Http3Error::QpackEncoderStreamError)?
+                        .0
+                        .to_vec()
+                } else {
+                    self.table
+                        .get_relative(index)
+                        .ok_or(Http3Error::QpackEncoderStreamError)?
+                        .name
+                        .clone()
+                };
+                self.table
+                    .insert(name, value)
+                    .map(|_| ())
+                    .map_err(|_| Http3Error::QpackEncoderStreamError)
+            }
+            EncoderInstruction::InsertWithLiteralName { name, value } => self
+                .table
+                .insert(name, value)
+                .map(|_| ())
+                .map_err(|_| Http3Error::QpackEncoderStreamError),
+            EncoderInstruction::Duplicate(index) => {
+                let entry = self
+                    .table
+                    .get_relative(index)
+                    .ok_or(Http3Error::QpackEncoderStreamError)?;
+                let name = entry.name.clone();
+                let value = entry.value.clone();
+                self.table
+                    .insert(name, value)
+                    .map(|_| ())
+                    .map_err(|_| Http3Error::QpackEncoderStreamError)
+            }
+        }
+    }
+
+    /// Backwards-compatible control-stream entry point.
+    pub fn process(&mut self, buf: &mut [u8]) -> Result<()> {
+        self.process_encoder_instructions(buf).map(|_| ())
+    }
+}
+
+fn is_sensitive(name: &[u8]) -> bool {
+    [
+        b"authorization".as_slice(),
+        b"proxy-authorization".as_slice(),
+        b"cookie".as_slice(),
+        b"set-cookie".as_slice(),
+    ]
+    .iter()
+    .any(|sensitive| name.eq_ignore_ascii_case(sensitive))
+}
+
+fn encode_string(
+    value: &[u8],
+    first: u8,
+    prefix: usize,
+    lower_case: bool,
+    out: &mut [u8],
+) -> Result<usize> {
+    let huffman_len = huffman::encode_output_length(value, lower_case);
+    if huffman_len < value.len() {
+        let huffman_bit = 1u8
+            .checked_shl(prefix as u32)
+            .ok_or(Http3Error::InternalError)?;
+        let mut off = encode_int(huffman_len as u64, first | huffman_bit, prefix, out)?;
+        off += huffman::encode(value, &mut out[off..], lower_case)?;
+        Ok(off)
+    } else {
+        let encoded = if lower_case {
+            value.to_ascii_lowercase()
         } else {
-            str_val.to_vec()
+            value.to_vec()
         };
+        let mut off = encode_int(encoded.len() as u64, first, prefix, out)?;
+        let mut buf = &mut out[off..];
+        off += buf.write(&encoded)?;
+        Ok(off)
+    }
+}
 
-        Ok((val, buf_len - buf.len()))
+fn append_int(out: &mut Vec<u8>, value: u64, first: u8, prefix: usize) -> Result<()> {
+    let mut buf = [0; 16];
+    let len = encode_int(value, first, prefix, &mut buf)?;
+    out.extend_from_slice(&buf[..len]);
+    Ok(())
+}
+
+fn append_string(
+    out: &mut Vec<u8>,
+    value: &[u8],
+    first: u8,
+    prefix: usize,
+    lower_case: bool,
+) -> Result<()> {
+    let mut buf = vec![0; value.len() + 32];
+    let len = encode_string(value, first, prefix, lower_case, &mut buf)?;
+    out.extend_from_slice(&buf[..len]);
+    Ok(())
+}
+
+fn decode_int_partial(buf: &[u8], prefix: usize) -> Result<Option<(u64, usize)>> {
+    if buf.is_empty() {
+        return Ok(None);
     }
 
-    /// Process control instructions from the encoder.
-    pub fn process(&mut self, _buf: &mut [u8]) -> Result<()> {
-        // TODO: support instructions
-        Ok(())
+    let mask = 2u64
+        .checked_pow(prefix as u32)
+        .and_then(|value| value.checked_sub(1))
+        .ok_or(Http3Error::QpackDecompressionFailed)?;
+    let mut value = u64::from(buf[0]) & mask;
+    if value < mask {
+        return Ok(Some((value, 1)));
     }
+
+    let mut shift = 0;
+    for (offset, byte) in buf[1..].iter().copied().enumerate() {
+        if shift >= 62 {
+            return Err(Http3Error::QpackDecompressionFailed);
+        }
+        let increment = u64::from(byte & 0x7f)
+            .checked_shl(shift)
+            .ok_or(Http3Error::QpackDecompressionFailed)?;
+        value = value
+            .checked_add(increment)
+            .filter(|value| *value <= MAX_QPACK_INT)
+            .ok_or(Http3Error::QpackDecompressionFailed)?;
+        if byte & 0x80 == 0 {
+            return Ok(Some((value, offset + 2)));
+        }
+        shift += 7;
+    }
+
+    Ok(None)
+}
+
+fn decode_string_partial(buf: &[u8], prefix: usize) -> Result<Option<(Vec<u8>, usize)>> {
+    if buf.is_empty() {
+        return Ok(None);
+    }
+
+    let huffman_bit = 1u8
+        .checked_shl(prefix as u32)
+        .ok_or(Http3Error::QpackDecompressionFailed)?;
+    let huffman_encoded = buf[0] & huffman_bit != 0;
+    let Some((length, prefix_len)) = decode_int_partial(buf, prefix)? else {
+        return Ok(None);
+    };
+    let length = usize::try_from(length).map_err(|_| Http3Error::QpackDecompressionFailed)?;
+    let end = prefix_len
+        .checked_add(length)
+        .ok_or(Http3Error::QpackDecompressionFailed)?;
+    if buf.len() < end {
+        return Ok(None);
+    }
+
+    let encoded = &buf[prefix_len..end];
+    let value = if huffman_encoded {
+        huffman::decode(encoded)?
+    } else {
+        encoded.to_vec()
+    };
+    Ok(Some((value, end)))
+}
+
+fn encode_required_insert_count(required_insert_count: u64, max_capacity: u64) -> Result<u64> {
+    if required_insert_count == 0 {
+        return Ok(0);
+    }
+
+    let max_entries = max_capacity / 32;
+    let full_range = max_entries
+        .checked_mul(2)
+        .filter(|value| *value != 0)
+        .ok_or(Http3Error::InternalError)?;
+    Ok(required_insert_count % full_range + 1)
+}
+
+fn decode_required_insert_count(
+    encoded_insert_count: u64,
+    total_insert_count: u64,
+    max_capacity: u64,
+) -> Result<u64> {
+    if encoded_insert_count == 0 {
+        return Ok(0);
+    }
+
+    let max_entries = max_capacity / 32;
+    let full_range = max_entries
+        .checked_mul(2)
+        .filter(|value| *value != 0)
+        .ok_or(Http3Error::QpackDecompressionFailed)?;
+    if encoded_insert_count > full_range {
+        return Err(Http3Error::QpackDecompressionFailed);
+    }
+
+    let max_value = total_insert_count
+        .checked_add(max_entries)
+        .ok_or(Http3Error::QpackDecompressionFailed)?;
+    let max_wrapped = max_value / full_range * full_range;
+    let mut required_insert_count = max_wrapped
+        .checked_add(encoded_insert_count - 1)
+        .ok_or(Http3Error::QpackDecompressionFailed)?;
+    if required_insert_count > max_value {
+        if required_insert_count <= full_range {
+            return Err(Http3Error::QpackDecompressionFailed);
+        }
+        required_insert_count -= full_range;
+    }
+    if required_insert_count == 0 {
+        return Err(Http3Error::QpackDecompressionFailed);
+    }
+    Ok(required_insert_count)
+}
+
+fn parse_encoder_instruction(buf: &[u8]) -> Result<Option<(EncoderInstruction, usize)>> {
+    if buf.is_empty() {
+        return Ok(None);
+    }
+
+    let first = buf[0];
+    if first & INSERT_WITH_NAME_REF != 0 {
+        let Some((index, prefix_len)) = decode_int_partial(buf, 6)? else {
+            return Ok(None);
+        };
+        let Some((value, value_len)) = decode_string_partial(&buf[prefix_len..], 7)? else {
+            return Ok(None);
+        };
+        return Ok(Some((
+            EncoderInstruction::InsertWithNameReference {
+                static_table: first & 0x40 != 0,
+                index,
+                value,
+            },
+            prefix_len + value_len,
+        )));
+    }
+
+    if first & 0xc0 == INSERT_WITH_LITERAL_NAME {
+        let Some((name, name_len)) = decode_string_partial(buf, 5)? else {
+            return Ok(None);
+        };
+        let Some((value, value_len)) = decode_string_partial(&buf[name_len..], 7)? else {
+            return Ok(None);
+        };
+        return Ok(Some((
+            EncoderInstruction::InsertWithLiteralName { name, value },
+            name_len + value_len,
+        )));
+    }
+
+    if first & 0xe0 == SET_DYNAMIC_TABLE_CAPACITY {
+        let Some((capacity, len)) = decode_int_partial(buf, 5)? else {
+            return Ok(None);
+        };
+        return Ok(Some((EncoderInstruction::SetCapacity(capacity), len)));
+    }
+
+    let Some((index, len)) = decode_int_partial(buf, 5)? else {
+        return Ok(None);
+    };
+    Ok(Some((EncoderInstruction::Duplicate(index), len)))
+}
+
+fn relative_absolute(base: u64, index: u64, required_insert_count: u64) -> Result<u64> {
+    let relative = index
+        .checked_add(1)
+        .ok_or(Http3Error::QpackDecompressionFailed)?;
+    let absolute_index = base
+        .checked_sub(relative)
+        .ok_or(Http3Error::QpackDecompressionFailed)?;
+    if absolute_index >= required_insert_count {
+        return Err(Http3Error::QpackDecompressionFailed);
+    }
+    Ok(absolute_index)
+}
+
+fn post_base_absolute(base: u64, index: u64, required_insert_count: u64) -> Result<u64> {
+    let absolute_index = base
+        .checked_add(index)
+        .ok_or(Http3Error::QpackDecompressionFailed)?;
+    if absolute_index >= required_insert_count {
+        return Err(Http3Error::QpackDecompressionFailed);
+    }
+    Ok(absolute_index)
+}
+
+fn update_largest_reference(largest_reference: &mut Option<u64>, absolute_index: u64) {
+    *largest_reference =
+        Some(largest_reference.map_or(absolute_index, |current| current.max(absolute_index)));
+}
+
+fn charge_field(left: &mut u64, name: &[u8], value: &[u8]) -> Result<()> {
+    let field_size = (name.len() as u64)
+        .checked_add(value.len() as u64)
+        .and_then(|size| size.checked_add(32))
+        .ok_or(Http3Error::QpackDecompressionFailed)?;
+    *left = left
+        .checked_sub(field_size)
+        .ok_or(Http3Error::QpackDecompressionFailed)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -563,8 +1370,267 @@ mod tests {
         let mut dec = QpackDecoder::new();
         assert!(dec.decode(&buf, 1024 * 16).is_err());
     }
+
+    #[test]
+    fn rfc9204_appendix_b_dynamic_table() {
+        let encoder_instructions =
+            hex::decode("3fbd01c00f7777772e6578616d706c652e636f6dc10c2f73616d706c652f70617468")
+                .unwrap();
+        let field_section = hex::decode("03811011").unwrap();
+
+        let mut decoder = QpackDecoder::with_max_capacity(220);
+        assert_eq!(
+            decoder
+                .process_encoder_instructions(&encoder_instructions)
+                .unwrap(),
+            vec![0x02]
+        );
+
+        let status = decoder
+            .decode_field_section(4, &field_section, u64::MAX)
+            .unwrap();
+        assert_eq!(
+            status,
+            DecodeStatus::Decoded {
+                headers: vec![
+                    Header::new(b":authority", b"www.example.com"),
+                    Header::new(b":path", b"/sample/path"),
+                ],
+                consumed: field_section.len(),
+                decoder_instructions: vec![0x84],
+            }
+        );
+
+        // Appendix B.3: speculative insertion with a literal name.
+        let speculative_insert =
+            hex::decode("4a637573746f6d2d6b65790c637573746f6d2d76616c7565").unwrap();
+        assert_eq!(
+            decoder
+                .process_encoder_instructions(&speculative_insert)
+                .unwrap(),
+            vec![0x01]
+        );
+
+        // Appendix B.4: the field section blocks until the delayed Duplicate
+        // arrives, and can be canceled while it is blocked.
+        let blocked_field_section = hex::decode("050080c181").unwrap();
+        assert_eq!(
+            decoder
+                .decode_field_section(8, &blocked_field_section, u64::MAX)
+                .unwrap(),
+            DecodeStatus::Blocked {
+                required_insert_count: 4,
+            }
+        );
+        assert_eq!(decoder.stream_cancellation(8).unwrap(), vec![0x48]);
+        assert_eq!(
+            decoder.process_encoder_instructions(&[0x02]).unwrap(),
+            vec![0x01]
+        );
+        assert_eq!(
+            decoder
+                .decode_field_section(8, &blocked_field_section, u64::MAX)
+                .unwrap(),
+            DecodeStatus::Decoded {
+                headers: vec![
+                    Header::new(b":authority", b"www.example.com"),
+                    Header::new(b":path", b"/"),
+                    Header::new(b"custom-key", b"custom-value"),
+                ],
+                consumed: blocked_field_section.len(),
+                decoder_instructions: vec![0x88],
+            }
+        );
+
+        // Appendix B.5: an insertion using a dynamic name reference evicts
+        // the oldest entry while absolute indices remain stable.
+        let insert_with_dynamic_name = hex::decode("810d637573746f6d2d76616c756532").unwrap();
+        assert_eq!(
+            decoder
+                .process_encoder_instructions(&insert_with_dynamic_name)
+                .unwrap(),
+            vec![0x01]
+        );
+        assert_eq!(decoder.insert_count(), 5);
+        assert!(decoder.table.get_absolute(0).is_none());
+        assert_eq!(decoder.table.get_absolute(4).unwrap().name, b"custom-key");
+        assert_eq!(
+            decoder.table.get_absolute(4).unwrap().value,
+            b"custom-value2"
+        );
+    }
+
+    #[test]
+    fn dynamic_table_encoder_round_trip() {
+        let headers = vec![Header::new(b"x-foo", b"bar")];
+        let mut encoder = QpackEncoder::new();
+        encoder.set_max_capacity(256).unwrap();
+        let mut decoder = QpackDecoder::with_max_capacity(256);
+        let mut field_section = [0; 128];
+
+        let (first_len, encoder_instructions) = encoder
+            .encode_for_stream(0, &headers, &mut field_section)
+            .unwrap();
+        assert!(!encoder_instructions.is_empty());
+        let feedback = decoder
+            .process_encoder_instructions(&encoder_instructions)
+            .unwrap();
+        assert_eq!(feedback, vec![0x01]);
+        assert_eq!(
+            decoder
+                .decode(&field_section[..first_len], u64::MAX)
+                .unwrap()
+                .0,
+            headers
+        );
+
+        encoder.process_decoder_instructions(&feedback).unwrap();
+        let (second_len, encoder_instructions) = encoder
+            .encode_for_stream(0, &headers, &mut field_section)
+            .unwrap();
+        assert!(encoder_instructions.is_empty());
+        assert!(second_len < first_len);
+
+        let status = decoder
+            .decode_field_section(0, &field_section[..second_len], u64::MAX)
+            .unwrap();
+        assert_eq!(
+            status,
+            DecodeStatus::Decoded {
+                headers,
+                consumed: second_len,
+                decoder_instructions: vec![0x80],
+            }
+        );
+        encoder.process_decoder_instructions(&[0x80]).unwrap();
+
+        let renamed_value = vec![Header::new(b"x-foo", b"baz")];
+        let (third_len, encoder_instructions) = encoder
+            .encode_for_stream(4, &renamed_value, &mut field_section)
+            .unwrap();
+        assert!(!encoder_instructions.is_empty());
+        assert_eq!(
+            decoder
+                .process_encoder_instructions(&encoder_instructions)
+                .unwrap(),
+            vec![0x01]
+        );
+        assert_eq!(
+            decoder
+                .decode_field_section(4, &field_section[..third_len], u64::MAX)
+                .unwrap(),
+            DecodeStatus::Decoded {
+                headers: renamed_value,
+                consumed: third_len,
+                decoder_instructions: vec![0x84],
+            }
+        );
+    }
+
+    #[test]
+    fn literal_with_post_base_name_reference() {
+        let mut decoder = QpackDecoder::with_max_capacity(64);
+        let mut encoder_instructions = Vec::new();
+        append_int(&mut encoder_instructions, 64, SET_DYNAMIC_TABLE_CAPACITY, 5).unwrap();
+        append_string(
+            &mut encoder_instructions,
+            b"x-name",
+            INSERT_WITH_LITERAL_NAME,
+            5,
+            false,
+        )
+        .unwrap();
+        append_string(&mut encoder_instructions, b"old", 0, 7, false).unwrap();
+        decoder
+            .process_encoder_instructions(&encoder_instructions)
+            .unwrap();
+
+        // Required Insert Count=1, Base=0, followed by a literal whose name
+        // uses post-Base index 0 (absolute index 0).
+        let field_section = [0x02, 0x80, 0x00, 0x03, b'n', b'e', b'w'];
+        assert_eq!(
+            decoder
+                .decode_field_section(4, &field_section, u64::MAX)
+                .unwrap(),
+            DecodeStatus::Decoded {
+                headers: vec![Header::new(b"x-name", b"new")],
+                consumed: field_section.len(),
+                decoder_instructions: vec![0x84],
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_overflowing_delta_base() {
+        let mut field_section = vec![0];
+        append_int(&mut field_section, u64::MAX, 0x80, 7).unwrap();
+
+        let mut decoder = QpackDecoder::new();
+        assert_eq!(
+            decoder.decode_field_section(0, &field_section, u64::MAX),
+            Err(Http3Error::QpackDecompressionFailed)
+        );
+    }
+
+    #[test]
+    fn partial_integer_rejects_overlong_high_bits() {
+        let mut encoded = vec![0b11111];
+        encoded.extend(std::iter::repeat_n(0b1000_0000, 9));
+        encoded.push(0b0000_0010);
+        assert_eq!(
+            decode_int_partial(&encoded, 5),
+            Err(Http3Error::QpackDecompressionFailed)
+        );
+    }
+
+    #[test]
+    fn encoder_instructions_can_arrive_incrementally() {
+        let instructions =
+            hex::decode("3fbd014a637573746f6d2d6b65790c637573746f6d2d76616c7565").unwrap();
+        let mut decoder = QpackDecoder::with_max_capacity(220);
+        for byte in &instructions[..instructions.len() - 1] {
+            assert!(decoder
+                .process_encoder_instructions(&[*byte])
+                .unwrap()
+                .is_empty());
+        }
+        assert_eq!(
+            decoder
+                .process_encoder_instructions(&instructions[instructions.len() - 1..])
+                .unwrap(),
+            vec![0x01]
+        );
+    }
+
+    #[test]
+    fn rejects_capacity_above_advertised_limit() {
+        let mut decoder = QpackDecoder::with_max_capacity(64);
+        let mut instruction = Vec::new();
+        append_int(&mut instruction, 65, SET_DYNAMIC_TABLE_CAPACITY, 5).unwrap();
+        assert_eq!(
+            decoder.process_encoder_instructions(&instruction),
+            Err(Http3Error::QpackEncoderStreamError)
+        );
+    }
+
+    #[test]
+    fn sensitive_fields_are_never_inserted() {
+        let mut encoder = QpackEncoder::new();
+        encoder.set_max_capacity(256).unwrap();
+        let mut field_section = [0; 128];
+        let (_, instructions) = encoder
+            .encode_for_stream(
+                0,
+                &[Header::new(b"authorization", b"secret")],
+                &mut field_section,
+            )
+            .unwrap();
+        assert!(instructions.is_empty());
+        assert_ne!(field_section[2] & 0x20, 0);
+    }
 }
 
+mod dynamic_table;
 mod huffman;
 mod prefix_int;
 mod static_table;

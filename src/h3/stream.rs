@@ -73,6 +73,10 @@ pub struct Http3Stream {
     /// Stream header blocked by flow control, buffered here until it can be sent fully.
     /// The tuple contains the encoded header block and whether it carries the fin flag.
     header_block: Option<(Bytes, bool)>,
+
+    /// Whether processing is suspended until the QPACK decoder receives the
+    /// dynamic table entries required by the current field section.
+    qpack_blocked: bool,
 }
 
 impl Http3Stream {
@@ -102,6 +106,7 @@ impl Http3Stream {
             priority_initialized: false,
             priority_update: None,
             header_block: None,
+            qpack_blocked: false,
         }
     }
 
@@ -686,6 +691,14 @@ impl Http3Stream {
     /// Return true if header_block has not been sent.
     pub fn has_header_block(&self) -> bool {
         self.header_block.is_some()
+    }
+
+    pub fn set_qpack_blocked(&mut self, blocked: bool) {
+        self.qpack_blocked = blocked;
+    }
+
+    pub fn qpack_blocked(&self) -> bool {
+        self.qpack_blocked
     }
 }
 

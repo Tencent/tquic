@@ -17,6 +17,8 @@ use crate::codec::Encoder;
 use crate::h3::Http3Error;
 use crate::h3::Result;
 
+pub const MAX_QPACK_INT: u64 = (1 << 62) - 1;
+
 /// Encode an integer using QPACK integer representation.                                           
 ///
 /// An integer is represented in two parts: a prefix that fills the current
@@ -71,17 +73,21 @@ pub fn decode_int(mut buf: &[u8], n: usize) -> Result<(u64, usize)> {
     let mut shift = 0;
     while !buf.is_empty() {
         let byte = buf.read_u8()?;
+        if shift >= 62 {
+            return Err(Http3Error::QpackDecompressionFailed);
+        }
         let inc = u64::from(byte & 0x7f)
             .checked_shl(shift)
             .ok_or(Http3Error::QpackDecompressionFailed)?;
         val = val
             .checked_add(inc)
+            .filter(|value| *value <= MAX_QPACK_INT)
             .ok_or(Http3Error::QpackDecompressionFailed)?;
-        shift += 7;
 
         if byte & 0x80 == 0 {
             return Ok((val, buf_len - buf.len()));
         }
+        shift += 7;
     }
 
     Err(Http3Error::QpackDecompressionFailed)
@@ -130,5 +136,20 @@ mod test {
             0b10001010, 0b10001010,
         ];
         assert!(decode_int(&mut buf, 5).is_err());
+    }
+
+    #[test]
+    fn decode_int_rejects_overlong_high_bits() {
+        let mut buf = vec![0b11111];
+        buf.extend(std::iter::repeat_n(0b1000_0000, 9));
+        buf.push(0b0000_0010);
+        assert!(decode_int(&buf, 5).is_err());
+    }
+
+    #[test]
+    fn prefix_int_supports_62_bit_values() {
+        let mut encoded = [0; 16];
+        let len = encode_int(MAX_QPACK_INT, 0, 5, &mut encoded).unwrap();
+        assert_eq!(decode_int(&encoded[..len], 5), Ok((MAX_QPACK_INT, len)));
     }
 }
