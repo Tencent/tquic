@@ -2349,7 +2349,7 @@ pub struct Header {
     value_len: usize,
 }
 
-/// Send HTTP/3 request or response headers on the given stream.
+/// Send initial HTTP/3 request or response headers on the given stream.
 #[cfg(feature = "h3")]
 #[no_mangle]
 pub extern "C" fn http3_send_headers(
@@ -2363,6 +2363,30 @@ pub extern "C" fn http3_send_headers(
     let h3_headers = headers_from_ptr(headers, headers_len);
 
     match conn.send_headers(quic_conn, stream_id, &h3_headers, fin) {
+        Ok(_) => 0,
+        Err(e) => e.to_errno() as c_int,
+    }
+}
+
+/// Send an additional HTTP/3 field section on the given stream.
+///
+/// Clients can only send trailer sections. Servers can also send additional
+/// response field sections before the response body. Once a trailer section is
+/// sent, no more HEADERS or DATA frames can be sent on the stream.
+#[cfg(feature = "h3")]
+#[no_mangle]
+pub extern "C" fn http3_send_additional_headers(
+    conn: &mut Http3Connection,
+    quic_conn: &mut Connection,
+    stream_id: u64,
+    headers: *const Header,
+    headers_len: size_t,
+    is_trailer_section: bool,
+    fin: bool,
+) -> c_int {
+    let h3_headers = headers_from_ptr(headers, headers_len);
+
+    match conn.send_additional_headers(quic_conn, stream_id, &h3_headers, is_trailer_section, fin) {
         Ok(_) => 0,
         Err(e) => e.to_errno() as c_int,
     }
@@ -2516,7 +2540,7 @@ pub extern "C" fn quic_set_logger(
 #[cfg(feature = "h3")]
 #[repr(C)]
 pub struct Http3Methods {
-    /// Called when the stream got headers.
+    /// Called when the stream receives a header or trailer field section.
     pub on_stream_headers:
         Option<fn(ctx: *mut c_void, stream_id: u64, headers: &Http3Headers, fin: bool)>,
 

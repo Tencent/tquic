@@ -425,7 +425,7 @@ typedef struct quic_conn_stats_t {
 
 typedef struct http3_methods_t {
   /**
-   * Called when the stream got headers.
+   * Called when the stream receives a header or trailer field section.
    */
   void (*on_stream_headers)(void *ctx,
                             uint64_t stream_id,
@@ -1445,7 +1445,7 @@ int http3_stream_set_priority(struct http3_conn_t *conn,
                               const struct http3_priority_t *priority);
 
 /**
- * Send HTTP/3 request or response headers on the given stream.
+ * Send initial HTTP/3 request or response headers on the given stream.
  */
 int http3_send_headers(struct http3_conn_t *conn,
                        struct quic_conn_t *quic_conn,
@@ -1453,6 +1453,21 @@ int http3_send_headers(struct http3_conn_t *conn,
                        const struct http3_header_t *headers,
                        size_t headers_len,
                        bool fin);
+
+/**
+ * Send an additional HTTP/3 field section on the given stream.
+ *
+ * Clients can only send trailer sections. Servers can also send additional
+ * response field sections before the response body. Once a trailer section is
+ * sent, no more HEADERS or DATA frames can be sent on the stream.
+ */
+int http3_send_additional_headers(struct http3_conn_t *conn,
+                                  struct quic_conn_t *quic_conn,
+                                  uint64_t stream_id,
+                                  const struct http3_header_t *headers,
+                                  size_t headers_len,
+                                  bool is_trailer_section,
+                                  bool fin);
 
 /**
  * Send HTTP/3 request or response body on the given stream.
