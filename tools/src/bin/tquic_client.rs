@@ -286,6 +286,24 @@ pub struct ClientOpt {
     )]
     pub cid_len: usize,
 
+    /// Send RESET_STREAM after receiving specified bytes. 0 means disabled.
+    #[clap(
+        long,
+        default_value = "0",
+        value_name = "BYTES",
+        help_heading = "Protocol"
+    )]
+    pub reset_after: u64,
+
+    /// Error code to use when sending RESET_STREAM.
+    #[clap(
+        long,
+        default_value = "0",
+        value_name = "CODE",
+        help_heading = "Protocol"
+    )]
+    pub reset_error_code: u64,
+
     /// Print response header and body to stdout.
     #[clap(short, long, help_heading = "Output")]
     pub print_res: bool,
@@ -876,6 +894,8 @@ struct Request {
     headers: Vec<Header>, // Used in h3.
     response_writer: Option<std::io::BufWriter<std::fs::File>>,
     start_time: Option<Instant>,
+    recv_bytes: u64,
+    reset_sent: bool,
 }
 
 impl Request {
@@ -949,6 +969,8 @@ impl Request {
             headers,
             response_writer: Self::make_response_writer(url, dump_dir),
             start_time: None,
+            recv_bytes: 0,
+            reset_sent: false,
         }
     }
 }
@@ -1195,6 +1217,11 @@ impl RequestSender {
             );
 
             let request = self.streams.get_mut(&stream_id).unwrap();
+
+            request.recv_bytes += read as u64;
+
+            // TODO: Check if we should reset the stream.
+
             if let Some(writer) = &mut request.response_writer {
                 _ = writer.write_all(&self.buf[..read]);
             }
@@ -1246,6 +1273,11 @@ impl RequestSender {
                         );
 
                         let request = self.streams.get_mut(&stream_id).unwrap();
+
+                        request.recv_bytes += read as u64;
+
+                        // TODO: Check if we should reset the stream.
+
                         if let Some(writer) = &mut request.response_writer {
                             _ = writer.write_all(&self.buf[..read]);
                         }
@@ -1311,6 +1343,15 @@ impl RequestSender {
             }
         }
     }
+
+    fn should_reset_stream(&self, request: &Request) -> bool {
+        self.option.reset_after > 0
+            && request.recv_bytes >= self.option.reset_after
+            && !request.reset_sent
+    }
+
+    // TODO: Implement stream reset logic.
+    fn reset_stream(&mut self, conn: &mut Connection, stream_id: u64, request: &mut Request) {}
 }
 
 struct WorkerHandler {
