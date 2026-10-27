@@ -231,6 +231,8 @@ typedef struct quic_packet_out_spec_t {
   socklen_t src_addr_len;
   const void *dst_addr;
   socklen_t dst_addr_len;
+  /* ECN field to apply to the outgoing IP packet: 0=Not-ECT, 1=ECT(1), 2=ECT(0), 3=CE. */
+  uint8_t ecn;
 } quic_packet_out_spec_t;
 
 typedef struct quic_packet_send_methods_t {
@@ -282,6 +284,8 @@ typedef struct quic_packet_info_t {
   socklen_t src_len;
   const struct sockaddr *dst;
   socklen_t dst_len;
+  /* ECN field from the received IP packet: 0=Not-ECT, 1=ECT(1), 2=ECT(0), 3=CE. */
+  uint8_t ecn;
 } quic_packet_info_t;
 
 typedef struct quic_path_address_t {
@@ -786,6 +790,12 @@ void quic_config_set_max_undecryptable_packets(struct quic_config_t *config, uin
  * for any practical application protocol on the open internet.
  */
 void quic_config_enable_encryption(struct quic_config_t *config, bool v);
+
+/**
+ * Enable Explicit Congestion Notification (ECN).
+ * The default value is false.
+ */
+void quic_config_enable_ecn(struct quic_config_t *config, bool v);
 
 /**
  * Create a new TlsConfig.

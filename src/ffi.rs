@@ -126,6 +126,7 @@ use crate::tls::SslCtx;
 use crate::tls::TlsConfig;
 use crate::Config;
 use crate::Connection;
+use crate::EcnCodepoint;
 use crate::Endpoint;
 use crate::Result;
 use crate::Shutdown;
@@ -570,6 +571,13 @@ pub extern "C" fn quic_config_set_zerortt_buffer_size(config: &mut Config, v: u1
 #[no_mangle]
 pub extern "C" fn quic_config_set_max_undecryptable_packets(config: &mut Config, v: u16) {
     config.set_max_undecryptable_packets(v as usize);
+}
+
+/// Enable Explicit Congestion Notification (ECN).
+/// The default value is false.
+#[no_mangle]
+pub extern "C" fn quic_config_enable_ecn(config: &mut Config, v: bool) {
+    config.enable_ecn(v);
 }
 
 /// Enable or disable encryption on 1-RTT packets. (Experimental)
@@ -1901,6 +1909,7 @@ impl crate::PacketSendHandler for PacketSendHandler {
                 src_addr_len,
                 dst_addr: &dst_addrs[i] as *const _ as *const c_void,
                 dst_addr_len,
+                ecn: info.ecn as u8,
             };
 
             pkt_specs.push(pkt_spec);
@@ -2039,6 +2048,7 @@ pub struct PacketInfo<'a> {
     src_len: socklen_t,
     dst: &'a sockaddr,
     dst_len: socklen_t,
+    ecn: u8,
 }
 
 impl From<&PacketInfo<'_>> for crate::PacketInfo {
@@ -2046,6 +2056,7 @@ impl From<&PacketInfo<'_>> for crate::PacketInfo {
         crate::PacketInfo {
             src: sock_addr_from_c(info.src, info.src_len),
             dst: sock_addr_from_c(info.dst, info.dst_len),
+            ecn: EcnCodepoint::from(info.ecn),
             time: Instant::now(),
         }
     }
@@ -2060,6 +2071,7 @@ pub struct PacketOutSpec {
     src_addr_len: socklen_t,
     dst_addr: *const c_void,
     dst_addr_len: socklen_t,
+    ecn: u8,
 }
 
 #[repr(C)]

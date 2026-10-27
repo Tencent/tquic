@@ -23,6 +23,7 @@ use libfuzzer_sys::fuzz_target;
 
 use tquic::Config;
 use tquic::ConnectionId;
+use tquic::EcnCodepoint;
 use tquic::TlsConfig;
 
 lazy_static! {
@@ -44,6 +45,7 @@ fuzz_target!(|data: &[u8]| {
     let info = tquic::PacketInfo {
         src: remote,
         dst: local,
+        ecn: EcnCodepoint::NotEct,
         time: Instant::now(),
     };
 

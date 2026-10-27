@@ -251,6 +251,31 @@ impl ConnectionIdGenerator for RandomConnectionIdGenerator {
     }
 }
 
+/// The ECN codepoint carried by a received IP packet.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EcnCodepoint {
+    /// Not-ECT (not ECN-capable transport).
+    NotEct = 0,
+    /// ECN-capable transport, codepoint 1.
+    Ect1 = 1,
+    /// ECN-capable transport, codepoint 0.
+    Ect0 = 2,
+    /// Congestion experienced.
+    Ce = 3,
+}
+
+impl From<u8> for EcnCodepoint {
+    fn from(value: u8) -> Self {
+        match value & 0x03 {
+            1 => Self::Ect1,
+            2 => Self::Ect0,
+            3 => Self::Ce,
+            _ => Self::NotEct,
+        }
+    }
+}
+
 /// Meta information about a packet.
 #[derive(Clone, Copy, Debug)]
 pub struct PacketInfo {
@@ -259,6 +284,9 @@ pub struct PacketInfo {
 
     /// The destination address of the packet
     pub dst: SocketAddr,
+
+    /// The ECN codepoint received with the packet.
+    pub ecn: EcnCodepoint,
 
     /// The time when the packet arrived or the time to send the packet
     pub time: time::Instant,
@@ -325,6 +353,9 @@ pub struct Config {
 
     /// Enable stateless reset or not.
     stateless_reset: bool,
+
+    /// Enable Explicit Congestion Notification (ECN).
+    ecn: bool,
 
     /// Duration after a retry token was issued for which it's considered valid.
     address_token_lifetime: Duration,
@@ -396,6 +427,7 @@ impl Config {
             max_stream_window: stream::MAX_STREAM_WINDOW,
             retry: false,
             stateless_reset: true,
+            ecn: false,
             address_token_lifetime: Duration::from_secs(86400),
             address_token_key: Self::rand_address_token_key()?,
             reset_token_key,
@@ -737,6 +769,12 @@ impl Config {
         } else {
             self.max_undecryptable_packets = 10;
         }
+    }
+
+    /// Enable Explicit Congestion Notification (ECN).
+    /// The default value is false.
+    pub fn enable_ecn(&mut self, v: bool) {
+        self.ecn = v;
     }
 
     /// Enable or disable encryption on 1-RTT packets. (Experimental)

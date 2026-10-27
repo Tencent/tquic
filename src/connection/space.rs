@@ -71,6 +71,24 @@ pub struct PacketNumSpace {
     /// Number of consecutive non-ack-eliciting packet sent.
     pub consecutive_non_ack_eliciting_sent: usize,
 
+    /// Number of received packets marked ECT(0).
+    pub ect0_count: u64,
+
+    /// Number of received packets marked ECT(1).
+    pub ect1_count: u64,
+
+    /// Number of received packets marked CE.
+    pub ecn_ce_count: u64,
+
+    /// Largest ECT(0) count reported by the peer.
+    pub ecn_feedback_ect0_count: u64,
+
+    /// Largest ECT(1) count reported by the peer.
+    pub ecn_feedback_ect1_count: u64,
+
+    /// Largest CE count reported by the peer.
+    pub ecn_feedback_ce_count: u64,
+
     /// The lowest packet number sent with 1-RTT keys.
     pub lowest_1rtt_pkt_num: u64,
 
@@ -150,6 +168,12 @@ impl PacketNumSpace {
             id,
             next_pkt_num: 0,
             consecutive_non_ack_eliciting_sent: 0,
+            ect0_count: 0,
+            ect1_count: 0,
+            ecn_ce_count: 0,
+            ecn_feedback_ect0_count: 0,
+            ecn_feedback_ect1_count: 0,
+            ecn_feedback_ce_count: 0,
             lowest_1rtt_pkt_num: u64::MAX,
             largest_rx_pkt_num: 0,
             first_pkt_num_recv: None,
@@ -342,6 +366,9 @@ pub struct SentPacket {
     /// The packet number of the sent packet.
     pub pkt_num: u64,
 
+    /// The ECN codepoint applied to the sent packet.
+    pub ecn: crate::EcnCodepoint,
+
     /// The Frames metadata of the sent packet.
     pub frames: Vec<frame::Frame>,
 
@@ -388,6 +415,7 @@ impl Default for SentPacket {
         SentPacket {
             pkt_type: packet::PacketType::OneRTT,
             pkt_num: 0,
+            ecn: crate::EcnCodepoint::NotEct,
             frames: vec![],
             time_sent: Instant::now(),
             time_acked: None,

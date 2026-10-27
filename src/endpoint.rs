@@ -46,6 +46,7 @@ use crate::token::ResetToken;
 use crate::ConnectionId;
 use crate::ConnectionIdGenerator;
 use crate::ConnectionQueues;
+use crate::EcnCodepoint;
 use crate::Event;
 use crate::FourTuple;
 use crate::PacketInfo;
@@ -383,6 +384,7 @@ impl Endpoint {
         let pkt_info = PacketInfo {
             src: local,
             dst: remote,
+            ecn: EcnCodepoint::NotEct,
             time: Instant::now(),
         };
 
@@ -424,6 +426,7 @@ impl Endpoint {
         let pkt_info = PacketInfo {
             src: local,
             dst: remote,
+            ecn: EcnCodepoint::NotEct,
             time: Instant::now(),
         };
 
@@ -473,6 +476,7 @@ impl Endpoint {
         let pkt_info = PacketInfo {
             src: local,
             dst: remote,
+            ecn: EcnCodepoint::NotEct,
             time: Instant::now(),
         };
 
@@ -1331,6 +1335,7 @@ mod tests {
                 let pkt_info = PacketInfo {
                     src: remote,
                     dst: s.socket.local_addr().unwrap(),
+                    ecn: EcnCodepoint::NotEct,
                     time: Instant::now(),
                 };
                 match e.recv(pkt_buf, &pkt_info) {

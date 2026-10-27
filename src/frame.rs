@@ -1172,15 +1172,15 @@ pub fn encode_stream_header(
 pub struct EcnCounts {
     /// The total number of packets received with the ECT(0) codepoint in the
     /// packet number space of the ACK frame.
-    ect0_count: u64,
+    pub(crate) ect0_count: u64,
 
     /// The total number of packets received with the ECT(1) codepoint in the
     /// packet number space of the ACK frame.
-    ect1_count: u64,
+    pub(crate) ect1_count: u64,
 
     /// The total number of packets received with the ECN-CE codepoint in the
     /// packet number space of the ACK frame.
-    ecn_ce_count: u64,
+    pub(crate) ecn_ce_count: u64,
 }
 
 fn parse_ack_frame(frame_type: u64, mut b: &[u8]) -> Result<(Frame, usize)> {

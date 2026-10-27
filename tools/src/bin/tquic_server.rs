@@ -374,6 +374,7 @@ impl Server {
             let pkt_info = PacketInfo {
                 src: remote,
                 dst: local,
+                ecn: tquic::EcnCodepoint::NotEct,
                 time: Instant::now(),
             };
 

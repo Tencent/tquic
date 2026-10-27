@@ -67,6 +67,7 @@ use crate::trans_param::TransportParams;
 use crate::Config;
 use crate::ConnectionId;
 use crate::ConnectionQueues;
+use crate::EcnCodepoint;
 use crate::Event;
 use crate::EventQueue;
 use crate::FourTuple;
@@ -117,6 +118,9 @@ pub struct Connection {
 
     /// Peer transport parameters.
     peer_transport_params: TransportParams,
+
+    /// Whether this connection sends ECT(0) codepoints and validates ECN feedback.
+    ecn_enabled: bool,
 
     /// Local transport parameters.
     local_transport_params: TransportParams,
@@ -261,6 +265,7 @@ impl Connection {
             crypto_streams: Rc::new(RefCell::new(CryptoStreams::new())),
             undecryptable_packets: UndecryptablePackets::new(conf.max_undecryptable_packets),
             peer_transport_params: TransportParams::default(),
+            ecn_enabled: conf.ecn,
             local_transport_params: conf.local_transport_params.clone(),
             recovery_conf: conf.recovery.clone(),
             local_error: None,
@@ -649,6 +654,14 @@ impl Connection {
 
         // Update packet number space
         let space = self.spaces.get_mut(space_id).ok_or(Error::InternalError)?;
+        if self.ecn_enabled {
+            match info.ecn {
+                EcnCodepoint::Ect0 => space.ect0_count += 1,
+                EcnCodepoint::Ect1 => space.ect1_count += 1,
+                EcnCodepoint::Ce => space.ecn_ce_count += 1,
+                EcnCodepoint::NotEct => (),
+            }
+        }
         if space.recv_pkt_num_need_ack.max() < Some(pkt_num) {
             space.largest_rx_pkt_time = info.time;
         }
@@ -704,6 +717,76 @@ impl Connection {
         Ok(read)
     }
 
+    /// Validate ECN feedback carried by an ACK frame.
+    fn validate_ecn_feedback(
+        &mut self,
+        space_id: SpaceId,
+        ack_ranges: &crate::ranges::RangeSet,
+        ecn_counts: Option<&frame::EcnCounts>,
+    ) {
+        if !self.ecn_enabled {
+            return;
+        }
+
+        let Some(space) = self.spaces.get_mut(space_id) else {
+            self.ecn_enabled = false;
+            return;
+        };
+        let Some(largest_acked) = ack_ranges.max() else {
+            return;
+        };
+        if space.largest_acked_pkt != u64::MAX && largest_acked <= space.largest_acked_pkt {
+            return;
+        }
+
+        let mut newly_acked_ect0 = 0_u64;
+        let mut newly_acked_ect1 = 0_u64;
+        for range in ack_ranges.iter() {
+            for packet in space.sent.iter() {
+                if packet.pkt_num < range.start || packet.time_acked.is_some() {
+                    continue;
+                }
+                if packet.pkt_num >= range.end {
+                    break;
+                }
+                match packet.ecn {
+                    EcnCodepoint::Ect0 => newly_acked_ect0 += 1,
+                    EcnCodepoint::Ect1 => newly_acked_ect1 += 1,
+                    EcnCodepoint::NotEct | EcnCodepoint::Ce => (),
+                }
+            }
+        }
+
+        let Some(ecn_counts) = ecn_counts else {
+            if newly_acked_ect0 != 0 || newly_acked_ect1 != 0 {
+                self.ecn_enabled = false;
+            }
+            return;
+        };
+
+        let ect0_delta = ecn_counts
+            .ect0_count
+            .saturating_sub(space.ecn_feedback_ect0_count);
+        let ect1_delta = ecn_counts
+            .ect1_count
+            .saturating_sub(space.ecn_feedback_ect1_count);
+        let ce_delta = ecn_counts
+            .ecn_ce_count
+            .saturating_sub(space.ecn_feedback_ce_count);
+        let invalid = ecn_counts.ect0_count < space.ecn_feedback_ect0_count
+            || ecn_counts.ect1_count < space.ecn_feedback_ect1_count
+            || ecn_counts.ecn_ce_count < space.ecn_feedback_ce_count
+            || ect0_delta.saturating_add(ce_delta) < newly_acked_ect0
+            || ect1_delta.saturating_add(ce_delta) < newly_acked_ect1;
+        if invalid {
+            self.ecn_enabled = false;
+        } else {
+            space.ecn_feedback_ect0_count = ecn_counts.ect0_count;
+            space.ecn_feedback_ect1_count = ecn_counts.ect1_count;
+            space.ecn_feedback_ce_count = ecn_counts.ecn_ce_count;
+        }
+    }
+
     /// Process an incoming QUIC frame from the peer.
     fn recv_frame(
         &mut self,
@@ -722,8 +805,9 @@ impl Connection {
             Frame::Ack {
                 ack_delay,
                 ack_ranges,
-                ..
+                ecn_counts,
             } => {
+                self.validate_ecn_feedback(space_id, &ack_ranges, ecn_counts.as_ref());
                 // ACK Delay is decoded by multiplying the value in the field
                 // by 2 to the power of the ack_delay_exponent transport
                 // parameter sent by the sender of the ACK frame.
@@ -1628,6 +1712,11 @@ impl Connection {
         let info = PacketInfo {
             src: path.local_addr(),
             dst: path.remote_addr(),
+            ecn: if self.ecn_enabled {
+                EcnCodepoint::Ect0
+            } else {
+                EcnCodepoint::NotEct
+            },
             time: time::Instant::now(),
         };
         Ok((done, info))
@@ -1814,6 +1903,11 @@ impl Connection {
         let sent_pkt = space::SentPacket {
             pkt_type,
             pkt_num,
+            ecn: if self.ecn_enabled {
+                EcnCodepoint::Ect0
+            } else {
+                EcnCodepoint::NotEct
+            },
             time_sent: now,
             time_acked: None,
             time_lost: None,
@@ -2175,10 +2269,20 @@ impl Connection {
         let ack_delay_exp = self.local_transport_params.ack_delay_exponent as u32;
         let ack_delay = space.largest_rx_pkt_time.elapsed();
         let ack_delay = ack_delay.as_micros() as u64 / 2_u64.pow(ack_delay_exp);
+        let ecn_counts =
+            if space.ect0_count != 0 || space.ect1_count != 0 || space.ecn_ce_count != 0 {
+                Some(frame::EcnCounts {
+                    ect0_count: space.ect0_count,
+                    ect1_count: space.ect1_count,
+                    ecn_ce_count: space.ecn_ce_count,
+                })
+            } else {
+                None
+            };
         let frame = Frame::Ack {
             ack_delay,
             ack_ranges: space.recv_pkt_num_need_ack.clone(),
-            ecn_counts: None, // ECN not supported
+            ecn_counts,
         };
         Connection::write_frame_to_packet(frame, out, st)?;
         space.need_send_ack = false;
@@ -4875,6 +4979,7 @@ pub(crate) mod tests {
             PacketInfo {
                 src: if is_server { server_addr } else { client_addr },
                 dst: if is_server { client_addr } else { server_addr },
+                ecn: EcnCodepoint::NotEct,
                 time: time::Instant::now(),
             }
         }
@@ -5173,6 +5278,75 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn ecn_feedback() -> Result<()> {
+        let mut client_config = TestPair::new_test_config(false)?;
+        client_config.enable_ecn(true);
+        let mut server_config = TestPair::new_test_config(true)?;
+        server_config.enable_ecn(true);
+        let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
+        test_pair.handshake()?;
+
+        let (sid, data) = (0, TestPair::new_test_data(10));
+        test_pair.client.stream_write(sid, data, false)?;
+        let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+        assert!(!packets.is_empty());
+        assert!(packets
+            .iter()
+            .all(|(_, info)| info.ecn == EcnCodepoint::Ect0));
+        TestPair::conn_packets_in(&mut test_pair.server, packets)?;
+
+        let data_space = test_pair.server.spaces.get(SpaceId::Data).unwrap();
+        assert!(data_space.ect0_count > 0);
+        test_pair
+            .server
+            .spaces
+            .get_mut(SpaceId::Data)
+            .unwrap()
+            .need_send_ack = true;
+        let packets = TestPair::conn_packets_out(&mut test_pair.server)?;
+        assert!(!packets.is_empty());
+        let data_space = test_pair.server.spaces.get(SpaceId::Data).unwrap();
+        assert!(data_space.sent.iter().any(|packet| {
+            packet.frames.iter().any(|frame| {
+                matches!(
+                    frame,
+                    Frame::Ack {
+                        ecn_counts: Some(_),
+                        ..
+                    }
+                )
+            })
+        }));
+        TestPair::conn_packets_in(&mut test_pair.client, packets)?;
+        assert!(test_pair.client.ecn_enabled);
+
+        test_pair
+            .client
+            .stream_write(sid, TestPair::new_test_data(1), false)?;
+        let packets = TestPair::conn_packets_out(&mut test_pair.client)?;
+        assert!(!packets.is_empty());
+        let packet_num = test_pair
+            .client
+            .spaces
+            .get(SpaceId::Data)
+            .unwrap()
+            .next_pkt_num
+            - 1;
+
+        let mut ack_ranges = RangeSet::new(1);
+        ack_ranges.insert(packet_num..packet_num + 1);
+        let frame = Frame::Ack {
+            ack_delay: 0,
+            ack_ranges,
+            ecn_counts: None,
+        };
+        test_pair.build_packet_and_send(PacketType::OneRTT, &[frame], true)?;
+        assert!(!test_pair.client.ecn_enabled);
+
+        Ok(())
+    }
+
+    #[test]
     fn handshake_with_version_negotiation() -> Result<()> {
         let mut test_pair = TestPair::new_with_test_config()?;
 
@@ -5189,6 +5363,7 @@ pub(crate) mod tests {
         let info = PacketInfo {
             src: initial_info.dst,
             dst: initial_info.src,
+            ecn: EcnCodepoint::NotEct,
             time: initial_info.time,
         };
 
@@ -5237,6 +5412,7 @@ pub(crate) mod tests {
         let info = PacketInfo {
             src: info.dst,
             dst: info.src,
+            ecn: EcnCodepoint::NotEct,
             time: info.time,
         };
 
