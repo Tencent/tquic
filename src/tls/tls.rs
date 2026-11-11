@@ -158,6 +158,32 @@ impl TlsConfig {
         self.tls_ctx.set_verify(verify)
     }
 
+    /// Configure client certificate verification for a server config.
+    ///
+    /// With `require = true` the server sends a CertificateRequest during the
+    /// TLS handshake and a client that does not present a certificate causes a
+    /// fatal handshake error. With `require = false` the server still requests
+    /// and verifies a client certificate when one is presented, but accepts
+    /// clients that do not present one.
+    ///
+    /// Trust anchors used to verify the client certificate are configured with
+    /// [`TlsConfig::set_ca_certs`]. This setting has no effect on client
+    /// configs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use tquic::TlsConfig;
+    /// # fn main() -> tquic::Result<()> {
+    /// let mut tls_config = TlsConfig::new()?;
+    /// tls_config.set_verify_client_cert(true);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn set_verify_client_cert(&mut self, require: bool) {
+        self.tls_ctx.set_verify_client_cert(require)
+    }
+
     /// Set the PEM-encoded certificate file
     pub fn set_certificate_file(&mut self, cert_file: &str) -> Result<()> {
         self.tls_ctx.use_certificate_chain_file(cert_file)
@@ -1209,6 +1235,77 @@ pub(crate) mod tests {
             Err(Error::TlsFail(err)) => assert!(err.contains("CERTIFICATE_VERIFY_FAILED")),
             Err(_) | Ok(_) => assert!(false),
         }
+
+        Ok(())
+    }
+
+    /// Run a handshake where the server requires a client certificate.
+    ///
+    /// `client_cert` is the certificate/key pair presented by the client, or
+    /// `None` when the client presents no certificate at all.
+    fn handshake_with_client_auth(client_cert: Option<(&str, &str)>) -> Result<TlsSessionPair> {
+        const TESTDATA: &str = "./src/tls/testdata/";
+
+        let mut client_config = TlsConfig::new_client_config(vec![b"h3".to_vec()], false)?;
+        client_config.set_verify(true);
+        client_config.set_ca_certs(&(TESTDATA.to_owned() + "ca.crt"))?;
+        if let Some((cert, key)) = client_cert {
+            client_config.set_certificate_file(&(TESTDATA.to_owned() + cert))?;
+            client_config.set_private_key_file(&(TESTDATA.to_owned() + key))?;
+        }
+
+        // `cert3` is issued by `ca.crt`.
+        let mut server_config = new_server_config(
+            vec![0x0a; 48],
+            false,
+            vec![b"h3".to_vec()],
+            &(TESTDATA.to_owned() + "cert3.crt"),
+            &(TESTDATA.to_owned() + "cert3.key"),
+        )?;
+        server_config.set_verify_client_cert(true);
+        server_config.set_ca_certs(&(TESTDATA.to_owned() + "ca.crt"))?;
+
+        let mut tls_session_pair =
+            TlsSessionPair::new_with_tls_config(&client_config, &server_config)?;
+        tls_session_pair.do_handshake(false)?;
+
+        Ok(tls_session_pair)
+    }
+
+    #[test]
+    fn handshake_with_client_cert_success() -> Result<()> {
+        // The client presents a certificate issued by the server's CA.
+        let tls_session_pair = handshake_with_client_auth(Some(("cert3.crt", "cert3.key")))?;
+        assert!(tls_session_pair.client.is_completed());
+        assert!(tls_session_pair.server.is_completed());
+
+        // The server can access the verified client certificate chain.
+        let chain = tls_session_pair.server.peer_cert_chain();
+        assert!(chain.is_some());
+        let chain = chain.unwrap();
+        assert_eq!(chain.len(), 1);
+        assert_eq!(chain[0], tls_session_pair.server.peer_cert().unwrap());
+
+        // The client still sees the server certificate.
+        assert!(tls_session_pair.client.peer_cert_chain().is_some());
+
+        Ok(())
+    }
+
+    #[test]
+    fn handshake_with_client_cert_missing() -> Result<()> {
+        // The server requires a client certificate, but the client presents
+        // none, which is a fatal handshake error.
+        assert!(handshake_with_client_auth(None).is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn handshake_with_client_cert_untrusted() -> Result<()> {
+        // `cert.crt` is self-signed and is not issued by `ca.crt`, so the
+        // server rejects it.
+        assert!(handshake_with_client_auth(Some(("cert.crt", "cert.key"))).is_err());
 
         Ok(())
     }

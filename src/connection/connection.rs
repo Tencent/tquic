@@ -3427,6 +3427,25 @@ impl Connection {
         self.tls_session.server_name()
     }
 
+    /// Return the peer's certificate chain in DER form.
+    ///
+    /// The chain is ordered leaf first, followed by any intermediate
+    /// certificates the peer presented. It has already been verified according
+    /// to the configured verify mode. Returns `None` if the peer did not
+    /// present a certificate, which is the case for the server side of a
+    /// connection that does not use mutual TLS.
+    pub fn peer_cert_chain(&self) -> Option<Vec<&[u8]>> {
+        self.tls_session.peer_cert_chain()
+    }
+
+    /// Return the peer's leaf certificate in DER form.
+    ///
+    /// This is the first certificate of [`Connection::peer_cert_chain`].
+    /// Returns `None` if the peer did not present a certificate.
+    pub fn peer_cert(&self) -> Option<&[u8]> {
+        self.tls_session.peer_cert()
+    }
+
     /// Return the session data used by resumption.
     pub fn session(&self) -> Option<&[u8]> {
         self.tls_session.session()
@@ -5624,6 +5643,104 @@ pub(crate) mod tests {
 
         let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
         assert!(test_pair.handshake().is_err());
+
+        Ok(())
+    }
+
+    /// Create a client and server config for a mutual TLS handshake.
+    ///
+    /// The server requires a client certificate issued by `ca.crt`.
+    /// `client_cert` is the certificate/key pair presented by the client, or
+    /// `None` when the client presents no certificate at all.
+    fn new_mtls_test_configs(client_cert: Option<(&str, &str)>) -> Result<(Config, Config)> {
+        let mut client_config = TestPair::new_test_config(false)?;
+        let mut server_config = TestPair::new_test_config(true)?;
+
+        // `cert3` is issued by `ca.crt`.
+        let mut server_tls_config = TlsConfig::new_server_config(
+            "src/tls/testdata/cert3.crt",
+            "src/tls/testdata/cert3.key",
+            vec![b"h3".to_vec()],
+            true,
+        )?;
+        server_tls_config.set_ticket_key(&vec![0x73; 48])?;
+        server_tls_config.set_verify_client_cert(true);
+        server_tls_config.set_ca_certs("src/tls/testdata/ca.crt")?;
+        server_config.set_tls_config(server_tls_config);
+
+        let mut client_tls_config = TlsConfig::new_client_config(vec![b"h3".to_vec()], true)?;
+        client_tls_config.set_verify(true);
+        client_tls_config.set_ca_certs("src/tls/testdata/ca.crt")?;
+        if let Some((cert, key)) = client_cert {
+            client_tls_config.set_certificate_file(cert)?;
+            client_tls_config.set_private_key_file(key)?;
+        }
+        client_config.set_tls_config(client_tls_config);
+
+        Ok((client_config, server_config))
+    }
+
+    #[test]
+    fn handshake_with_client_cert() -> Result<()> {
+        let (mut client_config, mut server_config) = new_mtls_test_configs(Some((
+            "src/tls/testdata/cert3.crt",
+            "src/tls/testdata/cert3.key",
+        )))?;
+        let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
+        assert_eq!(test_pair.handshake(), Ok(()));
+        assert!(test_pair.client.is_established());
+        assert!(test_pair.server.is_established());
+
+        // The server sees the verified client certificate chain, leaf first.
+        let chain = test_pair.server.peer_cert_chain();
+        assert!(chain.is_some());
+        let chain = chain.unwrap();
+        assert!(!chain.is_empty());
+        assert_eq!(chain[0], test_pair.server.peer_cert().unwrap());
+
+        // The client still sees the server certificate.
+        assert!(test_pair.client.peer_cert_chain().is_some());
+
+        Ok(())
+    }
+
+    #[test]
+    fn handshake_without_client_cert_failed() -> Result<()> {
+        // The server requires a client certificate, but the client presents
+        // none, which is a fatal handshake error.
+        let (mut client_config, mut server_config) = new_mtls_test_configs(None)?;
+        let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
+        assert!(test_pair.handshake().is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn handshake_with_untrusted_client_cert_failed() -> Result<()> {
+        // `cert.crt` is self-signed and is not issued by `ca.crt`, so the
+        // server rejects it.
+        let (mut client_config, mut server_config) = new_mtls_test_configs(Some((
+            "src/tls/testdata/cert.crt",
+            "src/tls/testdata/cert.key",
+        )))?;
+        let mut test_pair = TestPair::new(&mut client_config, &mut server_config)?;
+        assert!(test_pair.handshake().is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn peer_cert_chain_none_for_one_way_tls() -> Result<()> {
+        let mut test_pair = TestPair::new_with_test_config()?;
+        assert_eq!(test_pair.handshake(), Ok(()));
+
+        // The client did not present a certificate.
+        assert!(test_pair.server.peer_cert_chain().is_none());
+        assert!(test_pair.server.peer_cert().is_none());
+
+        // The server did present one.
+        assert!(test_pair.client.peer_cert_chain().is_some());
+        assert!(test_pair.client.peer_cert().is_some());
 
         Ok(())
     }

@@ -732,6 +732,15 @@ pub extern "C" fn quic_tls_config_set_verify(tls_config: &mut TlsConfig, verify:
     tls_config.set_verify(verify)
 }
 
+/// Set whether the server requires a client certificate during the TLS handshake.
+#[no_mangle]
+pub extern "C" fn quic_tls_config_set_verify_client_cert(
+    tls_config: &mut TlsConfig,
+    require: bool,
+) {
+    tls_config.set_verify_client_cert(require)
+}
+
 /// Set the PEM-encoded certificate file.
 #[no_mangle]
 pub extern "C" fn quic_tls_config_set_certificate_file(

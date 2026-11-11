@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [v1.6.0] - 2025-02-25
 
 ### Added
+- Add `Connection::peer_cert()` and `Connection::peer_cert_chain()` to access the peer certificate chain
+- Add `TlsConfig::set_verify_client_cert()` and the `quic_tls_config_set_verify_client_cert` FFI for mutual TLS
 
 ### Fixed
 - Fix packets_acked event for qlog
