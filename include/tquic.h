@@ -861,6 +861,11 @@ int quic_tls_config_set_ticket_key(struct quic_tls_config_t *tls_config,
 void quic_tls_config_set_verify(struct quic_tls_config_t *tls_config, bool verify);
 
 /**
+ * Set whether the server requires a client certificate during the TLS handshake.
+ */
+void quic_tls_config_set_verify_client_cert(struct quic_tls_config_t *tls_config, bool require);
+
+/**
  * Set the PEM-encoded certificate file.
  */
 int quic_tls_config_set_certificate_file(struct quic_tls_config_t *tls_config,

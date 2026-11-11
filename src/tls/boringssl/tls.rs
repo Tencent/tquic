@@ -377,6 +377,26 @@ impl Context {
         }
     }
 
+    /// Configure client certificate verification on a server context.
+    ///
+    /// `SSL_VERIFY_PEER` makes the server send a CertificateRequest during the
+    /// handshake. `SSL_VERIFY_FAIL_IF_NO_PEER_CERT` additionally makes a
+    /// client that does not present a certificate a fatal handshake error,
+    /// instead of continuing with an unauthenticated session.
+    pub fn set_verify_client_cert(&mut self, require: bool) {
+        const SSL_VERIFY_PEER: i32 = 0x01;
+        const SSL_VERIFY_FAIL_IF_NO_PEER_CERT: i32 = 0x02;
+
+        let mut mode = SSL_VERIFY_PEER;
+        if require {
+            mode |= SSL_VERIFY_FAIL_IF_NO_PEER_CERT;
+        }
+
+        unsafe {
+            SSL_CTX_set_verify(self.as_mut_ptr(), mode, ptr::null());
+        }
+    }
+
     /// Set the TLS key logging callback. This callback is called whenever TLS
     /// key material is generated or received, in order to allow applications
     /// to store this keying material for debugging purposes.
